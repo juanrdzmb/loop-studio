@@ -2,7 +2,7 @@
 import { chromium } from "playwright-core";
 
 const EXE = `${process.env.HOME}/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome`;
-const BASE = "http://localhost:3100";
+const BASE = process.env.LOOP_STUDIO_URL || "http://localhost:3000";
 const MEDIA = "/tmp/opencode/loop-e2e";
 
 const browser = await chromium.launch({

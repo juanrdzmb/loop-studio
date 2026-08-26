@@ -97,11 +97,67 @@ export interface Graph {
   panner: StereoPannerNode;
   /** Matriz mid/side para el ancho estéreo (L'L' L'R' R'L' R'R') */
   widthGains: { ll: GainNode; lr: GainNode; rl: GainNode; rr: GainNode };
-  crackleGain: GainNode | null;
+  splitter: ChannelSplitterNode;
+  merger: ChannelMergerNode;
+  crackleSource: AudioBufferSourceNode;
+  crackleGain: GainNode;
   lfo?: OscillatorNode;
   lfoGain?: GainNode;
   panRate: number;
   panDepth: number;
+}
+
+/** Detiene y desconecta limpiamente todos los nodos de la cadena para evitar fugas y acumulación de estática */
+export function teardownGraph(graph: Graph | null): void {
+  if (!graph) return;
+  try {
+    graph.source.onended = null;
+    graph.source.stop();
+  } catch {}
+  try {
+    graph.source.disconnect();
+  } catch {}
+
+  if (graph.crackleSource) {
+    try {
+      graph.crackleSource.stop();
+    } catch {}
+    try {
+      graph.crackleSource.disconnect();
+    } catch {}
+  }
+  if (graph.crackleGain) {
+    try {
+      graph.crackleGain.disconnect();
+    } catch {}
+  }
+
+  if (graph.lfo) {
+    try {
+      graph.lfo.stop();
+    } catch {}
+    try {
+      graph.lfo.disconnect();
+    } catch {}
+  }
+  if (graph.lfoGain) {
+    try {
+      graph.lfoGain.disconnect();
+    } catch {}
+  }
+
+  try { graph.lowpass.disconnect(); } catch {}
+  try { graph.reverb.disconnect(); } catch {}
+  try { graph.bass.disconnect(); } catch {}
+  try { graph.treble.disconnect(); } catch {}
+  try { graph.splitter.disconnect(); } catch {}
+  try { graph.widthGains.ll.disconnect(); } catch {}
+  try { graph.widthGains.lr.disconnect(); } catch {}
+  try { graph.widthGains.rl.disconnect(); } catch {}
+  try { graph.widthGains.rr.disconnect(); } catch {}
+  try { graph.merger.disconnect(); } catch {}
+  try { graph.master.disconnect(); } catch {}
+  try { graph.panner.disconnect(); } catch {}
 }
 
 /** Buffer de 3 s con hiss tenue + pops aleatorios (bucle de vinilo) */
@@ -207,16 +263,13 @@ export function buildGraph(
   }
 
   // Crackle de vinilo (hiss + pops) mezclado antes del EQ
-  let crackleGain: GainNode | null = null;
-  if ((s.crackle ?? 0) > 0) {
-    const noise = ctx.createBufferSource();
-    noise.buffer = getCrackleBuffer(ctx);
-    noise.loop = true;
-    crackleGain = ctx.createGain();
-    crackleGain.gain.value = (s.crackle ?? 0) * 0.5;
-    noise.connect(crackleGain).connect(bass);
-    noise.start(0);
-  }
+  const crackleSource = ctx.createBufferSource();
+  crackleSource.buffer = getCrackleBuffer(ctx);
+  crackleSource.loop = true;
+  const crackleGain = ctx.createGain();
+  crackleGain.gain.value = (s.crackle ?? 0) * 0.5;
+  crackleSource.connect(crackleGain).connect(bass);
+  crackleSource.start(0);
 
   source.connect(lowpass);
   lowpass.connect(reverb);
@@ -228,7 +281,8 @@ export function buildGraph(
   return {
     source, lowpass, reverb, master, bass, treble, panner,
     widthGains: { ll: gLL, lr: gLR, rl: gRL, rr: gRR },
-    crackleGain,
+    splitter, merger,
+    crackleSource, crackleGain,
     lfo, lfoGain, panRate, panDepth,
   };
 }
@@ -241,10 +295,15 @@ export function liveUpdateGraph(ctx: BaseAudioContext, graph: Graph, s: ReverbSe
   const t = ctx.currentTime;
   graph.source.playbackRate.setTargetAtTime(s.speed, t, 0.04);
   graph.lowpass.frequency.setTargetAtTime(s.lowpassHz, t, 0.04);
+  graph.bass.gain.setTargetAtTime(s.bassDb ?? 0, t, 0.04);
+  graph.treble.gain.setTargetAtTime(s.trebleDb ?? 0, t, 0.04);
+
   const rp = graph.reverb.parameters;
   (rp.get("dry") as AudioParam).setTargetAtTime(1 - s.reverbMix * 0.6, t, 0.04);
   (rp.get("wet") as AudioParam).setTargetAtTime(s.reverbMix, t, 0.04);
   (rp.get("decay") as AudioParam).setTargetAtTime(dattorroDecay(s.decay), t, 0.08);
+
+  graph.master.gain.setTargetAtTime(s.volume, t, 0.04);
 
   // Ancho estéreo en vivo
   const width = Math.max(0, Math.min(2, s.width ?? 1));
@@ -254,9 +313,7 @@ export function liveUpdateGraph(ctx: BaseAudioContext, graph: Graph, s: ReverbSe
   graph.widthGains.rr.gain.setTargetAtTime(0.5 + 0.5 * width, t, 0.04);
 
   // Crackle en vivo
-  if (graph.crackleGain) {
-    graph.crackleGain.gain.setTargetAtTime((s.crackle ?? 0) * 0.5, t, 0.04);
-  }
+  graph.crackleGain.gain.setTargetAtTime((s.crackle ?? 0) * 0.5, t, 0.04);
 
   // Rotación 8D en vivo
   const rate = s.panRate ?? 0;
@@ -325,6 +382,10 @@ export class SlowedReverbPlayer {
   play(s: ReverbSettings) {
     if (!this.ctx || !this.buffer || this.playing) return;
     void this.ctx.resume();
+    if (this.graph) {
+      teardownGraph(this.graph);
+      this.graph = null;
+    }
     this.graph = buildGraph(this.ctx, this.buffer, s, this.ctx.destination);
     this.rate = s.speed;
     const from = Math.min(Math.max(0, this.anchorOffset), Math.max(0, this.buffer.duration - 0.01));
@@ -340,6 +401,7 @@ export class SlowedReverbPlayer {
     this.graph.source.onended = () => {
       if (this.playing) {
         this.playing = false;
+        teardownGraph(this.graph);
         this.graph = null;
         this.anchorOffset = 0;
       }
@@ -365,14 +427,7 @@ export class SlowedReverbPlayer {
   pause() {
     if (!this.ctx || !this.graph || !this.playing) return;
     this.anchorOffset = this.getOffset();
-    // stop() dispara `ended` de forma asíncrona: desactivar el handler para
-    // que no mate la reproducción reconstruida por un seek inmediato.
-    this.graph.source.onended = null;
-    try {
-      this.graph.source.stop();
-    } catch {
-      /* ya detenida */
-    }
+    teardownGraph(this.graph);
     this.graph = null;
     this.playing = false;
   }
@@ -380,6 +435,11 @@ export class SlowedReverbPlayer {
   async stop(): Promise<void> {
     this.anchorOffset = 0;
     this.rate = 1;
+    if (this.graph) {
+      teardownGraph(this.graph);
+      this.graph = null;
+    }
+    this.playing = false;
     if (this.ctx?.state === "running") await this.ctx.suspend().catch(() => {});
   }
 
@@ -394,7 +454,7 @@ export class SlowedReverbPlayer {
     const s = this.settings ? { ...this.settings } : null;
     if (resume) this.pause();
     this.anchorOffset = target;
-    if (s) this.play(s);
+    if (s && resume) this.play(s);
   }
 
   /** Posición de lectura actual en segundos FUENTE (0..duration) */

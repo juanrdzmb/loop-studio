@@ -69,55 +69,67 @@ class DattorroReverb extends AudioWorkletProcessor {
 	}
 
 	writeDelay(index, data) {
-		return this._Delays[index][0][this._Delays[index][1]] = data;
+		if (!Number.isFinite(data)) data = 0.0;
+		else if (data > 3.0) data = 3.0;
+		else if (data < -3.0) data = -3.0;
+		return (this._Delays[index][0][this._Delays[index][1]] = data);
 	}
 
 	readDelay(index) {
-		return this._Delays[index][0][this._Delays[index][2]];
+		const v = this._Delays[index][0][this._Delays[index][2]];
+		return Number.isFinite(v) ? v : 0.0;
 	}
 
 	readDelayAt(index, i) {
-		let d = this._Delays[index];
-		return d[0][(d[2] + i)&d[3]];
+		const d = this._Delays[index];
+		const v = d[0][(d[2] + i) & d[3]];
+		return Number.isFinite(v) ? v : 0.0;
 	}
 
 	// cubic interpolation
 	// O. Niemitalo: https://www.musicdsp.org/en/latest/Other/49-cubic-interpollation.html
-	readDelayCAt(index, i) { 
-		let d = this._Delays[index],
-			frac = i-~~i,
-			int  = ~~i + d[2] - 1,
-			mask = d[3];
+	readDelayCAt(index, i) {
+		if (!Number.isFinite(i)) return 0.0;
+		const d = this._Delays[index];
+		const frac = i - Math.floor(i);
+		let int = (Math.floor(i) + d[2] - 1) & d[3];
+		const mask = d[3];
 
-		let x0 = d[0][int++ & mask],
-			x1 = d[0][int++ & mask],
-			x2 = d[0][int++ & mask],
-			x3 = d[0][int   & mask];
+		const x0 = d[0][int++ & mask] || 0.0;
+		const x1 = d[0][int++ & mask] || 0.0;
+		const x2 = d[0][int++ & mask] || 0.0;
+		const x3 = d[0][int & mask] || 0.0;
 
-		let a  = (3*(x1-x2) - x0 + x3) / 2,
-			b  = 2*x2 + x0 - (5*x1+x3) / 2,
-			c  = (x2-x0) / 2;
+		const a = (3 * (x1 - x2) - x0 + x3) * 0.5;
+		const b = 2 * x2 + x0 - (5 * x1 + x3) * 0.5;
+		const c = (x2 - x0) * 0.5;
 
-		return (((a * frac) + b) * frac + c) * frac + x1;
+		const val = ((a * frac + b) * frac + c) * frac + x1;
+		return Number.isFinite(val) ? val : 0.0;
 	}
 
 	// First input will be downmixed to mono if number of channels is not 2
 	// Outputs Stereo.
 	process(inputs, outputs, parameters) {
-		const 	pd   = ~~parameters.preDelay[0]          ,
-				bw   = parameters.bandwidth[0]           ,
-				fi   = parameters.inputDiffusion1[0]     , 
-				si   = parameters.inputDiffusion2[0]     ,
-				dc   = parameters.decay[0]               ,
-				ft   = parameters.decayDiffusion1[0]     ,
-				st   = parameters.decayDiffusion2[0]     ,
-				dp   = 1 - parameters.damping[0]         ,
-				ex   = parameters.excursionRate[0]   / sampleRate        ,
-				ed 	 = parameters.excursionDepth[0]  * sampleRate / 1000 ,
-				we   = parameters.wet[0]             * 0.6               , // lo & ro both mult. by 0.6 anyways
-				dr   = parameters.dry[0]                 ;
+		const rawPd = ~~parameters.preDelay[0];
+		const pd = Math.max(0, Math.min(this._pDLength - 129, rawPd));
+		const bw = Math.max(0, Math.min(1, parameters.bandwidth[0]));
+		const fi = Math.max(0, Math.min(1, parameters.inputDiffusion1[0]));
+		const si = Math.max(0, Math.min(1, parameters.inputDiffusion2[0]));
+		// Limit decay to 0.88 to prevent infinite resonance / self-oscillation
+		const dc = Math.max(0, Math.min(0.88, parameters.decay[0]));
+		const ft = Math.max(0, Math.min(0.95, parameters.decayDiffusion1[0]));
+		const st = Math.max(0, Math.min(0.95, parameters.decayDiffusion2[0]));
+		const dp = 1 - Math.max(0.001, Math.min(0.999, parameters.damping[0]));
+		const ex = (parameters.excursionRate[0] || 0.5) / sampleRate;
+		const ed = ((parameters.excursionDepth[0] || 0.7) * sampleRate) / 1000;
+		const we = (parameters.wet[0] || 0.3) * 0.6;
+		const dr = parameters.dry[0] ?? 0.6;
 
-		// write to predelay and dry output
+		// Flush denormals
+		if (Math.abs(this._lp1) < 1e-15) this._lp1 = 0.0;
+		if (Math.abs(this._lp2) < 1e-15) this._lp2 = 0.0;
+		if (Math.abs(this._lp3) < 1e-15) this._lp3 = 0.0;
 		if (inputs[0].length == 2) {
 			for (let i = 127; i >= 0; i--) {
 				this._preDelay[this._pDWrite+i] = (inputs[0][0][i] + inputs[0][1][i]) * 0.5;

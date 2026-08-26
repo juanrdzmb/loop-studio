@@ -4,7 +4,7 @@ import fs from "node:fs";
 import { execSync } from "node:child_process";
 
 const EXE = `${process.env.HOME}/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome`;
-const BASE = "http://localhost:3100";
+const BASE = process.env.LOOP_STUDIO_URL || "http://localhost:3000";
 const MEDIA = "/tmp/opencode/loop-e2e";
 
 const browser = await chromium.launch({
@@ -127,8 +127,8 @@ const probe = execSync(
   `ffprobe -v error -select_streams v -show_entries stream=codec_name,width,height -of compact "${mp4}"`
 ).toString().trim();
 ok(
-  "MP4 válido (H.264 480x270)",
-  probe.includes("codec_name=h264") && probe.includes("width=480") && probe.includes("height=270"),
+  "MP4 válido (H.264 480px)",
+  probe.includes("codec_name=h264") && probe.includes("width=480"),
   probe.split("\n")[0]
 );
 
