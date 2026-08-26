@@ -50,14 +50,14 @@ export const REVERB_PRESETS: Record<string, { label: string; settings: ReverbSet
     label: "Vaporwave",
     settings: {
       speed: 0.7, reverbMix: 0.5, decay: 3.2, lowpassHz: 8500, volume: 1,
-      crackle: 0.12, width: 1.4, bassDb: 2,
+      width: 1.4, bassDb: 2,
     },
   },
   lofi: {
-    label: "Lo-Fi vinilo",
+    label: "Lo-Fi cálido",
     settings: {
       speed: 0.85, reverbMix: 0.28, decay: 1.6, lowpassHz: 6000, volume: 1,
-      crackle: 0.4, width: 0.9, bassDb: 3,
+      width: 0.9, bassDb: 3,
     },
   },
 };
@@ -160,7 +160,7 @@ export function teardownGraph(graph: Graph | null): void {
   try { graph.panner.disconnect(); } catch {}
 }
 
-/** Buffer de 3 s con hiss tenue + pops aleatorios (bucle de vinilo) */
+/** Buffer de 3 s con textura sutil de vinilo (sin ruido blanco áspero) */
 const crackleCache = new WeakMap<BaseAudioContext, AudioBuffer>();
 function getCrackleBuffer(ctx: BaseAudioContext): AudioBuffer {
   const hit = crackleCache.get(ctx);
@@ -170,20 +170,24 @@ function getCrackleBuffer(ctx: BaseAudioContext): AudioBuffer {
   const buf = ctx.createBuffer(2, len, sr);
   for (let ch = 0; ch < 2; ch++) {
     const d = buf.getChannelData(ch);
-    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * 0.012; // hiss
-    for (let p = 0; p < 45; p++) {
-      const pos = Math.floor(Math.random() * len);
-      const amp = 0.25 + Math.random() * 0.75;
-      const decay = 30 + Math.floor(Math.random() * 80);
-      for (let j = 0; j < decay && pos + j < len; j++) {
-        d[pos + j] += (Math.random() * 2 - 1) * amp * (1 - j / decay); // pop
+    let s = 0.0;
+    for (let i = 0; i < len; i++) {
+      // Filtro pasa-bajos muy suave para evitar estática/hiss agudo
+      s = s * 0.96 + (Math.random() * 2 - 1) * 0.0012;
+      d[i] = s;
+    }
+    // Pops de vinilo sutiles y cálidos
+    for (let p = 0; p < 18; p++) {
+      const pos = Math.floor(Math.random() * (len - 120));
+      const amp = (0.05 + Math.random() * 0.12) * (Math.random() < 0.5 ? 1 : -1);
+      for (let j = 0; j < 60; j++) {
+        d[pos + j] += amp * Math.sin((j / 60) * Math.PI) * Math.exp(-j / 20);
       }
     }
   }
   crackleCache.set(ctx, buf);
   return buf;
 }
-
 export function buildGraph(
   ctx: BaseAudioContext,
   buffer: AudioBuffer,
