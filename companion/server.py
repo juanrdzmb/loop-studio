@@ -14,11 +14,32 @@ import sys
 import tempfile
 import contextlib
 import threading
+import time
 import uuid
+from pathlib import Path
 
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
+
+
+def _studio_out() -> Path:
+    raw = os.environ.get("LOOP_STUDIO_OUT")
+    if raw:
+        return Path(raw).expanduser()
+    return Path.home() / "Música" / "Dark" / "Youtube" / "export"
+
+
+def _archive_render(src: str, *, shorts: bool, preview: bool) -> str | None:
+    if preview or not src or not os.path.isfile(src):
+        return None
+    dest_dir = _studio_out() / ("shorts" if shorts else "16x9")
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y-%m-%d_%H%M%S")
+    name = f"{stamp}_{'9x16' if shorts else '16x9'}.mp4"
+    dest = dest_dir / name
+    shutil.copy2(src, dest)
+    return str(dest)
 
 
 BASE = os.path.dirname(os.path.abspath(__file__))
@@ -536,6 +557,7 @@ def _execute_render(v_path: str, a_path: str, p: dict, on_progress=None) -> str:
             on_progress=mapped if on_progress else None,
             aspect=aspect,
         )
+        _archive_render(out_path, shorts=aspect in ("shorts", "9:16", "vertical"), preview=preview)
         return out_path
     except Exception:
         try:
@@ -648,4 +670,23 @@ def render_file(jid: str):
     if row.get("error"):
         return JSONResponse({"error": row["error"]}, 500)
     return _file_response(row["path"])
+
+
+@app.post("/export/image")
+async def export_image(
+    kind: str = Form("thumbs"),
+    file: UploadFile = File(...),
+):
+    folder = "covers" if kind in ("covers", "album", "cover") else "thumbs"
+    dest_dir = _studio_out() / folder
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    ext = os.path.splitext(file.filename or "img.jpg")[1] or ".jpg"
+    if ext.lower() not in {".jpg", ".jpeg", ".png", ".webp"}:
+        ext = ".jpg"
+    name = f"{time.strftime('%Y-%m-%d_%H%M%S')}{ext}"
+    dest = dest_dir / name
+    data = await file.read()
+    dest.write_bytes(data)
+    return {"ok": True, "path": str(dest)}
+
 

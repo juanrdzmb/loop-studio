@@ -14,14 +14,15 @@ import {
   listOverlays,
   planLayers,
   renderLoop,
+  saveExportImage,
   youtubePack,
-  type RenderProgress,
   type CastMember,
   type CharacterGuess,
   type CompanionHealth,
   type LayerPlan,
   type LoopCandidate,
   type OverlayOption,
+  type RenderProgress,
   type YoutubePack,
 } from "@/lib/companion";
 
@@ -1237,6 +1238,9 @@ function ThumbnailPicker({
       ctx.fillText(caption, 40, 680);
     }
     setPreview(c.toDataURL("image/jpeg", 0.92));
+    c.toBlob((b) => {
+      if (b) void saveExportImage(b, "thumbs");
+    }, "image/jpeg", 0.92);
   }, [caption, drawCover]);
 
   const grabAlbum = useCallback(() => {
@@ -1256,7 +1260,11 @@ function ThumbnailPicker({
       }
     }
     setAlbum(c.toDataURL("image/jpeg", 0.92));
+    c.toBlob((b) => {
+      if (b) void saveExportImage(b, "covers");
+    }, "image/jpeg", 0.92);
   }, [caption, drawCover]);
+
 
   return (
     <div className="space-y-2 pt-2 border-t border-zinc-800">

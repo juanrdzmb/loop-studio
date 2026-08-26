@@ -288,3 +288,16 @@ export async function youtubePack(opts: {
   if (!res.ok) throw new Error(data.error || "Error creando pack de YouTube");
   return data as YoutubePack;
 }
+
+export async function saveExportImage(blob: Blob, kind: "thumbs" | "covers"): Promise<string | null> {
+  try {
+    const fd = new FormData();
+    fd.append("kind", kind);
+    fd.append("file", blob, kind === "covers" ? "cover.jpg" : "thumb.jpg");
+    const res = await fetch(`${COMPANION_URL}/export/image`, { method: "POST", body: fd });
+    const data = await res.json();
+    return data.path || null;
+  } catch {
+    return null;
+  }
+}
