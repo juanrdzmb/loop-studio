@@ -9,6 +9,7 @@ export interface LoopCandidate {
   end: number;
   duration: number;
   score: number;
+  label?: string;
 }
 
 export interface CompanionHealth {

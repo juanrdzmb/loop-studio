@@ -364,8 +364,17 @@ async def analyze_video(
                 "duration": round(float(l["duration"]), 3),
                 "score": _seam_pct(smalls, start, end, fps, stride),
             })
-        longer = [c for c in cands if c["duration"] >= 1.2]
-        cands = _dedup_loops(longer or cands)[:8]
+        full_cand = {
+            "start": 0.0,
+            "end": round(duration, 3),
+            "duration": round(duration, 3),
+            "score": 100.0,
+            "label": "Full clip (seamless crossfade)",
+        }
+        longer = [c for c in cands if c["duration"] >= 3.0]
+        if not longer:
+            longer = [c for c in cands if c["duration"] >= 1.2]
+        cands = [full_cand] + _dedup_loops(longer or cands)[:7]
         return {
             "candidates": cands,
             "duration": round(duration, 3),
@@ -380,17 +389,20 @@ async def analyze_video(
 def _loop_segment(v_path: str, v_start: float, v_end: float, seg_path: str) -> float:
     """Recorta el loop de video y funde final→inicio para que al repetir no se note el corte."""
     v_dur = round(v_end - v_start, 6)
-    if v_dur > 1.6:
-        f = min(0.7, v_dur / 4)
+    if v_dur > 1.2:
+        if v_dur >= 3.0:
+            f = min(2.0, max(0.5, v_dur / 3.0))
+        else:
+            f = max(0.2, v_dur / 4.0)
         vf = (
-            f"split[m][t];"
-            f"[t]trim=start={v_dur - f},setpts=PTS-STARTPTS[t1];"
-            f"[m]trim=end={v_dur - f},setpts=PTS-STARTPTS[m1];"
-            f"[m1][t1]xfade=transition=fade:duration={f}:offset={max(0.05, v_dur - 2 * f)}[out]"
+            f"split[h_full][t_full];"
+            f"[t_full]trim=start={v_dur - f:.4f}:end={v_dur:.4f},setpts=PTS-STARTPTS[t];"
+            f"[h_full]trim=start=0:end={v_dur - f:.4f},setpts=PTS-STARTPTS[h];"
+            f"[t][h]xfade=transition=fade:duration={f:.4f}:offset=0,format=yuv420p[out]"
         )
         seg_dur = v_dur - f
     else:
-        vf = "setpts=PTS-STARTPTS[out]"
+        vf = "setpts=PTS-STARTPTS,format=yuv420p[out]"
         seg_dur = v_dur
     _run([
         "ffmpeg", "-y", "-v", "error",

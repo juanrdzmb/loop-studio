@@ -49,57 +49,95 @@ def analyze_rms_valleys(
     sfx_ids: list[str] | None = None,
 ) -> list[dict]:
     """
-    Parte el ciclo de canción en bloques y elige el instante de menor RMS
-    de cada bloque (evitando bordes). Esos puntos se teselan al renderizar
-    videos más largos que la canción.
+    Detecta momentos de atenuación real/breakdown de la música calculando el perfil
+    RMS suavizado en dB respecto a la mediana del track (P50). Si la energía cae al
+    menos 4.0 dB por debajo de P50, se alinea con el beat/onset más cercano y se
+    espacian con un cooldown mínimo para evitar saturación de efectos.
     """
     import librosa
+    from scipy.signal import find_peaks
 
     dur = max(0.5, end - start)
     y, sr = librosa.load(audio_path, sr=22050, mono=True, offset=start, duration=dur)
     hop = 512
     rms = librosa.feature.rms(y=y, hop_length=hop, frame_length=2048)[0]
+    if len(rms) == 0:
+        return []
+
+    rms_db = librosa.amplitude_to_db(rms, ref=np.max)
     times = librosa.frames_to_time(np.arange(len(rms)), sr=sr, hop_length=hop)
     onsets = librosa.onset.onset_detect(y=y, sr=sr, hop_length=hop, units="time")
 
-    if block_sec is None:
-        block_sec = 45.0 if dur < 240 else (60.0 if dur < 600 else 90.0)
-    block_sec = max(30.0, min(90.0, block_sec))
+    # Suavizado sobre ventana de ~1.5s
+    win_size = max(5, int(round(1.5 * sr / hop)))
+    if win_size % 2 == 0:
+        win_size += 1
+    window = np.hanning(win_size)
+    window /= window.sum()
+    smoothed_db = np.convolve(rms_db, window, mode="same")
 
-    hits: list[dict] = []
+    p50 = float(np.median(smoothed_db))
+    thresh = p50 - 4.0
+
     ids = [sid for sid in (sfx_ids or []) if sfx_path(sid)]
     if not ids:
-        ids = [sid for sid in ("thunder", "sword", "katana") if sfx_path(sid)]
-    if not ids or len(rms) == 0:
-        return hits
+        ids = [sid for sid in ("bamboo", "cave", "sword", "katana") if sfx_path(sid)]
+    if not ids:
+        return []
 
-    t = 0.0
-    idx = 0
-    while t < dur - 8 and len(hits) < max_hits:
-        t1 = min(dur, t + block_sec)
-        mask = (times >= t + 4) & (times <= t1 - 3)
-        if not np.any(mask):
-            mask = (times >= t) & (times < t1)
-        if np.any(mask):
-            local = np.where(mask)[0]
-            best = local[int(np.argmin(rms[local]))]
-            t_best = float(times[best])
-            kind = "valle RMS"
-            if len(onsets):
-                j = int(np.argmin(np.abs(onsets - t_best)))
-                if abs(float(onsets[j]) - t_best) <= 0.4:
-                    t_best = float(onsets[j])
-                    kind = "valle→onset"
-            sid = ids[idx % len(ids)]
-            hits.append({
-                "id": sid,
-                "label": SFX[sid]["label"],
-                "time": round(t_best, 2),
-                "gain": SFX[sid]["gain"],
-                "reason": f"{kind} ({t:.0f}–{t1:.0f}s)",
-            })
-            idx += 1
-        t = t1
+    if dur < 30.0:
+        max_allowed_hits = 1
+        min_gap_sec = 15.0
+    elif dur < 60.0:
+        max_allowed_hits = 2
+        min_gap_sec = 25.0
+    elif dur < 180.0:
+        max_allowed_hits = 4
+        min_gap_sec = 35.0
+    else:
+        max_allowed_hits = min(max_hits, max(2, int(dur // 45)))
+        min_gap_sec = 45.0
+
+    dist_frames = max(1, int(round(min_gap_sec * sr / hop)))
+    valid_mask = (
+        (times >= 4.0) & (times <= dur - 4.0)
+        if dur >= 12.0
+        else (times >= 1.0) & (times <= dur - 1.0)
+    )
+
+    # Buscamos valles en smoothed_db (picos de -smoothed_db con altura >= -thresh)
+    peaks, _ = find_peaks(
+        -smoothed_db,
+        height=-thresh,
+        distance=dist_frames,
+        prominence=1.2,
+    )
+    valid_peaks = [p for p in peaks if valid_mask[p]]
+    if not valid_peaks:
+        return []
+
+    chosen_peaks = valid_peaks[:max_allowed_hits]
+    hits: list[dict] = []
+    for idx, p in enumerate(chosen_peaks):
+        t_best = float(times[p])
+        val_db = float(smoothed_db[p])
+        diff_db = round(p50 - val_db, 1)
+
+        kind = f"Breakdown -{diff_db}dB"
+        if len(onsets):
+            j = int(np.argmin(np.abs(onsets - t_best)))
+            if abs(float(onsets[j]) - t_best) <= 0.4:
+                t_best = float(onsets[j])
+                kind = f"Breakdown -{diff_db}dB (onset)"
+
+        sid = ids[idx % len(ids)]
+        hits.append({
+            "id": sid,
+            "label": SFX[sid]["label"],
+            "time": round(t_best, 2),
+            "gain": SFX[sid]["gain"],
+            "reason": kind,
+        })
     return hits
 
 
@@ -155,7 +193,7 @@ def build_plan(
         overlay_id = first_existing_overlay()
 
     palette = pick_sfx_palette(look) if look else [
-        sid for sid in ("thunder", "sword", "katana") if sfx_path(sid)
+        sid for sid in ("bamboo", "cave", "sword", "katana") if sfx_path(sid)
     ]
 
     ambience_id = None
@@ -427,11 +465,11 @@ def render_composed(
         mix.append(f"[sfx{i}]")
     n = len(mix)
     if n == 1:
-        af.append("[music]anull[outa]")
+        af.append("[music]loudnorm=I=-14:TP=-1.0:LRA=11,alimiter=limit=0.98[outa]")
     else:
         af.append(
-            f"{''.join(mix)}amix=inputs={n}:duration=first:dropout_transition=0,"
-            f"alimiter=limit=0.95[outa]"
+            f"{''.join(mix)}amix=inputs={n}:duration=first:dropout_transition=0:normalize=0,"
+            f"loudnorm=I=-14:TP=-1.0:LRA=11,alimiter=limit=0.98[outa]"
         )
 
     fc = ";".join(vf + af)

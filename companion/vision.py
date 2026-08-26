@@ -141,12 +141,16 @@ def pick_sfx_palette(look: dict) -> list[str]:
     oid = pick_overlay(look)
     warm = float(look.get("warm") or 0)
     motion = float(look.get("motion") or 0)
-    if oid in ("rain", "fog"):
-        wanted = ["thunder"]
+    brightness = float(look.get("brightness") or 50)
+    if oid == "rain":
+        wanted = ["thunder", "cave"]
     elif oid in ("fire", "spark") or (warm > 15 and motion > 18):
-        wanted = ["katana", "sword", "thunder"]
+        wanted = ["katana", "sword", "bamboo"]
+    elif oid in ("fog", "smoke") or brightness < 35:
+        wanted = ["bamboo", "cave", "sword"]
     elif oid == "particles":
-        wanted = ["sword", "katana", "thunder"]
+        wanted = ["bamboo", "cave", "sword"]
     else:
-        wanted = ["thunder"]
-    return [sid for sid in wanted if sfx_path(sid)]
+        wanted = ["bamboo", "cave", "sword", "katana"]
+    available = [sid for sid in wanted if sfx_path(sid)]
+    return available or [sid for sid in ("bamboo", "cave", "sword", "katana", "thunder") if sfx_path(sid)]

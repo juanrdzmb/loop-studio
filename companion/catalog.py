@@ -71,9 +71,11 @@ AMBIENCE: dict[str, dict] = {
 
 # Live in audio_ambience/ (audio_sfx/ is empty)
 SFX: dict[str, dict] = {
-    "thunder": {"file": "thunder.mp3", "label": "Thunder", "gain": 0.42},
-    "sword": {"file": "sword.mp3", "label": "Sword", "gain": 0.32},
-    "katana": {"file": "katana.mp3", "label": "Katana", "gain": 0.32},
+    "thunder": {"file": "thunder.mp3", "label": "Thunder", "gain": 0.32},
+    "katana": {"file": "katana.mp3", "label": "Katana", "gain": 0.28},
+    "sword": {"file": "sword.mp3", "label": "Sword", "gain": 0.28},
+    "bamboo": {"file": "bamboo.mp3", "label": "Bamboo", "gain": 0.30},
+    "cave": {"file": "drop cave .mp3", "label": "Cave Drop", "gain": 0.32},
 }
 
 # Rotación para videos largos (sin corte brusco: el render funde entre capítulos)

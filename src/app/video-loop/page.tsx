@@ -48,9 +48,9 @@ export default function VideoLoopPage() {
   const [manualTrim, setManualTrim] = useState({ start: 0, end: 0 });
   const [previewIdx, setPreviewIdx] = useState<number | null>(null);
   const [useManualVideo, setUseManualVideo] = useState(false);
+  const [videoMode, setVideoMode] = useState<"full" | "loops" | "trim">("full");
   const [analyzingVideo, setAnalyzingVideo] = useState(false);
   const [windowSec, setWindowSec] = useState(120);
-
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [audioBuffer, setAudioBuffer] = useState<AudioBuffer | null>(null);
   const [audioDuration, setAudioDuration] = useState(0);
@@ -117,6 +117,8 @@ export default function VideoLoopPage() {
     setVideoFile(f);
     setVideoCandidates([]);
     setVideoSel(null);
+    setVideoMode("full");
+    setUseManualVideo(false);
     setVideoUrl((prev) => {
       if (prev) URL.revokeObjectURL(prev);
       return URL.createObjectURL(f);
@@ -126,7 +128,14 @@ export default function VideoLoopPage() {
     v.src = URL.createObjectURL(f);
     v.onloadedmetadata = () => {
       setVideoDuration(v.duration);
-      setManualTrim({ start: 0, end: Math.min(v.duration, 5) });
+      setManualTrim({ start: 0, end: v.duration });
+      setVideoSel({
+        start: 0,
+        end: v.duration,
+        duration: v.duration,
+        score: 100,
+        label: "Full clip (seamless crossfade)",
+      });
       URL.revokeObjectURL(v.src);
     };
   }, []);
@@ -160,6 +169,7 @@ export default function VideoLoopPage() {
     try {
       const cands = await analyzeVideo(videoFile, { length: 0, downsample: 3, windowSec });
       setVideoCandidates(cands);
+      setVideoMode("loops");
       setUseManualVideo(false);
       if (cands.length > 0) setVideoSel(cands[0]);
     } catch (e) {
@@ -168,6 +178,35 @@ export default function VideoLoopPage() {
       setAnalyzingVideo(false);
     }
   }, [videoFile, analyzingVideo, windowSec]);
+
+  const switchVideoMode = useCallback(
+    (mode: "full" | "loops" | "trim") => {
+      setVideoMode(mode);
+      setPlan(null);
+      setPreviewUrl(null);
+      if (mode === "full") {
+        setUseManualVideo(false);
+        if (videoDuration > 0) {
+          setVideoSel({
+            start: 0,
+            end: videoDuration,
+            duration: videoDuration,
+            score: 100,
+            label: "Full clip (seamless crossfade)",
+          });
+        }
+      } else if (mode === "loops") {
+        setUseManualVideo(false);
+        if (videoCandidates.length > 0) {
+          setVideoSel(videoCandidates[0]);
+        }
+      } else if (mode === "trim") {
+        setUseManualVideo(true);
+        setVideoSel(null);
+      }
+    },
+    [videoDuration, videoCandidates]
+  );
 
   const runAudioAnalysis = useCallback(async () => {
     if (!audioFile || analyzingAudio) return;
@@ -515,104 +554,126 @@ export default function VideoLoopPage() {
                 ✕
               </button>
             </div>
-            <div className="flex flex-wrap items-end gap-3">
-              <label className="text-sm">
-                Analyze first
-                <div className="flex items-center gap-1 mt-1">
-                  <input
-                    type="number"
-                    min={0}
-                    max={3600}
-                    value={windowSec}
-                    onChange={(e) => setWindowSec(Math.max(0, parseInt(e.target.value) || 0))}
-                    className="w-20 bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5"
-                  />
-                  <span className="text-zinc-400 text-xs">s · 0 = all</span>
-                </div>
-              </label>
-              <button
-                onClick={runVideoAnalysis}
-                disabled={!companionUp || analyzingVideo}
-                className="px-4 py-2 rounded-lg text-sm font-semibold bg-cyan-600 hover:bg-cyan-500 disabled:opacity-40"
-              >
-                {analyzingVideo ? "Finding the best cut…" : "Find seamless loops"}
-              </button>
-              <button
-                onClick={() => {
-                  setUseManualVideo(true);
-                  setVideoSel(null);
-                }}
-                className={`px-4 py-2 rounded-lg text-sm border ${
-                  useManualVideo
-                    ? "border-cyan-500 bg-cyan-500/15"
-                    : "border-zinc-700 hover:border-zinc-500"
-                }`}
-              >
-                Manual trim
-              </button>
+            <div className="flex flex-wrap gap-2">
+              {(
+                [
+                  ["full", "Full video (seamless crossfade)"],
+                  ["loops", "A detected video loop"],
+                  ["trim", "Trim by hand"],
+                ] as const
+              ).map(([mode, label]) => (
+                <button
+                  key={mode}
+                  onClick={() => switchVideoMode(mode)}
+                  className={`px-3 py-1.5 rounded-lg text-sm border ${
+                    videoMode === mode
+                      ? "border-cyan-500 bg-cyan-500/15"
+                      : "border-zinc-700 hover:border-zinc-500"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
             </div>
 
-            {videoCandidates.length > 0 && !useManualVideo && (
-              <div className="space-y-2">
-                <p className="text-xs text-zinc-400">
-                  Hover to preview · click to pick. Export fades end into start so the cut
-                  disappears.
-                </p>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                  {videoCandidates.map((c, i) => (
-                    <button
-                      key={i}
-                      onClick={() => setVideoSel(c)}
-                      className={`rounded-lg text-left text-sm border overflow-hidden ${
-                        videoSel === c
-                          ? "border-cyan-500 bg-cyan-500/15"
-                          : "border-zinc-700 hover:border-zinc-500 bg-zinc-800/50"
-                      }`}
-                    >
-                      {videoUrl && (
-                        <video
-                          src={videoUrl}
-                          muted
-                          loop
-                          playsInline
-                          preload="metadata"
-                          className="w-full aspect-video object-cover bg-black"
-                          onLoadedMetadata={(e) => {
-                            e.currentTarget.currentTime = c.start;
-                          }}
-                          onMouseEnter={(e) => {
-                            setPreviewIdx(i);
-                            const v = e.currentTarget;
-                            v.currentTime = c.start;
-                            void v.play().catch(() => {});
-                          }}
-                          onMouseLeave={(e) => {
-                            setPreviewIdx(null);
-                            e.currentTarget.pause();
-                          }}
-                          onTimeUpdate={(e) => {
-                            if (previewIdx !== i) return;
-                            const v = e.currentTarget;
-                            if (v.currentTime >= c.end || v.currentTime < c.start - 0.5) {
-                              v.currentTime = c.start;
-                            }
-                          }}
-                        />
-                      )}
-                      <div className="px-2 py-1.5">
-                        <div className="font-medium text-xs">
-                          {fmt(c.start)} → {fmt(c.end)}{" "}
-                          <span className="text-zinc-400">({c.duration.toFixed(1)}s)</span>
-                        </div>
-                        <div className="text-xs text-cyan-400">Quality {c.score.toFixed(0)}%</div>
-                      </div>
-                    </button>
-                  ))}
-                </div>
+            {videoMode === "full" && (
+              <div className="text-xs bg-zinc-950/60 border border-zinc-800 rounded-lg p-3 text-zinc-300">
+                Full clip ({videoDuration.toFixed(1)}s) will repeat with a seamless 2-second crossfade into the start (0 jump cuts).
               </div>
             )}
 
-            {useManualVideo && (
+            {videoMode === "loops" && (
+              <div className="space-y-3">
+                <div className="flex flex-wrap items-end gap-3">
+                  <label className="text-sm">
+                    Analyze first
+                    <div className="flex items-center gap-1 mt-1">
+                      <input
+                        type="number"
+                        min={0}
+                        max={3600}
+                        value={windowSec}
+                        onChange={(e) => setWindowSec(Math.max(0, parseInt(e.target.value) || 0))}
+                        className="w-20 bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5"
+                      />
+                      <span className="text-zinc-400 text-xs">s · 0 = all</span>
+                    </div>
+                  </label>
+                  <button
+                    onClick={runVideoAnalysis}
+                    disabled={!companionUp || analyzingVideo}
+                    className="px-4 py-2 rounded-lg text-sm font-semibold bg-cyan-600 hover:bg-cyan-500 disabled:opacity-40"
+                  >
+                    {analyzingVideo ? "Finding the best cut…" : "Find seamless loops"}
+                  </button>
+                </div>
+
+                {videoCandidates.length > 0 && (
+                  <div className="space-y-2">
+                    <p className="text-xs text-zinc-400">
+                      Hover to preview · click to pick. Export fades end into start so the cut
+                      disappears.
+                    </p>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      {videoCandidates.map((c, i) => (
+                        <button
+                          key={i}
+                          onClick={() => setVideoSel(c)}
+                          className={`rounded-lg text-left text-sm border overflow-hidden ${
+                            videoSel === c
+                              ? "border-cyan-500 bg-cyan-500/15"
+                              : "border-zinc-700 hover:border-zinc-500 bg-zinc-800/50"
+                          }`}
+                        >
+                          {videoUrl && (
+                            <video
+                              src={videoUrl}
+                              muted
+                              loop
+                              playsInline
+                              preload="metadata"
+                              className="w-full aspect-video object-cover bg-black"
+                              onLoadedMetadata={(e) => {
+                                e.currentTarget.currentTime = c.start;
+                              }}
+                              onMouseEnter={(e) => {
+                                setPreviewIdx(i);
+                                const v = e.currentTarget;
+                                v.currentTime = c.start;
+                                void v.play().catch(() => {});
+                              }}
+                              onMouseLeave={(e) => {
+                                setPreviewIdx(null);
+                                e.currentTarget.pause();
+                              }}
+                              onTimeUpdate={(e) => {
+                                if (previewIdx !== i) return;
+                                const v = e.currentTarget;
+                                if (v.currentTime >= c.end || v.currentTime < c.start - 0.5) {
+                                  v.currentTime = c.start;
+                                }
+                              }}
+                            />
+                          )}
+                          <div className="px-2 py-1.5">
+                            <div className="font-medium text-xs">
+                              {c.label ? (
+                                <div className="text-cyan-400 font-semibold mb-0.5 truncate">{c.label}</div>
+                              ) : null}
+                              {fmt(c.start)} → {fmt(c.end)}{" "}
+                              <span className="text-zinc-400">({c.duration.toFixed(1)}s)</span>
+                            </div>
+                            <div className="text-xs text-cyan-400">Quality {c.score.toFixed(0)}%</div>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {videoMode === "trim" && (
               <TrimTimeline
                 duration={videoDuration}
                 start={manualTrim.start}
@@ -872,7 +933,7 @@ export default function VideoLoopPage() {
                   SFX:{" "}
                   {plan.sfx
                     .slice(0, 6)
-                    .map((s) => `${s.label} @ ${fmt(s.time)}`)
+                    .map((s) => `${s.label} @ ${fmt(s.time)}${s.reason ? ` (${s.reason})` : ""}`)
                     .join(" · ")}
                   {plan.sfx.length > 6 ? "…" : ""}
                 </div>

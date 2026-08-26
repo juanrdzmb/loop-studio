@@ -25,12 +25,15 @@ await page.waitForSelector("text=Companion online", { timeout: 10000 });
 ok("Companion online badge", true);
 
 await page.setInputFiles("input[type=file]", `${MEDIA}/sample.mp4`);
+await page.waitForSelector("text=Full clip", { timeout: 10000 });
+ok("Video loaded (full seamless crossfade default)", true);
+
+await page.click('button:has-text("A detected video loop")');
 await page.click('button:has-text("Find seamless loops")');
 await page.waitForSelector("text=Quality", { timeout: 120000 });
 const vidCands = await page.locator("button:has-text('Quality')").count();
 ok("Video candidates", vidCands > 0, `(${vidCands})`);
 await page.locator("button:has-text('Quality')").first().click();
-
 await page.setInputFiles("input[type=file]", `${MEDIA}/testsong.mp3`);
 await page.waitForSelector("text=Full song", { timeout: 20000 });
 ok("Song loaded (full song)", true);

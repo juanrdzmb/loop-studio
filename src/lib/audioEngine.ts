@@ -522,12 +522,22 @@ export function audioBufferToWav(buffer: AudioBuffer): Blob {
   view.setUint32(40, dataSize, true);
 
   const channels: Float32Array[] = [];
-  for (let c = 0; c < numCh; c++) channels.push(buffer.getChannelData(c));
+  let maxPeak = 0;
+  for (let c = 0; c < numCh; c++) {
+    const data = buffer.getChannelData(c);
+    channels.push(data);
+    for (let i = 0; i < len; i++) {
+      const abs = Math.abs(data[i]);
+      if (abs > maxPeak) maxPeak = abs;
+    }
+  }
+
+  const gain = maxPeak > 0 && maxPeak < 0.95 ? 0.95 / maxPeak : 1;
 
   let off = 44;
   for (let i = 0; i < len; i++) {
     for (let c = 0; c < numCh; c++) {
-      let v = channels[c][i];
+      let v = channels[c][i] * gain;
       v = v < -1 ? -1 : v > 1 ? 1 : v;
       view.setInt16(off, v < 0 ? v * 0x8000 : v * 0x7fff, true);
       off += 2;
