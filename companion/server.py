@@ -149,6 +149,7 @@ async def identify_character_ep(
 async def youtube_pack_ep(
     character: str = Form("guts"),
     song: str = Form(""),
+    artist: str = Form(""),
     minutes: float = Form(1.0),
     atmosphere: str = Form(""),
 ):
@@ -156,6 +157,7 @@ async def youtube_pack_ep(
     return build_youtube_pack(
         character,
         song=song or None,
+        artist=artist or None,
         minutes=max(0.1, minutes),
         atmosphere=atmosphere or None,
     )

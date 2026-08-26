@@ -273,12 +273,14 @@ export async function identifyCharacter(
 export async function youtubePack(opts: {
   character: string;
   song?: string;
+  artist?: string;
   minutes: number;
   atmosphere?: string;
 }): Promise<YoutubePack> {
   const fd = new FormData();
   fd.append("character", opts.character);
   if (opts.song) fd.append("song", opts.song);
+  if (opts.artist) fd.append("artist", opts.artist);
   fd.append("minutes", String(opts.minutes));
   if (opts.atmosphere) fd.append("atmosphere", opts.atmosphere);
   const res = await fetch(`${COMPANION_URL}/youtube/pack`, { method: "POST", body: fd });

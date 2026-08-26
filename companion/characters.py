@@ -387,6 +387,7 @@ def build_youtube_pack(
     character_id: str,
     *,
     song: str | None = None,
+    artist: str | None = None,
     minutes: float = 1.0,
     atmosphere: str | None = None,
 ) -> dict:
@@ -394,7 +395,9 @@ def build_youtube_pack(
     meta = CHARACTERS[cid]
     hook = meta["hooks"][0]
     song_l = _song_label(song)
+    artist_l = (artist or "").strip() or None
     label = song_l or meta["name"]
+    by = f" by {artist_l}" if artist_l else ""
 
     if song_l:
         title = f"{song_l} (Slowed + Reverb) | {hook}"
@@ -408,21 +411,31 @@ def build_youtube_pack(
     blurb = _blurb(cid)
 
     first = (
-        f"{label} (slowed + reverb) for late nights, study, and sleep. "
-        f"{meta['series']} · {meta['name']} aesthetic loop."
+        f"This is a slowed, reverbed, and looped version of {label}{by} — "
+        f"perfect for late-night drives, lost thoughts, and cinematic nostalgia. "
+        f"Let this version carry you into a dream you've almost forgotten."
     )
     tags = list(meta["tags"])
+    extra = []
     if song_l:
-        tags = [song_l.lower(), *tags]
-    hashes = ["#slowedandreverb", "#animeaesthetic", "#lofi"]
+        extra.append(song_l.lower())
+        extra.append(f"{song_l.lower()} slowed")
+    if artist_l:
+        extra.append(artist_l.lower())
+        extra.append(f"{artist_l.lower()} slowed")
+    tags = extra + tags
+    hashes = ["#slowedandreverb", "#animeaesthetic", "#lofi", "#cinematicmusic", "#nightcore"]
+    hashes = hashes[:3]
     for h in meta["hashtags"]:
         if h not in hashes and len(hashes) < 5:
             hashes.append(h)
 
+    credit = f"Music: {label}{by}\n" if song_l else ""
     desc = (
         f"{first}\n\n"
         f"0:00 {label} (Slowed + Reverb)\n\n"
         f"{blurb}\n\n"
+        f"{credit}"
         f"{dur} seamless loop"
         f"{f' · {mood} atmosphere' if mood else ''}.\n\n"
         f"Silent Vigil Music\n"
@@ -439,10 +452,11 @@ def build_youtube_pack(
     if len(shorts_title) > 55:
         shorts_title = shorts_title[:54].rsplit(" ", 1)[0]
     shorts_desc = (
-        f"{label} slowed + reverb · {meta['name']} · {meta['series']}\n"
+        f"{label}{by} slowed + reverb · {meta['name']}\n"
         f"full loop on the channel\n\n"
         f"{' '.join(shorts_hashes)}"
     )
+
 
     return {
         "character": cid,

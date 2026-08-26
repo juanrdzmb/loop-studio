@@ -57,6 +57,8 @@ export default function VideoLoopPage() {
   const [audioSel, setAudioSel] = useState<LoopCandidate | null>(null);
   const [targetMin, setTargetMin] = useState(1);
   const [shortsSec, setShortsSec] = useState(25);
+  const [songTitle, setSongTitle] = useState("");
+  const [songArtist, setSongArtist] = useState("");
   const [analyzingAudio, setAnalyzingAudio] = useState(false);
   const [widened, setWidened] = useState(false);
   const [audioMode, setAudioMode] = useState<"loops" | "trim" | "full">("full");
@@ -135,6 +137,7 @@ export default function VideoLoopPage() {
     setPlan(null);
     setAudioFile(f);
     setAudioCandidates([]);
+    setSongTitle(f.name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").trim());
     try {
       const arr = await f.arrayBuffer();
       const ctx = new AudioContext();
@@ -145,7 +148,7 @@ export default function VideoLoopPage() {
       setAudioSel({ start: 0, end: buf.duration, duration: buf.duration, score: 100 });
       setAudioMode("full");
     } catch {
-      setError("No se pudo decodificar el audio");
+      setError("Could not decode the audio");
     }
   }, []);
 
@@ -252,7 +255,8 @@ export default function VideoLoopPage() {
     let cancel = false;
     youtubePack({
       character,
-      song: audioFile?.name,
+      song: songTitle || audioFile?.name,
+      artist: songArtist,
       minutes: targetMin,
       atmosphere,
     })
@@ -265,7 +269,7 @@ export default function VideoLoopPage() {
     return () => {
       cancel = true;
     };
-  }, [character, companionUp, audioFile, targetMin, atmosphere]);
+  }, [character, companionUp, audioFile, songTitle, songArtist, targetMin, atmosphere]);
 
 
   const onRenderProg = useCallback((p: RenderProgress) => {
@@ -935,9 +939,28 @@ export default function VideoLoopPage() {
               </button>
             ))}
           </div>
-
           {yt && (
             <div className="space-y-2 text-sm">
+              <div className="grid grid-cols-2 gap-2">
+                <label className="text-xs text-zinc-400">
+                  Song title
+                  <input
+                    value={songTitle}
+                    onChange={(e) => setSongTitle(e.target.value)}
+                    className="mt-1 w-full bg-zinc-950 border border-zinc-800 rounded px-2 py-1.5 text-sm text-zinc-100"
+                    placeholder="Golden Brown"
+                  />
+                </label>
+                <label className="text-xs text-zinc-400">
+                  Artist
+                  <input
+                    value={songArtist}
+                    onChange={(e) => setSongArtist(e.target.value)}
+                    className="mt-1 w-full bg-zinc-950 border border-zinc-800 rounded px-2 py-1.5 text-sm text-zinc-100"
+                    placeholder="The Stranglers"
+                  />
+                </label>
+              </div>
               <FieldCopy label="Title" value={yt.title} copied={copied} onCopy={setCopied} />
               <FieldCopy
                 label="Description"
@@ -1173,46 +1196,73 @@ function ThumbnailPicker({
   const ref = useRef<HTMLVideoElement>(null);
   const [t, setT] = useState(start);
   const [preview, setPreview] = useState<string | null>(null);
+  const [album, setAlbum] = useState<string | null>(null);
 
-  const grab = useCallback(() => {
+  const drawCover = useCallback((size: number, ratio: number) => {
     const v = ref.current;
-    if (!v || !v.videoWidth) return;
+    if (!v || !v.videoWidth) return null;
     const c = document.createElement("canvas");
-    c.width = 1280;
-    c.height = 720;
+    c.width = size;
+    c.height = Math.round(size / ratio);
     const ctx = c.getContext("2d");
-    if (!ctx) return;
+    if (!ctx) return null;
     const vr = v.videoWidth / v.videoHeight;
-    const tr = 16 / 9;
     let sx = 0;
     let sy = 0;
     let sw = v.videoWidth;
     let sh = v.videoHeight;
-    if (vr > tr) {
-      sw = v.videoHeight * tr;
+    if (vr > ratio) {
+      sw = v.videoHeight * ratio;
       sx = (v.videoWidth - sw) / 2;
     } else {
-      sh = v.videoWidth / tr;
+      sh = v.videoWidth / ratio;
       sy = (v.videoHeight - sh) / 2;
     }
-    ctx.drawImage(v, sx, sy, sw, sh, 0, 0, 1280, 720);
-    const fade = ctx.createLinearGradient(0, 560, 0, 720);
-    fade.addColorStop(0, "rgba(0,0,0,0)");
-    fade.addColorStop(1, "rgba(0,0,0,0.45)");
-    ctx.fillStyle = fade;
-    ctx.fillRect(0, 560, 1280, 160);
-    if (caption) {
+    ctx.drawImage(v, sx, sy, sw, sh, 0, 0, c.width, c.height);
+    return c;
+  }, []);
+
+  const grabThumb = useCallback(() => {
+    const c = drawCover(1280, 16 / 9);
+    if (!c) return;
+    const ctx = c.getContext("2d");
+    if (ctx && caption) {
+      const fade = ctx.createLinearGradient(0, 560, 0, 720);
+      fade.addColorStop(0, "rgba(0,0,0,0)");
+      fade.addColorStop(1, "rgba(0,0,0,0.45)");
+      ctx.fillStyle = fade;
+      ctx.fillRect(0, 560, 1280, 160);
       ctx.font = "600 36px Montserrat, system-ui, sans-serif";
       ctx.fillStyle = "rgba(255,255,255,0.92)";
       ctx.fillText(caption, 40, 680);
     }
     setPreview(c.toDataURL("image/jpeg", 0.92));
-  }, [caption]);
+  }, [caption, drawCover]);
+
+  const grabAlbum = useCallback(() => {
+    const c = drawCover(3000, 1);
+    if (!c) return;
+    const ctx = c.getContext("2d");
+    if (ctx) {
+      ctx.strokeStyle = "rgba(255,255,255,0.18)";
+      ctx.lineWidth = 24;
+      ctx.strokeRect(48, 48, 2904, 2904);
+      if (caption) {
+        ctx.fillStyle = "rgba(0,0,0,0.35)";
+        ctx.fillRect(0, 2760, 3000, 240);
+        ctx.font = "600 72px Montserrat, system-ui, sans-serif";
+        ctx.fillStyle = "rgba(255,255,255,0.9)";
+        ctx.fillText(caption, 80, 2910);
+      }
+    }
+    setAlbum(c.toDataURL("image/jpeg", 0.92));
+  }, [caption, drawCover]);
 
   return (
     <div className="space-y-2 pt-2 border-t border-zinc-800">
       <div className="text-xs text-zinc-400">
-        YouTube thumbnail · 1280×720 · under 2 MB. CTR lives here more than in tags.
+        1280×720 thumbnail · 3000×3000 album (DistroKid / YouTube Music if the track is yours).
+        The in-video Music card is Content ID — not something you attach by hand.
       </div>
       <video
         ref={ref}
@@ -1241,13 +1291,12 @@ function ThumbnailPicker({
           className="w-full accent-cyan-500"
         />
       </label>
-      <div className="flex gap-2">
-        <button
-          type="button"
-          onClick={grab}
-          className="px-3 py-1.5 rounded-lg text-sm border border-zinc-700 hover:border-zinc-500"
-        >
+      <div className="flex flex-wrap gap-2">
+        <button type="button" onClick={grabThumb} className="px-3 py-1.5 rounded-lg text-sm border border-zinc-700 hover:border-zinc-500">
           Grab 1280×720
+        </button>
+        <button type="button" onClick={grabAlbum} className="px-3 py-1.5 rounded-lg text-sm border border-zinc-700 hover:border-zinc-500">
+          Grab album 3000×3000
         </button>
         {preview && (
           <button
@@ -1263,14 +1312,28 @@ function ThumbnailPicker({
             Download thumbnail
           </button>
         )}
+        {album && (
+          <button
+            type="button"
+            onClick={() => {
+              const a = document.createElement("a");
+              a.href = album;
+              a.download = "album-cover-3000x3000.jpg";
+              a.click();
+            }}
+            className="px-3 py-1.5 rounded-lg text-sm bg-cyan-700 hover:bg-cyan-600"
+          >
+            Download album cover
+          </button>
+        )}
       </div>
       {preview && (
         // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={preview}
-          alt="YouTube thumbnail preview"
-          className="w-full rounded-lg border border-zinc-800"
-        />
+        <img src={preview} alt="YouTube thumbnail preview" className="w-full rounded-lg border border-zinc-800" />
+      )}
+      {album && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={album} alt="Album cover preview" className="w-48 rounded-lg border border-zinc-800" />
       )}
     </div>
   );
