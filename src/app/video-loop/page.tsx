@@ -12,6 +12,7 @@ import {
   identifyCharacter,
   listCharacters,
   listOverlays,
+  listVisualStyles,
   planLayers,
   renderLoop,
   saveExportImage,
@@ -23,8 +24,123 @@ import {
   type LoopCandidate,
   type OverlayOption,
   type RenderProgress,
+  type VisualStyleOption,
   type YoutubePack,
 } from "@/lib/companion";
+export function getVisualStyleCss(styleId: string): string {
+  switch (styleId) {
+    case "anime_lofi":
+      return "contrast(1.14) brightness(0.98) saturate(1.24) sepia(0.25) hue-rotate(-6deg)";
+    case "golden_sunset":
+      return "contrast(1.16) brightness(1.02) saturate(1.34) sepia(0.42) hue-rotate(-14deg)";
+    case "vintage_anime":
+      return "contrast(1.18) brightness(0.95) saturate(1.36) sepia(0.18) hue-rotate(6deg)";
+    case "dark_fantasy":
+      return "contrast(1.32) brightness(0.9) saturate(0.72) hue-rotate(185deg) sepia(0.1)";
+    case "clean":
+    default:
+      return "none";
+  }
+}
+
+export function parseGifMetadata(buffer: ArrayBuffer): {
+  duration: number;
+  width: number;
+  height: number;
+  frameCount: number;
+} {
+  const bytes = new Uint8Array(buffer);
+  const view = new DataView(buffer);
+
+  if (bytes.length < 13) {
+    return { duration: 3.0, width: 640, height: 480, frameCount: 1 };
+  }
+
+  const sig = String.fromCharCode(...bytes.subarray(0, 6));
+  if (sig !== "GIF87a" && sig !== "GIF89a") {
+    return { duration: 3.0, width: 640, height: 480, frameCount: 1 };
+  }
+
+  const width = view.getUint16(6, true);
+  const height = view.getUint16(8, true);
+  const packed = bytes[10];
+  const hasGct = (packed & 0x80) !== 0;
+  const gctSize = hasGct ? 3 * (1 << ((packed & 0x07) + 1)) : 0;
+
+  let pos = 13 + gctSize;
+  let totalDelayHundredths = 0;
+  let frameCount = 0;
+  let gceDelay = 0;
+
+  while (pos < bytes.length) {
+    const blockType = bytes[pos++];
+    if (blockType === 0x3b) {
+      break;
+    }
+
+    if (blockType === 0x21) {
+      if (pos >= bytes.length) break;
+      const extType = bytes[pos++];
+
+      if (extType === 0xf9) {
+        const blockSize = bytes[pos++];
+        if (blockSize === 4 && pos + 4 <= bytes.length) {
+          const delay = view.getUint16(pos + 1, true);
+          gceDelay = delay <= 1 ? 10 : delay;
+          pos += blockSize;
+          if (pos < bytes.length && bytes[pos] === 0x00) {
+            pos++;
+          }
+        } else {
+          pos += blockSize;
+          while (pos < bytes.length && bytes[pos] !== 0x00) {
+            pos += bytes[pos] + 1;
+          }
+          if (pos < bytes.length) pos++;
+        }
+      } else {
+        while (pos < bytes.length) {
+          const subBlockLen = bytes[pos++];
+          if (subBlockLen === 0) break;
+          pos += subBlockLen;
+        }
+      }
+    } else if (blockType === 0x2c) {
+      if (pos + 9 > bytes.length) break;
+      const imgPacked = bytes[pos + 8];
+      pos += 9;
+      const hasLct = (imgPacked & 0x80) !== 0;
+      if (hasLct) {
+        const lctSize = 3 * (1 << ((imgPacked & 0x07) + 1));
+        pos += lctSize;
+      }
+      if (pos < bytes.length) {
+        pos++;
+      }
+      while (pos < bytes.length) {
+        const subBlockLen = bytes[pos++];
+        if (subBlockLen === 0) break;
+        pos += subBlockLen;
+      }
+
+      frameCount++;
+      totalDelayHundredths += gceDelay > 0 ? gceDelay : 10;
+      gceDelay = 0;
+    }
+  }
+
+  const duration =
+    totalDelayHundredths > 0
+      ? totalDelayHundredths / 100
+      : Math.max(1, frameCount * 0.1);
+
+  return {
+    duration: Math.max(0.1, duration),
+    width: width || 640,
+    height: height || 480,
+    frameCount: Math.max(1, frameCount),
+  };
+}
 
 async function copyText(text: string): Promise<void> {
   await navigator.clipboard.writeText(text);
@@ -36,10 +152,12 @@ function fmt(t: number): string {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
+
 export default function VideoLoopPage() {
   const [health, setHealth] = useState<CompanionHealth | null>(null);
   const [overlays, setOverlays] = useState<OverlayOption[]>([]);
-
+  const [visualStyles, setVisualStyles] = useState<VisualStyleOption[]>([]);
+  const [visualStyle, setVisualStyle] = useState("anime_lofi");
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [videoDuration, setVideoDuration] = useState(0);
@@ -94,9 +212,9 @@ export default function VideoLoopPage() {
   useEffect(() => {
     companionHealth().then(setHealth);
     listOverlays().then(setOverlays);
+    listVisualStyles().then(setVisualStyles);
     listCharacters().then(setCast);
   }, []);
-
   useEffect(() => {
     return () => {
       if (resultUrl) URL.revokeObjectURL(resultUrl);
@@ -105,7 +223,12 @@ export default function VideoLoopPage() {
     };
   }, [resultUrl, previewUrl, shortsUrl]);
 
-  const handleVideo = useCallback((f: File) => {
+  const isGif = Boolean(
+    videoFile &&
+      (videoFile.type === "image/gif" || videoFile.name.toLowerCase().endsWith(".gif"))
+  );
+
+  const handleVideo = useCallback(async (f: File) => {
     setError(null);
     setResultUrl(null);
     setPreviewUrl(null);
@@ -123,21 +246,54 @@ export default function VideoLoopPage() {
       if (prev) URL.revokeObjectURL(prev);
       return URL.createObjectURL(f);
     });
-    const v = document.createElement("video");
-    v.preload = "metadata";
-    v.src = URL.createObjectURL(f);
-    v.onloadedmetadata = () => {
-      setVideoDuration(v.duration);
-      setManualTrim({ start: 0, end: v.duration });
-      setVideoSel({
-        start: 0,
-        end: v.duration,
-        duration: v.duration,
-        score: 100,
-        label: "Full clip (seamless crossfade)",
-      });
-      URL.revokeObjectURL(v.src);
-    };
+
+    const isGifFile = f.type === "image/gif" || f.name.toLowerCase().endsWith(".gif");
+
+    if (isGifFile) {
+      try {
+        const arr = await f.arrayBuffer();
+        const meta = parseGifMetadata(arr);
+        setVideoDuration(meta.duration);
+        setManualTrim({ start: 0, end: meta.duration });
+        setVideoSel({
+          start: 0,
+          end: meta.duration,
+          duration: meta.duration,
+          score: 100,
+          label: "Full GIF loop (seamless)",
+        });
+      } catch {
+        setVideoDuration(3.0);
+        setManualTrim({ start: 0, end: 3.0 });
+        setVideoSel({
+          start: 0,
+          end: 3.0,
+          duration: 3.0,
+          score: 100,
+          label: "Full GIF loop (seamless)",
+        });
+      }
+    } else {
+      const v = document.createElement("video");
+      v.preload = "metadata";
+      v.src = URL.createObjectURL(f);
+      v.onloadedmetadata = () => {
+        setVideoDuration(v.duration);
+        setManualTrim({ start: 0, end: v.duration });
+        setVideoSel({
+          start: 0,
+          end: v.duration,
+          duration: v.duration,
+          score: 100,
+          label: "Full clip (seamless crossfade)",
+        });
+        URL.revokeObjectURL(v.src);
+      };
+      v.onerror = () => {
+        setError("Could not load video metadata");
+        URL.revokeObjectURL(v.src);
+      };
+    }
   }, []);
 
   const handleAudio = useCallback(async (f: File) => {
@@ -329,6 +485,7 @@ export default function VideoLoopPage() {
         audioEnd: audioSel.end,
         target: targetSec,
         atmosphere,
+        visualStyle,
         sfxOn,
         intensity,
         watermark,
@@ -367,6 +524,7 @@ export default function VideoLoopPage() {
     previewBusy,
     targetSec,
     atmosphere,
+    visualStyle,
     sfxOn,
     intensity,
     watermark,
@@ -390,6 +548,7 @@ export default function VideoLoopPage() {
           audioEnd: audioSel.end,
           target: targetSec,
           atmosphere,
+          visualStyle,
           sfxOn,
           intensity,
           watermark,
@@ -428,6 +587,7 @@ export default function VideoLoopPage() {
     plan,
     targetSec,
     atmosphere,
+    visualStyle,
     sfxOn,
     intensity,
     watermark,
@@ -450,6 +610,7 @@ export default function VideoLoopPage() {
           audioEnd: audioSel.end,
           target: shortsSec,
           atmosphere,
+          visualStyle,
           sfxOn,
           intensity,
           watermark,
@@ -492,6 +653,7 @@ export default function VideoLoopPage() {
     plan,
     shortsSec,
     atmosphere,
+    visualStyle,
     sfxOn,
     intensity,
     watermark,
@@ -532,8 +694,8 @@ export default function VideoLoopPage() {
         <h2 className="font-semibold">1 · Pick the video loop</h2>
         {!videoFile ? (
           <FileDropzone
-            accept="video/*"
-            label="Drop your video or click"
+            accept="video/*,image/gif,.gif"
+            label="Drop your video or GIF or click"
             hint="We find seamless loops; the chosen slice fades and repeats"
             onFile={handleVideo}
           />
@@ -577,11 +739,45 @@ export default function VideoLoopPage() {
             </div>
 
             {videoMode === "full" && (
-              <div className="text-xs bg-zinc-950/60 border border-zinc-800 rounded-lg p-3 text-zinc-300">
-                Full clip ({videoDuration.toFixed(1)}s) will repeat with a seamless 2-second crossfade into the start (0 jump cuts).
+              <div className="space-y-2">
+                <div className="text-xs bg-zinc-950/60 border border-zinc-800 rounded-lg p-3 text-zinc-300">
+                  {isGif
+                    ? `Full GIF loop (${videoDuration.toFixed(1)}s) will repeat seamlessly across the whole song duration.`
+                    : `Full clip (${videoDuration.toFixed(1)}s) will repeat with a seamless 2-second crossfade into the start (0 jump cuts).`}
+                </div>
+                {videoUrl && (
+                  <div className="relative rounded-lg overflow-hidden border border-zinc-800 bg-black aspect-video max-h-60 flex items-center justify-center">
+                    {isGif ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={videoUrl}
+                        alt="GIF loop preview"
+                        style={{ filter: getVisualStyleCss(visualStyle) }}
+                        className="w-full h-full object-contain pointer-events-none transition-[filter] duration-300"
+                      />
+                    ) : (
+                      <video
+                        src={videoUrl}
+                        muted
+                        loop
+                        autoPlay
+                        playsInline
+                        style={{ filter: getVisualStyleCss(visualStyle) }}
+                        className="w-full h-full object-contain transition-[filter] duration-300"
+                      />
+                    )}
+                    {visualStyle !== "clean" && (
+                      <div
+                        className="absolute inset-0 pointer-events-none"
+                        style={{
+                          background: "radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,0.38) 100%)",
+                        }}
+                      />
+                    )}
+                  </div>
+                )}
               </div>
             )}
-
             {videoMode === "loops" && (
               <div className="space-y-3">
                 <div className="flex flex-wrap items-end gap-3">
@@ -856,6 +1052,99 @@ export default function VideoLoopPage() {
             </div>
           </div>
 
+          <div>
+            <div className="text-xs text-zinc-400 mb-1">Visual filter / Color grading (1080p)</div>
+            <div className="flex flex-wrap gap-2">
+              {(visualStyles.length
+                ? visualStyles
+                : [
+                    { id: "anime_lofi", label: "Anime Lo-Fi", hint: "Warm golden glow, soft contrast, subtle film grain" },
+                    { id: "golden_sunset", label: "Golden Sunset", hint: "Amber twilight, chivalric warm hour" },
+                    { id: "vintage_anime", label: "Vintage 90s Anime", hint: "Retro cel saturation, analog texture" },
+                    { id: "dark_fantasy", label: "Dark Fantasy (Doomer)", hint: "Moody steel tones, deep shadows" },
+                    { id: "clean", label: "Clean 1080p", hint: "Original colors + 1080p sharpening" },
+                  ]
+              ).map((s) => (
+                <button
+                  key={s.id}
+                  onClick={() => {
+                    setVisualStyle(s.id);
+                    setPlan(null);
+                    setPreviewUrl(null);
+                  }}
+                  title={s.hint}
+                  className={`px-3 py-1.5 rounded-lg text-sm border ${
+                    visualStyle === s.id
+                      ? "border-fuchsia-500 bg-fuchsia-500/15 text-fuchsia-300 font-medium"
+                      : "border-zinc-700 hover:border-zinc-500 text-zinc-300"
+                  }`}
+                >
+                  {s.label}
+                </button>
+              ))}
+            </div>
+            <p className="text-xs text-zinc-500 mt-1">
+              {(visualStyles.length
+                ? visualStyles
+                : [
+                    { id: "anime_lofi", label: "Anime Lo-Fi", hint: "Warm golden glow, soft contrast, subtle film grain" },
+                    { id: "golden_sunset", label: "Golden Sunset", hint: "Amber twilight, chivalric warm hour" },
+                    { id: "vintage_anime", label: "Vintage 90s Anime", hint: "Retro cel saturation, analog texture" },
+                    { id: "dark_fantasy", label: "Dark Fantasy (Doomer)", hint: "Moody steel tones, deep shadows" },
+                    { id: "clean", label: "Clean 1080p", hint: "Original colors + 1080p sharpening" },
+                  ]
+              ).find((s) => s.id === visualStyle)?.hint}
+            </p>
+          </div>
+
+          {videoUrl && (
+            <div className="space-y-1.5 pt-1">
+              <div className="flex items-center justify-between text-xs text-zinc-400">
+                <span>Live filter preview (real-time in browser)</span>
+                <span className="text-fuchsia-400 font-medium">
+                  {(visualStyles.length
+                    ? visualStyles
+                    : [
+                        { id: "anime_lofi", label: "Anime Lo-Fi" },
+                        { id: "golden_sunset", label: "Golden Sunset" },
+                        { id: "vintage_anime", label: "Vintage 90s Anime" },
+                        { id: "dark_fantasy", label: "Dark Fantasy (Doomer)" },
+                        { id: "clean", label: "Clean 1080p" },
+                      ]
+                  ).find((s) => s.id === visualStyle)?.label || "Anime Lo-Fi"}
+                </span>
+              </div>
+              <div className="relative rounded-xl overflow-hidden border border-zinc-800 bg-black aspect-video max-h-64 flex items-center justify-center shadow-lg">
+                {isGif ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={videoUrl}
+                    alt="Live styled preview"
+                    style={{ filter: getVisualStyleCss(visualStyle) }}
+                    className="w-full h-full object-contain pointer-events-none transition-[filter] duration-300"
+                  />
+                ) : (
+                  <video
+                    src={videoUrl}
+                    muted
+                    loop
+                    autoPlay
+                    playsInline
+                    style={{ filter: getVisualStyleCss(visualStyle) }}
+                    className="w-full h-full object-contain transition-[filter] duration-300"
+                  />
+                )}
+                {visualStyle !== "clean" && (
+                  <div
+                    className="absolute inset-0 pointer-events-none"
+                    style={{
+                      background: "radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,0.38) 100%)",
+                    }}
+                  />
+                )}
+              </div>
+            </div>
+          )}
           <label className="block text-sm">
             Intensity: {Math.round(intensity * 100)}%
             <input
@@ -913,6 +1202,11 @@ export default function VideoLoopPage() {
 
           {plan && (
             <div className="text-xs space-y-1 bg-zinc-950/50 border border-zinc-800 rounded-lg p-3">
+              {plan.visualStyleLabel && (
+                <div>
+                  Visual Style: <strong>{plan.visualStyleLabel}</strong> (1080p Full HD upscale & grade)
+                </div>
+              )}
               <div>
                 Atmosphere: <strong>{plan.overlayLabel ?? "none"}</strong>
                 {plan.blend ? ` · blend ${plan.blend}` : ""}
@@ -982,6 +1276,7 @@ export default function VideoLoopPage() {
                   { id: "thorfinn", name: "Thorfinn", series: "Vinland Saga", aka: "", playlist: "", hasEssay: true, hasRefs: false },
                   { id: "musashi", name: "Miyamoto Musashi", series: "Vagabond", aka: "", playlist: "", hasEssay: true, hasRefs: false },
                   { id: "buntaro", name: "Buntarō Mori", series: "The Climber", aka: "", playlist: "", hasEssay: true, hasRefs: false },
+                  { id: "knight", name: "The Knight", series: "Chivalry Aesthetic", aka: "", playlist: "", hasEssay: true, hasRefs: false },
                 ]
             ).map((c) => (
               <button
@@ -1079,6 +1374,8 @@ export default function VideoLoopPage() {
               start={vStart}
               end={vEnd || videoDuration || 8}
               caption={yt?.name || character || ""}
+              isGif={isGif}
+              visualStyle={visualStyle}
             />
           )}
         </section>
@@ -1120,8 +1417,7 @@ export default function VideoLoopPage() {
           </button>
         </div>
         <p className="text-xs text-zinc-500">
-          20–30s is the retention sweet spot for music teasers. 1080×1920, center crop,
-          watermark in the Shorts safe zone. Use it to push the long loop.
+          20–30s is the retention sweet spot for music teasers. 1080×1920 vertical with ambient blur framing (keeps 100% of the artwork visible) and watermark in the Shorts safe zone. Use it to push the long loop.
         </p>
       </div>
 
@@ -1136,9 +1432,9 @@ export default function VideoLoopPage() {
       {resultUrl && (
         <div className="bg-zinc-900 rounded-xl p-4 border border-zinc-800 space-y-3">
           <h2 className="font-semibold">
-            YouTube 16:9 ready{" "}
+            YouTube 1080p Full HD ready{" "}
             <span className="text-xs text-zinc-400 font-normal">
-              ({(resultSize / 1024 / 1024).toFixed(1)} MB)
+              ({(resultSize / 1024 / 1024).toFixed(1)} MB · 1920×1080)
             </span>
           </h2>
           <video src={resultUrl} controls loop className="w-full rounded-lg border border-zinc-800" />
@@ -1249,41 +1545,83 @@ function ThumbnailPicker({
   start,
   end,
   caption,
+  isGif,
+  visualStyle,
 }: {
   videoUrl: string;
   start: number;
   end: number;
   caption: string;
+  isGif?: boolean;
+  visualStyle?: string;
 }) {
   const ref = useRef<HTMLVideoElement>(null);
+  const imgRef = useRef<HTMLImageElement>(null);
   const [t, setT] = useState(start);
   const [preview, setPreview] = useState<string | null>(null);
   const [album, setAlbum] = useState<string | null>(null);
 
   const drawCover = useCallback((size: number, ratio: number) => {
-    const v = ref.current;
-    if (!v || !v.videoWidth) return null;
+    let sourceWidth = 0;
+    let sourceHeight = 0;
+    let sourceEl: CanvasImageSource | null = null;
+
+    if (isGif) {
+      const img = imgRef.current;
+      if (!img || !img.naturalWidth) return null;
+      sourceWidth = img.naturalWidth;
+      sourceHeight = img.naturalHeight;
+      sourceEl = img;
+    } else {
+      const v = ref.current;
+      if (!v || !v.videoWidth) return null;
+      sourceWidth = v.videoWidth;
+      sourceHeight = v.videoHeight;
+      sourceEl = v;
+    }
+
     const c = document.createElement("canvas");
     c.width = size;
     c.height = Math.round(size / ratio);
     const ctx = c.getContext("2d");
-    if (!ctx) return null;
-    const vr = v.videoWidth / v.videoHeight;
+    if (!ctx || !sourceEl) return null;
+
+    const vr = sourceWidth / sourceHeight;
     let sx = 0;
     let sy = 0;
-    let sw = v.videoWidth;
-    let sh = v.videoHeight;
+    let sw = sourceWidth;
+    let sh = sourceHeight;
     if (vr > ratio) {
-      sw = v.videoHeight * ratio;
-      sx = (v.videoWidth - sw) / 2;
+      sw = sourceHeight * ratio;
+      sx = (sourceWidth - sw) / 2;
     } else {
-      sh = v.videoWidth / ratio;
-      sy = (v.videoHeight - sh) / 2;
+      sh = sourceWidth / ratio;
+      sy = (sourceHeight - sh) / 2;
     }
-    ctx.drawImage(v, sx, sy, sw, sh, 0, 0, c.width, c.height);
-    return c;
-  }, []);
 
+    if (visualStyle && visualStyle !== "clean") {
+      ctx.filter = getVisualStyleCss(visualStyle);
+    }
+    ctx.drawImage(sourceEl, sx, sy, sw, sh, 0, 0, c.width, c.height);
+    ctx.filter = "none";
+
+    if (visualStyle && visualStyle !== "clean") {
+      const grad = ctx.createRadialGradient(
+        c.width / 2,
+        c.height / 2,
+        c.width * 0.35,
+        c.width / 2,
+        c.height / 2,
+        c.width * 0.72
+      );
+      grad.addColorStop(0, "rgba(0,0,0,0)");
+      grad.addColorStop(1, "rgba(0,0,0,0.38)");
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, c.width, c.height);
+    }
+
+    return c;
+  }, [isGif, visualStyle]);
   const grabThumb = useCallback(() => {
     const c = drawCover(1280, 16 / 9);
     if (!c) return;
@@ -1326,40 +1664,53 @@ function ThumbnailPicker({
     }, "image/jpeg", 0.92);
   }, [caption, drawCover]);
 
-
   return (
     <div className="space-y-2 pt-2 border-t border-zinc-800">
       <div className="text-xs text-zinc-400">
         1280×720 thumbnail · 3000×3000 album (DistroKid / YouTube Music if the track is yours).
         The in-video Music card is Content ID — not something you attach by hand.
       </div>
-      <video
-        ref={ref}
-        src={videoUrl}
-        muted
-        playsInline
-        className="w-full aspect-video object-cover rounded-lg bg-black"
-        onLoadedMetadata={(e) => {
-          e.currentTarget.currentTime = start;
-        }}
-      />
-      <label className="block text-xs text-zinc-400">
-        Frame {t.toFixed(1)}s
-        <input
-          type="range"
-          min={start}
-          max={Math.max(start + 0.1, end)}
-          step={0.05}
-          value={t}
-          onChange={(e) => {
-            const n = parseFloat(e.target.value);
-            setT(n);
-            const v = ref.current;
-            if (v) v.currentTime = n;
-          }}
-          className="w-full accent-cyan-500"
+      {isGif ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          ref={imgRef}
+          src={videoUrl}
+          alt="Thumbnail source preview"
+          style={{ filter: getVisualStyleCss(visualStyle || "clean") }}
+          className="w-full aspect-video object-contain rounded-lg bg-black transition-[filter] duration-300"
         />
-      </label>
+      ) : (
+        <video
+          ref={ref}
+          src={videoUrl}
+          muted
+          playsInline
+          style={{ filter: getVisualStyleCss(visualStyle || "clean") }}
+          className="w-full aspect-video object-cover rounded-lg bg-black transition-[filter] duration-300"
+          onLoadedMetadata={(e) => {
+            e.currentTarget.currentTime = start;
+          }}
+        />
+      )}
+      {!isGif && (
+        <label className="block text-xs text-zinc-400">
+          Frame {t.toFixed(1)}s
+          <input
+            type="range"
+            min={start}
+            max={Math.max(start + 0.1, end)}
+            step={0.05}
+            value={t}
+            onChange={(e) => {
+              const n = parseFloat(e.target.value);
+              setT(n);
+              const v = ref.current;
+              if (v) v.currentTime = n;
+            }}
+            className="w-full accent-cyan-500"
+          />
+        </label>
+      )}
       <div className="flex flex-wrap gap-2">
         <button type="button" onClick={grabThumb} className="px-3 py-1.5 rounded-lg text-sm border border-zinc-700 hover:border-zinc-500">
           Grab 1280×720

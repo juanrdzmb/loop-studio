@@ -5,10 +5,9 @@ fotogramas (OpenCV) + nombre del archivo + fotos opcionales en docs/refs/<id>/.
 """
 
 from __future__ import annotations
-
+import hashlib
 import re
 from pathlib import Path
-
 import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -87,6 +86,27 @@ CHARACTERS: dict[str, dict] = {
             "kokou", "k2", "katou", "sakamoto",
         ),
     },
+    "knight": {
+        "id": "knight",
+        "name": "The Knight",
+        "series": "Chivalry · Medieval Aesthetic",
+        "aka": "The Wandering Knight",
+        "playlist": "Silent Vigil · The Silent Knight (Chivalry & Solitude)",
+        "hooks": ["The Lonely Knight", "Knightcore", "Watching From Afar", "The Silent Vigil", "The Princess"],
+        "hashtags": ["#slowedandreverb", "#knightcore", "#goldenbrown", "#medieval", "#darkfantasy", "#chivalrycore", "#cinematicmusic"],
+        "tags": [
+            "slowed and reverb", "slowed + reverb", "slowed reverb",
+            "golden brown slowed", "golden brown knight", "knight watching princess",
+            "knightcore", "chivalrycore", "medieval aesthetic", "dark fantasy aesthetic",
+            "songs to study", "sleep music", "sad songs slowed", "nostalgic songs slowed",
+            "doomer music", "knight slowed reverb", "the silent knight", "medieval lo-fi",
+        ],
+        "filename_keys": (
+            "knight", "caballero", "goldenbrown", "golden-brown", "princess",
+            "princesa", "armor", "armadura", "chivalry", "castle", "medieval",
+            "castillo", "paladin", "crusader", "vigil", "templar",
+        ),
+    },
 }
 
 
@@ -111,6 +131,7 @@ def _essay_path(cid: str) -> Path | None:
         "thorfinn": ("thorfinn",),
         "musashi": ("musashi", "miyamoto"),
         "buntaro": ("buntar", "mori"),
+        "knight": ("knight", "caballero", "golden_brown", "goldenbrown", "chivalry"),
     }[cid]
     if not DOCS.is_dir():
         return None
@@ -146,27 +167,197 @@ def load_essay(cid: str) -> str:
     return re.sub(r"\s+", " ", " ".join(keep)).strip()
 
 
-def _blurb(cid: str, limit: int = 380) -> str:
-    canned = {
-        "guts": (
+CHARACTER_BLURBS: dict[str, list[str]] = {
+    "guts": [
+        (
             "Slowed + reverb as a nervous-system brake. The Black Swordsman’s "
             "hypervigilance needs a room he can stay in — doomerwave, struggler, "
             "not invincible, just still here."
         ),
-        "thorfinn": (
+        (
+            "In the deepest hours of the Interstice, the noise of the battle fades into "
+            "an intimate cathedral of echo. A reminder that surviving the darkness is "
+            "already an act of quiet heroism."
+        ),
+        (
+            "The weight of the Dragonslayer rests against cold stone. Slowed down so your "
+            "mind doesn't have to fight alone tonight — endurance over despair."
+        ),
+    ],
+    "thorfinn": [
+        (
             "After revenge there is a cathedral of echo. Thorfinn’s redemption is "
             "a low-pass on trauma — Vinland as quiet, not conquest."
         ),
-        "musashi": (
+        (
+            "The journey to Vinland isn't about reaching a distant shore; it's about "
+            "letting go of hatred and finding the courage to live without enemies."
+        ),
+        (
+            "A peaceful dawn after years of warfare. When the storm in your chest quiets down, "
+            "the melody becomes an honest path forward."
+        ),
+    ],
+    "musashi": [
+        (
             "Takezo was high BPM. Musashi is the slowdown: from the farm arc to "
             "Reigandō, mastery is learning to sit in the reverb of what the sword did."
         ),
-        "buntaro": (
+        (
+            "Under the autumn leaves, the swordsman learns that true victory is having "
+            "nothing to prove. A gentle, reflective pace for solitary wandering."
+        ),
+        (
+            "The brush moves with the same patience as the blade. In the quiet of the night, "
+            "we learn to breathe through our doubts."
+        ),
+    ],
+    "buntaro": [
+        (
             "Long reverb is hedgehog distance — close enough to feel, far enough not "
             "to bleed. On K2 the Immortal Climber dissolves; the outro is the man coming home."
         ),
-    }
-    text = canned.get(cid, "Slowed + reverb aesthetic loop.")
+        (
+            "High above the clouds, where no artificial noise can reach. A solitary rhythm "
+            "for those who find their sanctuary in quiet concentration."
+        ),
+        (
+            "One step on the frozen ridge, one breath in the thin air. The mountain demands "
+            "patience, and the music gives you room to breathe."
+        ),
+    ],
+    "knight": [
+        (
+            "Slowed + reverb as a medieval vigil. The lonely knight watching the "
+            "princess from afar — knightcore, heavy armor, silent vows, and timeless "
+            "longing echoing through cold stone walls."
+        ),
+        (
+            "Standing on the rain-swept battlements while the castle sleeps. Chivalry isn't "
+            "about conquest; it's the quiet honor of protecting what is precious without asking for return."
+        ),
+        (
+            "Candlelight flickering through high gothic arches. The echo of armor moving through "
+            "silent corridors, guarding the peace of the realm into the dawn."
+        ),
+    ],
+}
+
+HOOKS_BY_CHAR: dict[str, list[str]] = {
+    "knight": [
+        "watching her from afar",
+        "a knight's silent vigil",
+        "late night in cold armor",
+        "chivalry & solitude",
+        "the lonely guardian",
+        "castle walls in the rain",
+    ],
+    "guts": [
+        "for those carrying heavy burdens",
+        "the struggler's rest",
+        "3:00 AM in the interstice",
+        "not defeated yet",
+        "late night battle with your thoughts",
+        "the black swordsman's quiet",
+    ],
+    "thorfinn": [
+        "you have no enemies",
+        "finding peace in the silence",
+        "far away from the battlefield",
+        "redemption echoes",
+        "a quiet sunset in Vinland",
+    ],
+    "musashi": [
+        "sitting in the quiet echo",
+        "when the sword rests",
+        "wandering without hurry",
+        "learning to breathe again",
+        "the way of solitude",
+    ],
+    "buntaro": [
+        "alone above the clouds",
+        "solitude in the cold air",
+        "when the world is too loud",
+        "one step at a time",
+        "the silence of the summit",
+    ],
+}
+
+INTROS_BY_CHAR: dict[str, list[str]] = {
+    "knight": [
+        "Standing watch on the battlements as the rain begins to fall. A chivalric, atmospheric vigil for those who protect from afar — slow down, let the cold stone walls echo, and rest your mind tonight.",
+        "A slowed and reverbed atmospheric journey through heavy armor, candlelight, and distant memories. Close your eyes, breathe, and let the timeless longing carry you for a while.",
+        "For the silent guardians and late-night thinkers. Slowed down with deep cathedral reverb so you can study, reflect, or simply fall asleep in peace.",
+    ],
+    "guts": [
+        "Dedicated to everyone fighting battles no one else can see. Slowed down, reverbed, and looped with care to give your nervous system a quiet room to breathe tonight.",
+        "For the strugglers who keep moving forward no matter how heavy the road gets. Put on your headphones, dim the lights, and let this track keep you grounded.",
+        "A safe corner in the late hours. When the world is demanding too much, slow everything down and take one breath at a time.",
+    ],
+    "thorfinn": [
+        "No enemies, no rush, just quiet redemption echoing in the distance. Slowed + reverb loop to study, unwind, or fall asleep to.",
+        "A peaceful sanctuary after the storm. When revenge fades, only the cathedral of silence remains — calm, honest, and healing.",
+        "For anyone trying to rebuild their peace and start anew. Let this gentle, reverbed melody accompany your thoughts tonight.",
+    ],
+    "musashi": [
+        "Mastery isn't rushing forward; it's learning to sit with the silence left behind. A calm, slowed + reverb reflection for late night focus, reading, or wandering thoughts.",
+        "True strength begins when the rushing stops. A slow, meditative resonance for anyone walking their own solitary path.",
+        "The sword is sheathed tonight. Slowed down to match a calmer heartbeat so you can focus, study, or drift off.",
+    ],
+    "buntaro": [
+        "High on the mountain where the air is cold and the silence is absolute. When the world is too loud, slow everything down and breathe.",
+        "The quiet solitude of the summit. Curated for deep focus, reading, and gentle relaxation away from the noise of everyday life.",
+        "One step, one breath, one moment at a time. A peaceful, ambient space for solitary minds.",
+    ],
+}
+
+COMMUNITY_NOTES: list[str] = [
+    "Headphones recommended for full spatial stereo depth. Wherever you are in the world tonight — thank you for spending a part of your journey here. You made it through another day.",
+    "Best experienced with headphones and low lights. If you're studying, working late, or just trying to clear your head, I hope this brings you a moment of genuine peace.",
+    "Turn down the screen brightness, put on your headphones, and let your thoughts unwind. Remember to take care of yourself tonight.",
+]
+
+CTAS: list[str] = [
+    "What song should I slow + reverb next? Leave your track requests in the comments — I read and listen to all of them.",
+    "Which track or atmosphere should we explore next? Drop your favorite songs below, I'd love to make them for you.",
+    "Where are you listening from tonight, and what song should I slow down next? Let me know in the comments below.",
+]
+
+PINNED_COMMENTS: dict[str, list[str]] = {
+    "knight": [
+        "Watching from the battlements under the night sky. 🏰 What song should the Knight listen to next? Let me know in the replies below, I'm working on the next videos.",
+        "The silent vigil continues tonight. 🕯️ What track would you like to hear slowed + reverbed next?",
+    ],
+    "guts": [
+        "Still here, still standing. ⚔️ What song helps you push through the hardest days? Leave your requests below.",
+        "To everyone struggling tonight: you're not alone. 🌙 What song should I slow down next for the channel?",
+    ],
+    "thorfinn": [
+        "You have no enemies here. 🕊️ What melody would you like to hear in our next quiet vigil?",
+        "Finding peace in the quiet. 🌾 Leave your favorite song recommendations below, I read every single reply.",
+    ],
+    "musashi": [
+        "The sword rests tonight. 🌾 What track should we slow down next for the journey? Drop your favorites below.",
+        "Walking the quiet path. 🍂 What song should I slow + reverb next for you?",
+    ],
+    "buntaro": [
+        "Above the clouds and away from the noise. 🏔️ What song would you like to hear on the next climb? Let me know below.",
+        "The summit is quiet tonight. ❄️ Leave your next song requests below in the replies.",
+    ],
+}
+
+
+def _seed_index(key: str, length: int) -> int:
+    if length <= 1:
+        return 0
+    h = int(hashlib.md5(key.encode("utf-8", errors="ignore")).hexdigest(), 16)
+    return h % length
+
+
+def _blurb(cid: str, seed_key: str = "", limit: int = 420) -> str:
+    blurbs = CHARACTER_BLURBS.get(cid) or CHARACTER_BLURBS["guts"]
+    idx = _seed_index(seed_key, len(blurbs)) if seed_key else 0
+    text = blurbs[idx]
     return text if len(text) <= limit else text[: limit - 1]
 
 
@@ -258,11 +449,20 @@ def _style_scores(st: dict) -> dict[str, float]:
         - 0.7 * st["gray"]
         - 0.3 * st["dark"]
     )
+    knight = (
+        1.2 * st["contrast"]
+        + 1.0 * max(0.0, st["warm"] / 35.0)
+        + 0.9 * st["dark"]
+        + 0.6 * st["edge"]
+        - 0.6 * st["snow"]
+        - 0.4 * st["cool"]
+    )
     return {
         "guts": float(guts),
         "thorfinn": float(thorfinn),
         "musashi": float(musashi),
         "buntaro": float(buntaro),
+        "knight": float(knight),
     }
 
 
@@ -393,11 +593,17 @@ def build_youtube_pack(
 ) -> dict:
     cid = character_id if character_id in CHARACTERS else "guts"
     meta = CHARACTERS[cid]
-    hook = meta["hooks"][0]
     song_l = _song_label(song)
     artist_l = (artist or "").strip() or None
     label = song_l or meta["name"]
     by = f" by {artist_l}" if artist_l else ""
+
+    # Unique deterministic seed based on song, artist, character & atmosphere
+    seed_base = f"{cid}_{song_l or 'nosong'}_{artist_l or 'noartist'}_{atmosphere or 'auto'}"
+
+    # Pick varied human hooks and intros
+    hooks = HOOKS_BY_CHAR.get(cid, meta["hooks"])
+    hook = hooks[_seed_index(f"{seed_base}_hook", len(hooks))]
 
     if song_l:
         title = f"{song_l} (Slowed + Reverb) | {hook}"
@@ -408,39 +614,45 @@ def build_youtube_pack(
 
     dur = f"{minutes:g} min" if minutes >= 1 else f"{int(minutes * 60)}s"
     mood = atmosphere if atmosphere and atmosphere not in ("auto", "off") else None
-    blurb = _blurb(cid)
 
-    first = (
-        f"This is a slowed, reverbed, and looped version of {label}{by} — "
-        f"perfect for late-night drives, lost thoughts, and cinematic nostalgia. "
-        f"Let this version carry you into a dream you've almost forgotten."
-    )
+    # Humanized intro and blurb
+    intros = INTROS_BY_CHAR.get(cid) or INTROS_BY_CHAR["guts"]
+    intro_text = intros[_seed_index(f"{seed_base}_intro", len(intros))]
+    blurb = _blurb(cid, seed_key=f"{seed_base}_blurb")
+    community_note = COMMUNITY_NOTES[_seed_index(f"{seed_base}_comm", len(COMMUNITY_NOTES))]
+    cta_text = CTAS[_seed_index(f"{seed_base}_cta", len(CTAS))]
+
+    pinned_list = PINNED_COMMENTS.get(cid) or PINNED_COMMENTS["guts"]
+    pinned_comment = pinned_list[_seed_index(f"{seed_base}_pinned", len(pinned_list))]
+
     tags = list(meta["tags"])
     extra = []
     if song_l:
         extra.append(song_l.lower())
         extra.append(f"{song_l.lower()} slowed")
+        extra.append(f"{song_l.lower()} slowed reverb")
     if artist_l:
         extra.append(artist_l.lower())
         extra.append(f"{artist_l.lower()} slowed")
     tags = extra + tags
-    hashes = ["#slowedandreverb", "#animeaesthetic", "#lofi", "#cinematicmusic", "#nightcore"]
-    hashes = hashes[:3]
+
+    hashes = ["#slowedandreverb", "#animeaesthetic", "#lofi", "#cinematicmusic"]
     for h in meta["hashtags"]:
         if h not in hashes and len(hashes) < 5:
             hashes.append(h)
 
     credit = f"Music: {label}{by}\n" if song_l else ""
     desc = (
-        f"{first}\n\n"
+        f"{intro_text}\n\n"
         f"0:00 {label} (Slowed + Reverb)\n\n"
         f"{blurb}\n\n"
         f"{credit}"
-        f"{dur} seamless loop"
+        f"Format: {dur} seamless loop"
         f"{f' · {mood} atmosphere' if mood else ''}.\n\n"
+        f"🌙 {community_note}\n\n"
         f"Silent Vigil Music\n"
         f"Playlist: {meta['playlist']}\n\n"
-        f"comment the next song\n\n"
+        f"💬 {cta_text}\n\n"
         f"{' '.join(hashes)}"
     )
 
@@ -448,15 +660,16 @@ def build_youtube_pack(
     for h in meta["hashtags"]:
         if h not in shorts_hashes and len(shorts_hashes) < 5:
             shorts_hashes.append(h)
+
     shorts_title = f"{label} (Slowed + Reverb)"
     if len(shorts_title) > 55:
         shorts_title = shorts_title[:54].rsplit(" ", 1)[0]
+
     shorts_desc = (
-        f"{label}{by} slowed + reverb · {meta['name']}\n"
-        f"full loop on the channel\n\n"
+        f"{label}{by} (slowed + reverb) · {meta['name']}\n"
+        f"Take a moment to pause. Full seamless loop available on the channel.\n\n"
         f"{' '.join(shorts_hashes)}"
     )
-
 
     return {
         "character": cid,
@@ -468,13 +681,10 @@ def build_youtube_pack(
         "tags": tags,
         "tagsLine": ", ".join(tags),
         "playlist": meta["playlist"],
-        "pinnedComment": (
-            f"Today: {meta['name']} ({meta['series']}). "
-            f"What song should I slow + reverb next?"
-        ),
+        "pinnedComment": pinned_comment,
         "thumbnailTip": (
-            "Thumbnail drives CTR. 1280×720, one clear subject, little text, "
-            "readable on a phone. Use the frame picker below."
+            "Thumbnail drives CTR. 1280×720, one clear subject, high contrast, "
+            "minimal text, readable on a phone screen. Use the frame picker below."
         ),
         "shortsTitle": shorts_title,
         "shortsDescription": shorts_desc,

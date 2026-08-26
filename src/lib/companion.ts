@@ -26,6 +26,11 @@ export interface OverlayOption {
   label: string;
 }
 
+export interface VisualStyleOption {
+  id: string;
+  label: string;
+  hint?: string;
+}
 export interface LayerSfx {
   id: string;
   label: string;
@@ -58,8 +63,9 @@ export interface LayerPlan {
     overlayReason: string;
   } | null;
   sfxPalette?: string[];
+  visualStyle?: string;
+  visualStyleLabel?: string;
 }
-
 export interface RenderParams {
   videoStart: number;
   videoEnd: number;
@@ -90,6 +96,17 @@ export async function listOverlays(): Promise<OverlayOption[]> {
     if (!res.ok) return [];
     const data = await res.json();
     return (data.overlays || []) as OverlayOption[];
+  } catch {
+    return [];
+  }
+}
+
+export async function listVisualStyles(): Promise<VisualStyleOption[]> {
+  try {
+    const res = await fetch(`${COMPANION_URL}/assets`);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return (data.visualStyles || []) as VisualStyleOption[];
   } catch {
     return [];
   }
@@ -141,6 +158,7 @@ export async function planLayers(
     sfxOn: boolean;
     intensity: number;
     watermark: boolean;
+    visualStyle?: string;
     video?: File | null;
     videoStart?: number;
     videoEnd?: number;
@@ -152,6 +170,7 @@ export async function planLayers(
   fd.append("audio_end", String(opts.audioEnd));
   fd.append("target", String(opts.target));
   fd.append("atmosphere", opts.atmosphere);
+  if (opts.visualStyle) fd.append("visual_style", opts.visualStyle);
   fd.append("sfx_on", opts.sfxOn ? "1" : "0");
   fd.append("intensity", String(opts.intensity));
   fd.append("watermark", opts.watermark ? "1" : "0");

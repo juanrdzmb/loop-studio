@@ -119,3 +119,70 @@ def first_existing_overlay() -> str | None:
         if overlay_path(oid):
             return oid
     return None
+
+VISUAL_STYLES: dict[str, dict] = {
+    "anime_lofi": {
+        "id": "anime_lofi",
+        "label": "Anime Lo-Fi",
+        "hint": "Warm golden glow, soft contrast, subtle film grain",
+        "filter": (
+            "eq=contrast=1.12:brightness=-0.02:saturation=1.18,"
+            "colorbalance=rs=0.06:gs=0.02:bs=-0.04:rm=0.08:gm=0.03:bm=-0.05:rh=0.04:gh=0.02:bh=-0.02,"
+            "vignette=PI/4.5,"
+            "noise=alls=10:allf=t+u,"
+            "unsharp=5:5:0.6:3:3:0.0"
+        ),
+    },
+    "golden_sunset": {
+        "id": "golden_sunset",
+        "label": "Golden Sunset",
+        "hint": "Amber twilight, chivalric warm hour",
+        "filter": (
+            "eq=contrast=1.14:brightness=-0.01:saturation=1.24,"
+            "colorbalance=rs=0.12:gs=0.04:bs=-0.08:rm=0.14:gm=0.05:bm=-0.1:rh=0.08:gh=0.03:bh=-0.06,"
+            "vignette=PI/4.2,"
+            "noise=alls=8:allf=t+u,"
+            "unsharp=5:5:0.5:3:3:0.0"
+        ),
+    },
+    "vintage_anime": {
+        "id": "vintage_anime",
+        "label": "Vintage 90s Anime",
+        "hint": "Retro cel saturation, analog texture",
+        "filter": (
+            "eq=contrast=1.15:brightness=-0.03:saturation=1.28,"
+            "colorbalance=rs=0.08:gs=-0.02:bs=-0.06:rm=0.1:gm=0.02:bm=-0.08:rh=0.06:gh=0.0:bh=-0.04,"
+            "noise=alls=16:allf=t+u,"
+            "vignette=PI/4"
+        ),
+    },
+    "dark_fantasy": {
+        "id": "dark_fantasy",
+        "label": "Dark Fantasy (Doomer)",
+        "hint": "Moody steel tones, deep shadows",
+        "filter": (
+            "eq=contrast=1.25:brightness=-0.05:saturation=0.82,"
+            "colorbalance=rs=-0.04:gs=-0.02:bs=0.08:rm=-0.02:gm=0.0:bm=0.06:rh=0.02:gh=0.02:bh=0.04,"
+            "vignette=PI/3.5,"
+            "noise=alls=12:allf=t+u"
+        ),
+    },
+    "clean": {
+        "id": "clean",
+        "label": "Clean 1080p",
+        "hint": "Original colors + 1080p sharpening",
+        "filter": "unsharp=5:5:0.6:3:3:0.0",
+    },
+}
+
+
+def visual_style_filter(style_id: str) -> str:
+    meta = VISUAL_STYLES.get(style_id) or VISUAL_STYLES["anime_lofi"]
+    return meta["filter"]
+
+
+def available_visual_styles() -> list[dict]:
+    return [
+        {"id": k, "label": v["label"], "hint": v["hint"]}
+        for k, v in VISUAL_STYLES.items()
+    ]

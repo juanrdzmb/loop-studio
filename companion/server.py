@@ -135,8 +135,11 @@ def health():
 
 @app.get("/assets")
 def list_assets():
-    from catalog import available_overlays
-    return {"overlays": available_overlays()}
+    from catalog import available_overlays, available_visual_styles
+    return {
+        "overlays": available_overlays(),
+        "visualStyles": available_visual_styles(),
+    }
 
 @app.get("/characters")
 def list_cast():
@@ -195,6 +198,7 @@ async def plan_layers(
     audio_end: float = Form(0.0),
     target: float = Form(60.0),
     atmosphere: str = Form("auto"),
+    visual_style: str = Form("anime_lofi"),
     sfx_on: str = Form("1"),
     intensity: float = Form(0.45),
     watermark: str = Form("1"),
@@ -224,6 +228,7 @@ async def plan_layers(
             audio_end=end,
             target=max(8.0, target),
             atmosphere=atmosphere,
+            visual_style=visual_style,
             sfx_on=sfx_on not in ("0", "false", "off"),
             intensity=intensity,
             watermark=watermark not in ("0", "false", "off"),

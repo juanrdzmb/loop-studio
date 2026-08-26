@@ -168,13 +168,13 @@ def build_plan(
     sfx_on: bool = True,
     intensity: float = 0.45,
     watermark: bool = True,
+    visual_style: str = "anime_lofi",
     video_path: str | None = None,
     video_start: float = 0.0,
     video_end: float = 0.0,
 ) -> dict:
     cycle = max(0.5, audio_end - audio_start)
     intensity = max(0.15, min(0.8, intensity))
-
     look = None
     if video_path and video_end > video_start + 0.2:
         try:
@@ -253,6 +253,9 @@ def build_plan(
             "overlayReason": reason,
         }
 
+    from catalog import VISUAL_STYLES
+    visual_style_meta = VISUAL_STYLES.get(visual_style) or VISUAL_STYLES["anime_lofi"]
+
     return {
         "overlay": overlay_id,
         "overlayLabel": OVERLAYS[overlay_id]["label"] if overlay_id else None,
@@ -261,15 +264,17 @@ def build_plan(
         "ambience": ambience_id,
         "ambienceLabel": AMBIENCE[ambience_id]["label"] if ambience_id else None,
         "ambienceVolume": 0.12 + 0.06 * intensity,
-        "lowpassHz": 2800,
+        "lowpassHz": 2600 if (look and look["warm"] > 20) else 3000,
         "sfx": hits,
+        "sfxPalette": palette,
         "chapters": chapters,
         "watermark": watermark,
+        "look": look_out,
         "intensity": intensity,
         "target": target,
-        "cycle": round(cycle, 3),
-        "look": look_out,
-        "sfxPalette": palette,
+        "cycle": cycle,
+        "visualStyle": visual_style_meta["id"],
+        "visualStyleLabel": visual_style_meta["label"],
     }
 
 
@@ -367,17 +372,19 @@ def render_composed(
 ) -> None:
     """Loop video + song + atmosphere + SFX + watermark. YouTube-safe encode."""
     shorts = aspect in ("shorts", "9:16", "vertical")
-    w, h = _probe_wh(video_seg)
+    orig_w, orig_h = _probe_wh(video_seg)
     fps = _probe_fps(video_seg)
 
     if shorts:
         w, h = 1080, 1920
         target = min(30.0, max(20.0, target))
     elif preview:
-        scale = min(1.0, 960 / max(w, 1))
-        w, h = _even(int(w * scale)), _even(int(h * scale))
+        scale = min(1.0, 960 / max(orig_w, 1))
+        w, h = _even(int(orig_w * scale)), _even(int(orig_h * scale))
         target = min(target, 20.0)
-
+    else:
+        # Full HD 1080p para YouTube (1920x1080)
+        w, h = 1920, 1080
     oid = plan.get("overlay")
     opacity = float(plan.get("opacity") or 0.3)
     blend = plan.get("blend") or "screen"
@@ -417,15 +424,32 @@ def render_composed(
         sfx_indices.append((idx, s))
         idx += 1
 
+    style_id = plan.get("visualStyle") or "anime_lofi"
+    from catalog import visual_style_filter
+    sfilter = visual_style_filter(style_id)
+
     # --- video ---
     if shorts:
-        cover = (
-            f"scale={w}:{h}:force_original_aspect_ratio=increase:flags=bicubic,"
-            f"crop={w}:{h},setsar=1,setpts=PTS-STARTPTS"
-        )
-        vf = [f"[0:v]{cover}[base]"]
+        is_already_vertical = orig_h > 0 and (orig_w / orig_h) <= 0.65
+        if is_already_vertical:
+            cover = (
+                f"scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos,"
+                f"crop={w}:{h},setsar=1,{sfilter},setpts=PTS-STARTPTS"
+            )
+            vf = [f"[0:v]{cover}[base]"]
+        else:
+            vf = [
+                "[0:v]split=2[bg_src][fg_src];"
+                f"[bg_src]scale={w}:{h}:force_original_aspect_ratio=increase:flags=bicubic,"
+                f"crop={w}:{h},setsar=1,boxblur=28:3,eq=brightness=-0.12:contrast=1.06,setpts=PTS-STARTPTS[bg];"
+                f"[fg_src]scale={w}:-2:flags=lanczos:force_original_aspect_ratio=decrease,setsar=1,{sfilter},setpts=PTS-STARTPTS[fg];"
+                f"[bg][fg]overlay=x=(W-w)/2:y=(H-h)/2:format=auto[base]"
+            ]
     else:
-        vf = [f"[0:v]scale={w}:{h}:flags=bicubic,setsar=1,setpts=PTS-STARTPTS[base]"]
+        vf = [
+            f"[0:v]scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos,"
+            f"crop={w}:{h},setsar=1,{sfilter},setpts=PTS-STARTPTS[base]"
+        ]
     last = "base"
     if ov_idx is not None:
         vf.append(
