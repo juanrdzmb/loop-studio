@@ -373,6 +373,8 @@ def _loop_segment(v_path: str, v_start: float, v_end: float, seg_path: str) -> f
         "-map", "[out]",
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "16",
         "-pix_fmt", "yuv420p", "-an",
+        "-map_metadata", "-1", "-fflags", "+bitexact",
+        "-metadata", "encoder=",
         seg_path,
     ], timeout=900)
     return seg_dur

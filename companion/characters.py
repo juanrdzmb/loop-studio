@@ -407,15 +407,13 @@ def build_youtube_pack(
     mood = atmosphere if atmosphere and atmosphere not in ("auto", "off") else None
     blurb = _blurb(cid)
 
-    # First ~150 chars = YouTube search snippet
     first = (
-        f"{label} (slowed + reverb) — {meta['series']} aesthetic loop "
-        f"for late nights, study, and sleep."
+        f"{label} (slowed + reverb) for late nights, study, and sleep. "
+        f"{meta['series']} · {meta['name']} aesthetic loop."
     )
     tags = list(meta["tags"])
     if song_l:
         tags = [song_l.lower(), *tags]
-    # 5 hashtags max: global winners + character
     hashes = ["#slowedandreverb", "#animeaesthetic", "#lofi"]
     for h in meta["hashtags"]:
         if h not in hashes and len(hashes) < 5:
@@ -426,11 +424,10 @@ def build_youtube_pack(
         f"0:00 {label} (Slowed + Reverb)\n\n"
         f"{blurb}\n\n"
         f"{dur} seamless loop"
-        f"{f' · {mood} atmosphere' if mood else ''}. "
-        f"The cut never shows — video and song crossfade at the seam.\n\n"
+        f"{f' · {mood} atmosphere' if mood else ''}.\n\n"
         f"Silent Vigil Music\n"
         f"Playlist: {meta['playlist']}\n\n"
-        f"What should I slow down next?\n\n"
+        f"comment the next song\n\n"
         f"{' '.join(hashes)}"
     )
 
@@ -442,8 +439,8 @@ def build_youtube_pack(
     if len(shorts_title) > 55:
         shorts_title = shorts_title[:54].rsplit(" ", 1)[0]
     shorts_desc = (
-        f"{label} slowed + reverb · {meta['series']} · {meta['name']}\n\n"
-        f"Full loop on the channel — this is the 20–30s teaser.\n\n"
+        f"{label} slowed + reverb · {meta['name']} · {meta['series']}\n"
+        f"full loop on the channel\n\n"
         f"{' '.join(shorts_hashes)}"
     )
 

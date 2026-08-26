@@ -460,6 +460,11 @@ def render_composed(
         "-t", f"{target:.4f}",
         *vflags,
         "-c:a", "aac", "-b:a", a_br, "-ar", "48000",
+        "-map_metadata", "-1", "-map_chapters", "-1",
+        "-fflags", "+bitexact", "-flags:v", "+bitexact", "-flags:a", "+bitexact",
+        "-metadata", "encoder=",
+        "-metadata:s:v:0", "handler_name=",
+        "-metadata:s:a:0", "handler_name=",
         "-movflags", "+faststart",
         out_path,
     ]
