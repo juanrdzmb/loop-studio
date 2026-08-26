@@ -4,7 +4,7 @@ set -e
 cd "$(dirname "$0")"
 
 export PATH="$HOME/.local/bin:$PATH"
-export LOOP_STUDIO_OUT="${LOOP_STUDIO_OUT:-$HOME/Música/Dark/Youtube/export}"
+export LOOP_STUDIO_OUT="${LOOP_STUDIO_OUT:-$HOME/Vídeos/Dark/Youtube/export}"
 if [ ! -f .venv/bin/python ]; then
   echo "⚠️  Creando entorno virtual (primera vez)..."
   uv venv .venv --python 3.12

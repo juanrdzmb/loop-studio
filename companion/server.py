@@ -27,8 +27,11 @@ def _studio_out() -> Path:
     raw = os.environ.get("LOOP_STUDIO_OUT")
     if raw:
         return Path(raw).expanduser()
-    return Path.home() / "Música" / "Dark" / "Youtube" / "export"
-
+    # Prefer ~/Vídeos/Dark/Youtube/export (standard Spanish XDG), fallback to ~/Videos/...
+    p = Path.home() / "Vídeos" / "Dark" / "Youtube" / "export"
+    if not p.parent.parent.exists() and (Path.home() / "Videos").exists():
+        p = Path.home() / "Videos" / "Dark" / "Youtube" / "export"
+    return p
 
 def _archive_render(src: str, *, shorts: bool, preview: bool) -> str | None:
     if preview or not src or not os.path.isfile(src):
