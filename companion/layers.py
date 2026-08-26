@@ -457,10 +457,12 @@ def render_composed(
         mix.append("[amb]")
     for i, s in sfx_indices:
         ms = int(max(0, s["time"]) * 1000)
-        g = float(s.get("gain") or 0.35)
+        base_g = float(s.get("gain") or 0.08)
+        intensity_val = float(plan.get("intensity") or 0.45)
+        g = base_g * (0.6 + 0.6 * intensity_val)
         af.append(
             f"[{i}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,"
-            f"adelay={ms}|{ms},volume={g:.3f}[sfx{i}]"
+            f"lowpass=f=3600,adelay={ms}|{ms},volume={g:.4f}[sfx{i}]"
         )
         mix.append(f"[sfx{i}]")
     n = len(mix)
