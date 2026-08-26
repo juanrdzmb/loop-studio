@@ -39,3 +39,21 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# ── Medios y artefactos locales (no subir) ──
+*.mp4
+*.wav
+*.mp3
+*.flac
+*.ogg
+*.mov
+*.avi
+*.webm
+*.zip
+*.rar
+*.7z
+companion/.venv/
+companion/__pycache__/
+**/__pycache__/
+*.log
+/tmp/
