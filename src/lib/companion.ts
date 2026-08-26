@@ -1,6 +1,6 @@
 "use client";
 
-/** Cliente del companion local (PyMusicLooper + LoopyCut + ffmpeg) */
+/** Cliente del companion local (PyMusicLooper + LoopyCut + ffmpeg + capas) */
 
 export const COMPANION_URL = "http://localhost:8787";
 
@@ -17,11 +17,59 @@ export interface CompanionHealth {
   pymusiclooper_version: string | null;
   loopycut: boolean;
   ffmpeg: boolean;
+  librosa?: boolean;
 }
 
-export async function companionHealth(
-  timeoutMs = 2500
-): Promise<CompanionHealth | null> {
+export interface OverlayOption {
+  id: string;
+  label: string;
+}
+
+export interface LayerSfx {
+  id: string;
+  label: string;
+  time: number;
+  gain: number;
+  reason: string;
+}
+
+export interface LayerPlan {
+  overlay: string | null;
+  overlayLabel: string | null;
+  blend: string | null;
+  opacity: number | null;
+  ambience: string | null;
+  ambienceLabel: string | null;
+  ambienceVolume: number;
+  lowpassHz: number;
+  sfx: LayerSfx[];
+  chapters: { start: number; end: number; overlay: string; label: string }[];
+  watermark: boolean;
+  intensity: number;
+  target: number;
+  cycle: number;
+  look?: {
+    brightness: number;
+    hue: number;
+    sat: number;
+    motion: number;
+    warm: number;
+    overlayReason: string;
+  } | null;
+  sfxPalette?: string[];
+}
+
+export interface RenderParams {
+  videoStart: number;
+  videoEnd: number;
+  audioStart: number;
+  audioEnd: number;
+  targetDuration: number;
+  preview?: boolean;
+  plan?: LayerPlan | Record<string, unknown>;
+}
+
+export async function companionHealth(timeoutMs = 2500): Promise<CompanionHealth | null> {
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -34,6 +82,17 @@ export async function companionHealth(
   }
 }
 
+export async function listOverlays(): Promise<OverlayOption[]> {
+  try {
+    const res = await fetch(`${COMPANION_URL}/assets`);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return (data.overlays || []) as OverlayOption[];
+  } catch {
+    return [];
+  }
+}
+
 export async function analyzeMusic(
   audio: File,
   opts: { minDuration?: number; maxDuration?: number; candidates?: number } = {}
@@ -43,10 +102,7 @@ export async function analyzeMusic(
   if (opts.minDuration) fd.append("min_duration", String(opts.minDuration));
   if (opts.maxDuration) fd.append("max_duration", String(opts.maxDuration));
   fd.append("candidates", String(opts.candidates ?? 8));
-  const res = await fetch(`${COMPANION_URL}/analyze/music`, {
-    method: "POST",
-    body: fd,
-  });
+  const res = await fetch(`${COMPANION_URL}/analyze/music`, { method: "POST", body: fd });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || "Error analizando la canción");
   return data.candidates as LoopCandidate[];
@@ -58,7 +114,6 @@ export async function analyzeVideo(
     length?: number;
     downsample?: number;
     similarity?: number;
-    /** Analiza como máximo los primeros N segundos (0 = todo el video) */
     windowSec?: number;
   } = {}
 ): Promise<LoopCandidate[]> {
@@ -68,23 +123,45 @@ export async function analyzeVideo(
   fd.append("downsample", String(opts.downsample ?? 2));
   fd.append("similarity", String(opts.similarity ?? 90));
   fd.append("window_sec", String(opts.windowSec ?? 120));
-  const res = await fetch(`${COMPANION_URL}/analyze/video`, {
-    method: "POST",
-    body: fd,
-  });
+  const res = await fetch(`${COMPANION_URL}/analyze/video`, { method: "POST", body: fd });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || "Error analizando el video");
   return data.candidates as LoopCandidate[];
 }
 
-export interface RenderParams {
-  videoStart: number;
-  videoEnd: number;
-  audioStart: number;
-  audioEnd: number;
-  videoMode: "cut" | "crossfade";
-  crossfadeSec: number;
-  syncMode: "repeat" | "speed";
+export async function planLayers(
+  audio: File,
+  opts: {
+    audioStart: number;
+    audioEnd: number;
+    target: number;
+    atmosphere: string;
+    sfxOn: boolean;
+    intensity: number;
+    watermark: boolean;
+    video?: File | null;
+    videoStart?: number;
+    videoEnd?: number;
+  }
+): Promise<LayerPlan> {
+  const fd = new FormData();
+  fd.append("audio", audio);
+  fd.append("audio_start", String(opts.audioStart));
+  fd.append("audio_end", String(opts.audioEnd));
+  fd.append("target", String(opts.target));
+  fd.append("atmosphere", opts.atmosphere);
+  fd.append("sfx_on", opts.sfxOn ? "1" : "0");
+  fd.append("intensity", String(opts.intensity));
+  fd.append("watermark", opts.watermark ? "1" : "0");
+  if (opts.video) {
+    fd.append("video", opts.video);
+    fd.append("video_start", String(opts.videoStart ?? 0));
+    fd.append("video_end", String(opts.videoEnd ?? 0));
+  }
+  const res = await fetch(`${COMPANION_URL}/plan/layers`, { method: "POST", body: fd });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "Error planificando capas");
+  return data as LayerPlan;
 }
 
 export async function renderLoop(
@@ -96,10 +173,7 @@ export async function renderLoop(
   fd.append("video", video);
   fd.append("audio", audio);
   fd.append("params", JSON.stringify(params));
-  const res = await fetch(`${COMPANION_URL}/render`, {
-    method: "POST",
-    body: fd,
-  });
+  const res = await fetch(`${COMPANION_URL}/render`, { method: "POST", body: fd });
   if (!res.ok) {
     let msg = "Error renderizando";
     try {
@@ -111,4 +185,81 @@ export async function renderLoop(
     throw new Error(msg);
   }
   return res.blob();
+}
+
+export interface CastMember {
+  id: string;
+  name: string;
+  series: string;
+  aka: string;
+  playlist: string;
+  hasEssay: boolean;
+  hasRefs: boolean;
+}
+
+export interface CharacterGuess {
+  id: string;
+  name: string;
+  series: string;
+  confidence: number;
+  reason: string;
+  scores: Record<string, number>;
+  alternatives: { id: string; name: string; score: number }[];
+}
+
+export interface YoutubePack {
+  character: string;
+  name: string;
+  series: string;
+  title: string;
+  description: string;
+  hashtags: string[];
+  tags: string[];
+  tagsLine: string;
+  playlist: string;
+  pinnedComment: string;
+  thumbnailTip: string;
+}
+
+export async function listCharacters(): Promise<CastMember[]> {
+  try {
+    const res = await fetch(`${COMPANION_URL}/characters`);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return (data.characters || []) as CastMember[];
+  } catch {
+    return [];
+  }
+}
+
+export async function identifyCharacter(
+  video: File,
+  opts: { start?: number; end?: number; filename?: string } = {}
+): Promise<CharacterGuess> {
+  const fd = new FormData();
+  fd.append("video", video);
+  fd.append("video_start", String(opts.start ?? 0));
+  fd.append("video_end", String(opts.end ?? 0));
+  fd.append("filename", opts.filename || video.name);
+  const res = await fetch(`${COMPANION_URL}/identify/character`, { method: "POST", body: fd });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "Error identificando personaje");
+  return data as CharacterGuess;
+}
+
+export async function youtubePack(opts: {
+  character: string;
+  song?: string;
+  minutes: number;
+  atmosphere?: string;
+}): Promise<YoutubePack> {
+  const fd = new FormData();
+  fd.append("character", opts.character);
+  if (opts.song) fd.append("song", opts.song);
+  fd.append("minutes", String(opts.minutes));
+  if (opts.atmosphere) fd.append("atmosphere", opts.atmosphere);
+  const res = await fetch(`${COMPANION_URL}/youtube/pack`, { method: "POST", body: fd });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "Error creando pack de YouTube");
+  return data as YoutubePack;
 }

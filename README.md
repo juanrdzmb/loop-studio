@@ -1,116 +1,137 @@
-# 🌀 Loop Studio
+# Loop Studio
 
-Estudio de loops que corre 100 % en tu máquina: **GIFs pixel art con loop perfecto**, **slowed + reverb con efectos profesionales**, **combinación GIF + música → MP4** y **videos con loop perfecto sincronizados con canciones**.
+Soy Juan. Monté esto para hacer **loops de video + canción slowed/reverb** listos para YouTube (marca Silent Vigil Music) sin subir nada a la nube. También sirve para GIFs pixel art y para combinar un GIF con el WAV.
 
-Nada sale de tu equipo: todo el procesamiento de video/audio ocurre en el navegador (WebCodecs + Web Audio API). Solo la pestaña "Video + Canción" usa un pequeño companion local en Python para detección de loops con [PyMusicLooper](https://github.com/arkrow/PyMusicLooper) y [LoopyCut](https://github.com/carmelosantana/loopycut-cli).
+Todo corre en tu máquina. El navegador hace GIF, slowed y Combinar. La pestaña **Video + Canción** habla con un companion local en Python (`:8787`) para detectar loops, personaje, atmósfera y renderizar con ffmpeg.
 
-## 🚀 Arranque rápido
+Repo: https://github.com/juanrdzmb/loop-studio
 
-### 1. App web (siempre)
-```bash
-cd ~/Proyectos/loop-studio
-npm install          # solo la primera vez
-npm run dev          # → http://localhost:3000
-```
+## Qué hace
 
-### 2. Companion (solo para la pestaña "Video + Canción")
-```bash
-cd ~/Proyectos/loop-studio/companion
-./start.sh           # → http://localhost:8787 (crea el venv e instala deps solo la primera vez)
-```
-La app detecta el companion automáticamente: si está apagado, la pestaña "Video + Canción" te lo indica; todo lo demás funciona sin él.
-
-### Todo de una vez
-```bash
-./start.sh           # arranca app + companion juntos
-```
-
-## 📖 Las 4 herramientas
-
-| Pestaña | Qué hace | Necesita companion |
+| Pestaña | Para qué la uso | Companion |
 |---|---|---|
-| **GIF Studio** (`/`) | Recorta un video, elige modo de loop (Normal / Boomerang / Crossfade / Auto-MSE), estilo pixel art (Game Boy, NES, Anime Lo-Fi, 8-Bit…) con **preview exacto** y descarga el GIF | ❌ Todo en tu navegador |
-| **Slowed + Reverb** (`/slowed-reverb`) | Ralentiza canciones con reverb de placa Dattorro, bass boost, rotación 8D, crackle de vinilo, ancho estéreo — todo en tiempo real. Exporta WAV | ❌ Todo en tu navegador |
-| **Combinar → MP4** (`/combinar`) | Tu GIF ya editado + la canción slowed → **MP4 (H.264 + AAC)** listo para YouTube, renderizado con WebCodecs | ❌ Todo en tu navegador |
-| **Video + Canción** (`/video-loop`) | Elige un loop de video (con **mini-preview en hover**), decide la duración final en minutos, escucha los loops de la canción en la **waveform interactiva**, recórtala a mano o usa la canción completa → **MP4 limpio con ffmpeg** | ✅ Sí |
+| **GIF Studio** `/` | Recorto, elijo el loop, aplico estilo pixel y bajo el GIF (el preview es el mismo pipeline que el export) | No |
+| **Slowed + Reverb** `/slowed-reverb` | Bajo el tempo con reverb Dattorro, vinilo, 8D… exporto WAV | No |
+| **Combinar** `/combinar` | GIF ya editado + WAV → MP4 en el navegador | No |
+| **Video + Canción** `/video-loop` | Loop de video + canción a N minutos + niebla/SFX/marca + pack de YouTube | Sí |
 
-## 🎬 Flujo recomendado: GIF pixel art con música
+## Instalar
 
-1. **GIF Studio**: sube el video → recorta → elige loop y estilo → mira el **preview exacto** → Generar GIF
-2. **Slowed + Reverb**: sube la canción → ajusta velocidad/reverb en vivo → Exportar WAV
-3. **Combinar → MP4**: tu GIF llega ya editado (no se re-procesa) + el WAV → preview conjunto → Generar MP4 → subir a YouTube
+Necesitas **Node 20+**, **ffmpeg** y, para Video + Canción, **uv**.
 
-## 🎥 Flujo recomendado: video largo con canción (loop perfecto)
+```bash
+git clone https://github.com/juanrdzmb/loop-studio.git
+cd loop-studio
+npm install
 
-1. Arranca el **companion** (`companion/start.sh`)
-2. **Video + Canción**: sube tu video → "Detectar loops automáticos" (LoopyCut, tarda segundos) → **pasa el cursor por las tarjetas para ver cada loop en bucle** → elige
-3. Sube la canción y elige cómo obtener el audio:
-   - **🎵 Loop detectado**: di cuántos **minutos** quieres que dure el video final; PyMusicLooper busca loops de esa duración alineados a beats. **Clic en la onda** para escuchar cada loop.
-   - **✂️ Recortar a mano**: arrastra sobre la onda y quédate con el trozo que quieras.
-   - **🎶 Canción completa**: el fragmento de video se repite hasta cubrirla.
-4. Elige cómo unirlos — **corte directo o crossfade** · **repetir el video o estirarlo** — el **preview ya muestra el resultado** con audio antes de generar
-5. Generar MP4 → descargar
+# companion (una vez)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source ~/.bashrc
+uv tool install pymusiclooper
+# Debian/Ubuntu:
+sudo apt install ffmpeg
+# Fedora:
+# sudo dnf install ffmpeg
 
-## ✨ Detalles técnicos
+chmod +x start.sh companion/start.sh
+```
 
-- **Preview exacto del GIF**: el preview usa el mismo pipeline que la exportación (extracción → loop → estilo → cuantización), así que lo que ves es pixel-perfect al resultado.
-- **Cuantización global**: una sola paleta para todo el GIF (sin parpadeo de color entre frames) + dithering Bayer adaptativo que suaviza degradados.
-- **Extracción de frames rápida**: mediabunny + WebCodecs decodifican cada paquete una sola vez (~10× más rápido que seek por frame), con fallback automático a `<video>`.
-- **Reverb de placa Dattorro** (AudioWorklet, dominio público): red de delay/feedback modulada, el estándar de oro algorítmico. El preview en vivo y el export WAV usan el mismo motor.
-- **Detección de loops veloz**: LoopyCut analiza frames reducidos con stride adaptativo y ventana configurable (por defecto los primeros 120 s, editable en la UI) — segundos en vez de minutos.
-- **Render MP4**: el companion usa ffmpeg (H.264 + AAC, `+faststart`); la pestaña Combinar usa WebCodecs vía mediabunny acelerado por hardware.
+Arranque:
 
-## 🧪 Pruebas
+```bash
+./start.sh
+# App    → http://localhost:3000
+# Companion → http://localhost:8787/health
+```
+
+O por separado: `npm run dev` y `companion/start.sh`.
+
+Si el 8787 está ocupado, mata el Python viejo (`ss -ltnp | grep 8787`) y vuelve a lanzar el companion. El badge de la pestaña tiene que decir **Companion activo**.
+
+## Cómo lo uso (Video + Canción)
+
+1. Subo el clip. Pulso **Encontrar loops suaves**. Paso el cursor por las tarjetas (calidad = qué tan bien encaja el final con el inicio; ya no sale todo a 100 %).
+2. Subo la canción. Por defecto va **entera**. Si pido más minutos de los que dura, el companion **funde el final con el inicio** y la repite. Si pido menos, no la corta en loop: usa el trozo.
+3. Pongo los minutos (`1m 3m 5m 10m 30m 1h`).
+4. Atmósfera: automático (mira el clip: fuego, niebla, lluvia…) o la elijo yo. **Ver cómo quedaría (20 s)** y luego **Generar**.
+5. La marca **Silent Vigil Music** (Montserrat, sin ©) recorre el **borde superior**.
+6. Al subir el video detecta si es **Guts, Thorfinn, Musashi o Buntarō**. Puedo corregirlo. Ahí mismo copio título, descripción, tags, playlist y comentario anclado — salen de los ensayos en `docs/`.
+
+No hay “corte vs speed vs crossfade”: el video siempre se funde; la duración que pido manda.
+
+## Archivos que no van al git (los pongo yo en local)
+
+```
+assets/
+  overlays/          fog.mp4 smoke.mp4 rain.mp4 particles.mp4 Fire.mp4 …
+  audio_ambience/    night, wind, rain, thunder.mp3, sword.mp3, katana.mp3 …
+docs/refs/
+  guts/ thorfinn/ musashi/ buntaro/    # capturas jpg/png/webp (no hace falta AVIF)
+```
+
+`assets/README.md` y `docs/refs/README.md` dicen los nombres. Sin overlays, el render funciona igual, solo que sin niebla. Sin fotos en `refs/`, el personaje se adivina por el dibujo y el nombre del archivo; con fotos acierta más.
+
+## Adaptarlo a tu canal
+
+No está atado a Silent Vigil. Cambia esto y es tuyo:
+
+| Quieres… | Dónde |
+|---|---|
+| Otra marca de agua | `companion/watermark.py` → `BRAND` y la fuente |
+| Otros overlays / SFX | `assets/` + `companion/catalog.py` (`OVERLAYS`, `AMBIENCE`, `SFX`) |
+| Otros protagonistas | `companion/characters.py` → dict `CHARACTERS` (id, series, hashtags, `filename_keys`) |
+| Otros ensayos para YouTube | sustituye los `.md` de `docs/` (el pack lee el texto al vuelo) |
+| Otras caras de referencia | `docs/refs/<id>/*.jpg` — jpg/png/webp, da igual el peso |
+| Otro puerto | app `npm run dev -- -p …`; companion en `companion/start.sh` |
+
+Los ids de `CHARACTERS` tienen que coincidir con la carpeta `docs/refs/<id>/` y con una palabra en el nombre del `.md` (`Guts.md`, `Thorfinn.md`, `Miyamoto Musashi.md`, `Buntarō Mori.md`).
+
+## Cómo detecto al personaje
+
+1. Nombre del archivo (`guts`, `berserk`, `thorfinn`, `vinland`, `musashi`, `vagabond`, `buntaro`, `climber`, `k2`…).
+2. Histograma frente a `docs/refs/<id>/`.
+3. Estilo del fotograma: tinta (Vagabond), nieve (The Climber), oscuro/armadura (Berserk), frío (Vinland).
+
+Siempre elige uno de los cuatro. Si se equivoca, lo cambio a mano en la UI.
+
+## Pack de YouTube (lo que copio al subir)
+
+Sigo lo que funciona ahora en el nicho slowed + reverb / aesthetic:
+
+- Título corto, keywords delante: `Tema (Slowed + Reverb) | The Black Swordsman`
+- Descripción: *slowed reverb + serie + study/sleep* en las dos primeras líneas, luego un recorte del ensayo, CTA, playlist, 3–5 hashtags
+- Thumbnail: un fotograma limpio, poco texto
+- Comentario anclado: una pregunta
+- La música entra al segundo 0 (el render no lleva intro)
+
+## Pruebas
 
 ```bash
 npm run lint
 npm run build
-# Con la app y el companion corriendo:
-node scripts/e2e.mjs           # flujo GIF completo (9 pruebas)
-node scripts/e2e-live.mjs      # controles en vivo de audio (8)
-node scripts/e2e-session.mjs   # GIF editado → Combinar sin re-editar (12)
-node scripts/e2e-videoloop.mjs # Video + Canción (requiere companion) (8)
-```
-Los scripts usan Chromium de Playwright y generan sus medios de prueba en `/tmp/opencode/loop-e2e`.
-
-## 🧰 Requisitos
-
-- **Node.js 20+** (app web)
-- **ffmpeg** en PATH (companion)
-- Para "Video + Canción": **uv** (instala solo) → `curl -LsSf https://astral.sh/uv/install.sh | sh`, luego `companion/start.sh` instala el resto automáticamente
-- Navegador con WebCodecs (Chrome/Edge) para la extracción rápida de frames y el render de Combinar; hay fallback para otros navegadores
-
-## 📁 Estructura
-
-```
-loop-studio/
-├── src/
-│   ├── app/                  # 4 páginas (GIF, Slowed, Combinar, Video+Canción)
-│   ├── components/           # UI compartida + previews en vivo + waveform
-│   └── lib/                  # pipelines (frames, loops, estilos, GIF, MP4, audio)
-├── public/
-│   └── dattorro.worklet.js   # placa de reverb Dattorro (AudioWorklet)
-├── companion/                # servidor Python local (PyMusicLooper + LoopyCut + ffmpeg)
-│   ├── server.py             # API: /health /analyze/music /analyze/video /render
-│   ├── start.sh
-│   └── loopycut/             # clon de carmelosantana/loopycut-cli (vendido)
-├── scripts/                  # pruebas E2E (playwright-core + Chromium local)
-└── start.sh                  # arranca app + companion
+# app en :3000 y companion en :8787
+node scripts/e2e.mjs
+node scripts/e2e-live.mjs
+node scripts/e2e-session.mjs
+node scripts/e2e-videoloop.mjs
 ```
 
-### API del companion (localhost:8787)
+Los e2e fabrican clips en `/tmp/opencode/loop-e2e`.
 
-| Endpoint | Método | Descripción |
-|---|---|---|
-| `/health` | GET | Estado y herramientas disponibles |
-| `/analyze/music` | POST | PyMusicLooper: candidatos de loop (`min_duration`, `max_duration`, `candidates`) |
-| `/analyze/video` | POST | LoopyCut en frames reducidos: candidatos de loop (`window_sec`, `downsample`, `similarity`) |
-| `/render` | POST | ffmpeg: une el loop de video con el segmento de canción → MP4 |
+## Detalles que me importan
 
-## 📄 Créditos
+- GIF: una paleta global + dither Bayer (sin pixelar el modo Original).
+- Slowed: seek en el dominio de la fuente, Dattorro en worklet, no re-decodifica el buffer.
+- Video loop: LoopyCut a resolución baja; la **calidad** es la diferencia real inicio/fin.
+- Capas: ffmpeg `blend=screen`, ambiente con low-pass, SFX en valles RMS (librosa) y tipo de SFX según el look del clip.
+- Canción más corta que el target: acrossfade final→inicio y `stream_loop` (sin `-shortest`, que cortaba el vídeo).
 
-- [PyMusicLooper](https://github.com/arkrow/PyMusicLooper) (MIT) — detección de loop points en música
-- [LoopyCut](https://github.com/carmelosantana/loopycut-cli) (CC-BY-4.0) — detección de loop visual por SSIM
-- [fadeloop](https://github.com/flatpickles/fadeloop) — algoritmo de crossfade loop
-- [DattorroReverbNode](https://github.com/khoin/DattorroReverbNode) (dominio público) — motor de reverb placa Dattorro del Slowed + Reverb
-- [mediabunny](https://github.com/Vanilagy/mediabunny) · [gifenc](https://github.com/mattdesl/gifenc) · [pixelit](https://github.com/giventofly/pixelit) (algoritmo)
+## Requisitos
+
+- Node 20+, Chrome/Edge (WebCodecs; hay fallback)
+- ffmpeg, uv, Python 3.12 (lo crea `companion/start.sh`)
+- Font de marca: Montserrat Light en el sistema (`/usr/share/fonts/julietaula-montserrat-fonts/`); si no, Liberation Sans
+
+## Créditos
+
+[PyMusicLooper](https://github.com/arkrow/PyMusicLooper) · [LoopyCut](https://github.com/carmelosantana/loopycut-cli) · [fadeloop](https://github.com/flatpickles/fadeloop) · [DattorroReverbNode](https://github.com/khoin/DattorroReverbNode) · [mediabunny](https://github.com/Vanilagy/mediabunny) · [gifenc](https://github.com/mattdesl/gifenc)

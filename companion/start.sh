@@ -8,8 +8,8 @@ export PATH="$HOME/.local/bin:$PATH"
 if [ ! -f .venv/bin/python ]; then
   echo "⚠️  Creando entorno virtual (primera vez)..."
   uv venv .venv --python 3.12
-  uv pip install --python .venv/bin/python fastapi "uvicorn[standard]" python-multipart opencv-python-headless numpy tqdm
 fi
+uv pip install --python .venv/bin/python -q -r requirements.txt
 
 echo "🌀 Loop Studio Companion en http://localhost:8787"
 echo "   Health check: http://localhost:8787/health"

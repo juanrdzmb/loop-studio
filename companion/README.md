@@ -1,58 +1,63 @@
 # Loop Studio Companion
 
-Servidor Python local que da superpoderes a la pestaña **"Video + Canción"**:
-detecta los puntos de loop perfectos de canciones (PyMusicLooper) y de videos
-(LoopyCut, SSIM), y renderiza el MP4 final con ffmpeg.
+Servidor local (puerto **8787**) que usa la pestaña **Video + Canción**:
+detecta loops, identifica al personaje, arma el pack de YouTube y renderiza el MP4.
 
 ## Instalación (una vez)
 
 ```bash
-# 1) uv (gestiona Python aislado para PyMusicLooper)
+# uv gestiona Python 3.12 aislado
 curl -LsSf https://astral.sh/uv/install.sh | sh
-source ~/.bashrc   # o reinicia la terminal
+source ~/.bashrc
 
-# 2) PyMusicLooper (usa su propio Python 3.12, aislado de tu sistema)
+# detector de loops de música (CLI)
 uv tool install pymusiclooper
 
-# 3) ffmpeg si no lo tienes
-sudo apt install ffmpeg   # Debian/Ubuntu
+# ffmpeg
+sudo apt install ffmpeg   # Debian/Fedora: dnf install ffmpeg
 
-# 4) Dependencias del companion + LoopyCut (automático en el primer arranque)
-cd ~/Proyectos/loop-studio/companion
-./start.sh
+cd companion
+./start.sh                # crea .venv e instala requirements.txt
 ```
 
 ## Uso
 
 ```bash
 ./start.sh
-# → http://localhost:8787
+# → http://localhost:8787/health
 ```
 
-Déjalo corriendo mientras usas la app. La pestaña "Video + Canción" muestra
-"● Companion activo" cuando lo detecta.
+La app muestra «Companion activo» cuando responde.
 
 ## API
 
-| Endpoint | Descripción |
+| Endpoint | Qué hace |
 |---|---|
-| `GET /health` | Estado de pymusiclooper / loopycut / ffmpeg |
-| `POST /analyze/music` | multipart: `audio`, `min_duration`, `max_duration` → candidatos de loop `{start, end, duration, score}` |
-| `POST /analyze/video` | multipart: `video`, `length` (0=auto), `downsample`, `similarity` → candidatos de loop visual |
-| `POST /render` | multipart: `video`, `audio`, `params` (JSON) → MP4 H.264/AAC |
+| `GET /health` | pymusiclooper, loopycut, ffmpeg, librosa |
+| `GET /assets` | overlays de atmósfera disponibles |
+| `GET /characters` | los 4 protagonistas y si hay ensayo/fotos |
+| `POST /identify/character` | video + rango → quién sale (estilo, nombre, `docs/refs/`) |
+| `POST /youtube/pack` | `character`, `song`, `minutes` → título, descripción, tags, playlist |
+| `POST /analyze/music` | PyMusicLooper |
+| `POST /analyze/video` | LoopyCut (calidad = diferencia inicio/fin, no un 100 % inflado) |
+| `POST /plan/layers` | atmósfera + SFX (opcional: vídeo para elegir overlay) |
+| `POST /render` | ffmpeg: loop fundido + canción fundida + capas + marca de agua |
 
-`params` para `/render`:
+`params` de `/render`:
+
 ```json
 {
-  "videoStart": 1.4, "videoEnd": 4.4,
-  "audioStart": 7.5, "audioEnd": 18.9,
-  "videoMode": "cut" | "crossfade",
-  "crossfadeSec": 0.6,
-  "syncMode": "repeat" | "speed"
+  "videoStart": 0.5, "videoEnd": 3.5,
+  "audioStart": 0, "audioEnd": 180,
+  "targetDuration": 360,
+  "preview": false,
+  "plan": { "overlay": "fog", "watermark": true, "sfx": [] }
 }
 ```
 
+Si `targetDuration` es mayor que la canción, el companion funde final→inicio y la repite.
+
 ## Créditos
 
-- [PyMusicLooper](https://github.com/arkrow/PyMusicLooper) por arkrow (MIT)
-- [LoopyCut](https://github.com/carmelosantana/loopycut-cli) por Carmelo Santana (CC-BY-4.0)
+- [PyMusicLooper](https://github.com/arkrow/PyMusicLooper) (MIT)
+- [LoopyCut](https://github.com/carmelosantana/loopycut-cli) (CC-BY-4.0)

@@ -90,13 +90,125 @@ def health():
             pm_version = "desconocida"
     loopycut = os.path.isdir(LOOPYCUT_DIR)
     ffmpeg = _which("ffmpeg") is not None
+    librosa_ok = False
+    try:
+        import librosa  # noqa: F401
+        librosa_ok = True
+    except Exception:
+        pass
     return {
         "ok": bool(pm and ffmpeg),
         "pymusiclooper": bool(pm),
         "pymusiclooper_version": pm_version,
         "loopycut": loopycut,
         "ffmpeg": ffmpeg,
+        "librosa": librosa_ok,
     }
+
+
+@app.get("/assets")
+def list_assets():
+    from catalog import available_overlays
+    return {"overlays": available_overlays()}
+
+@app.get("/characters")
+def list_cast():
+    from characters import list_characters
+    return {"characters": list_characters()}
+
+
+@app.post("/identify/character")
+async def identify_character_ep(
+    video: UploadFile = File(...),
+    video_start: float = Form(0.0),
+    video_end: float = Form(0.0),
+    filename: str = Form(""),
+):
+    path = _save_upload(video, os.path.splitext(video.filename or "v.mp4")[1] or ".mp4")
+    try:
+        from characters import identify_character
+        return identify_character(
+            path,
+            start=max(0.0, video_start),
+            end=max(0.0, video_end),
+            filename=filename or (video.filename or ""),
+        )
+    except Exception as e:
+        return JSONResponse({"error": f"identificar falló: {e}"}, 500)
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+@app.post("/youtube/pack")
+async def youtube_pack_ep(
+    character: str = Form("guts"),
+    song: str = Form(""),
+    minutes: float = Form(1.0),
+    atmosphere: str = Form(""),
+):
+    from characters import build_youtube_pack
+    return build_youtube_pack(
+        character,
+        song=song or None,
+        minutes=max(0.1, minutes),
+        atmosphere=atmosphere or None,
+    )
+
+
+
+@app.post("/plan/layers")
+async def plan_layers(
+    audio: UploadFile = File(...),
+    audio_start: float = Form(0.0),
+    audio_end: float = Form(0.0),
+    target: float = Form(60.0),
+    atmosphere: str = Form("auto"),
+    sfx_on: str = Form("1"),
+    intensity: float = Form(0.45),
+    watermark: str = Form("1"),
+    video: UploadFile | None = File(None),
+    video_start: float = Form(0.0),
+    video_end: float = Form(0.0),
+):
+    paths: list[str] = []
+    path = _save_upload(audio, os.path.splitext(audio.filename or "a.mp3")[1] or ".mp3")
+    paths.append(path)
+    video_path = None
+    if video and video.filename:
+        video_path = _save_upload(video, os.path.splitext(video.filename)[1] or ".mp4")
+        paths.append(video_path)
+    try:
+        info = _ffprobe_info(path)
+        end = audio_end if audio_end > audio_start else info["duration"]
+        from layers import build_plan
+        kwargs = {}
+        if video_path:
+            kwargs["video_path"] = video_path
+            kwargs["video_start"] = video_start
+            kwargs["video_end"] = video_end
+        plan = build_plan(
+            path,
+            audio_start=max(0.0, audio_start),
+            audio_end=end,
+            target=max(8.0, target),
+            atmosphere=atmosphere,
+            sfx_on=sfx_on not in ("0", "false", "off"),
+            intensity=intensity,
+            watermark=watermark not in ("0", "false", "off"),
+            **kwargs,
+        )
+        return plan
+    except Exception as e:
+        return JSONResponse({"error": f"plan falló: {e}"}, 500)
+    finally:
+        for p in paths:
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
 
 
 @app.post("/analyze/music")
@@ -214,14 +326,17 @@ async def analyze_video(
             )
 
         cands = []
-        for l in loops[:8]:
+        for l in loops:
+            start = float(l["start_time"])
+            end = float(l["end_time"])
             cands.append({
-                "start": round(float(l["start_time"]), 3),
-                "end": round(float(l["end_time"]), 3),
+                "start": round(start, 3),
+                "end": round(end, 3),
                 "duration": round(float(l["duration"]), 3),
-                "score": round(min(max(float(l.get("final_score", 0)), 0.0), 1.0) * 100, 1),
+                "score": _seam_pct(smalls, start, end, fps, stride),
             })
-        cands.sort(key=lambda c: c["score"], reverse=True)
+        longer = [c for c in cands if c["duration"] >= 1.2]
+        cands = _dedup_loops(longer or cands)[:8]
         return {
             "candidates": cands,
             "duration": round(duration, 3),
@@ -231,6 +346,129 @@ async def analyze_video(
         return JSONResponse({"error": f"análisis falló: {e}"}, 500)
     finally:
         os.unlink(path)
+
+
+def _loop_segment(v_path: str, v_start: float, v_end: float, seg_path: str) -> float:
+    """Recorta el loop de video y funde final→inicio para que al repetir no se note el corte."""
+    v_dur = round(v_end - v_start, 6)
+    if v_dur > 1.6:
+        f = min(0.7, v_dur / 4)
+        vf = (
+            f"split[m][t];"
+            f"[t]trim=start={v_dur - f},setpts=PTS-STARTPTS[t1];"
+            f"[m]trim=end={v_dur - f},setpts=PTS-STARTPTS[m1];"
+            f"[m1][t1]xfade=transition=fade:duration={f}:offset={max(0.05, v_dur - 2 * f)}[out]"
+        )
+        seg_dur = v_dur - f
+    else:
+        vf = "setpts=PTS-STARTPTS[out]"
+        seg_dur = v_dur
+    _run([
+        "ffmpeg", "-y", "-v", "error",
+        "-ss", str(v_start), "-to", str(v_end), "-i", v_path,
+        "-filter_complex", vf,
+        "-map", "[out]",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "16",
+        "-pix_fmt", "yuv420p", "-an",
+        seg_path,
+    ], timeout=900)
+    return seg_dur
+
+def _seam_pct(smalls: list, start_t: float, end_t: float, fps: float, stride: int) -> float:
+    """Calidad del corte: qué tan distintos son inicio y fin (0–99.9).
+
+    LoopyCut marca ~1.0 a casi todo lo que pasa el umbral y luego suma un
+    bonus de duración: al clamp a 100% todas las tarjetas salían iguales.
+    Aquí usamos el MAD en gris de los frames inicio/fin.
+    """
+    import cv2
+    import numpy as np
+
+    if not smalls or fps <= 0 or stride < 1:
+        return 0.0
+    i = int(round(start_t * fps / stride))
+    j = int(round(end_t * fps / stride))
+    i = max(0, min(len(smalls) - 1, i))
+    j = max(0, min(len(smalls) - 1, j))
+    if i == j:
+        return 0.0
+    a = cv2.cvtColor(smalls[i], cv2.COLOR_RGB2GRAY).astype(np.float32)
+    b = cv2.cvtColor(smalls[j], cv2.COLOR_RGB2GRAY).astype(np.float32)
+    mad = float(np.mean(np.abs(a - b)))
+    return round(max(0.0, min(99.9, 100.0 * (1.0 - mad / 28.0))), 1)
+
+
+def _dedup_loops(cands: list[dict]) -> list[dict]:
+    """Quita ventanas que se pisan (mismo plano recortado 8 veces)."""
+    kept: list[dict] = []
+    for c in sorted(cands, key=lambda x: (-x["score"], -x["duration"])):
+        overlap = False
+        for k in kept:
+            inter = min(c["end"], k["end"]) - max(c["start"], k["start"])
+            union = max(c["end"], k["end"]) - min(c["start"], k["start"])
+            if union > 0 and inter / union > 0.45:
+                overlap = True
+                break
+        if not overlap:
+            kept.append(c)
+    return kept
+
+
+def _loop_audio(a_path: str, a_start: float, a_end: float, seg_path: str) -> float:
+    """Ciclo de canción con final fundido al inicio, para repetir sin corte seco."""
+    a_dur = round(a_end - a_start, 6)
+    fade = min(2.0, max(0.8, a_dur * 0.05))
+    if a_dur < fade * 3:
+        _run([
+            "ffmpeg", "-y", "-v", "error",
+            "-ss", str(a_start), "-to", str(a_end), "-i", a_path,
+            "-af", "aformat=sample_fmts=fltp:channel_layouts=stereo,aresample=48000",
+            "-c:a", "pcm_s16le",
+            seg_path,
+        ], timeout=600)
+        return a_dur
+    af = (
+        f"aformat=sample_fmts=fltp:channel_layouts=stereo,aresample=48000,asplit=3[beg][mid][end];"
+        f"[beg]atrim=start=0:end={fade:.4f},asetpts=PTS-STARTPTS[b];"
+        f"[end]atrim=start={a_dur - fade:.4f}:end={a_dur:.4f},asetpts=PTS-STARTPTS[e];"
+        f"[mid]atrim=start={fade:.4f}:end={a_dur - fade:.4f},asetpts=PTS-STARTPTS[m];"
+        f"[e][b]acrossfade=d={fade:.4f}:c1=tri:c2=tri[x];"
+        f"[m][x]concat=n=2:v=0:a=1[out]"
+    )
+    _run([
+        "ffmpeg", "-y", "-v", "error",
+        "-ss", str(a_start), "-to", str(a_end), "-i", a_path,
+        "-filter_complex", af,
+        "-map", "[out]",
+        "-c:a", "pcm_s16le",
+        seg_path,
+    ], timeout=600)
+    return a_dur - fade
+
+
+
+def _file_response(out_path: str) -> StreamingResponse:
+    def iter_file():
+        with open(out_path, "rb") as f:
+            while chunk := f.read(1 << 20):
+                yield chunk
+
+    import threading
+    import time
+
+    def _cleanup():
+        time.sleep(90)
+        try:
+            os.unlink(out_path)
+        except OSError:
+            pass
+
+    threading.Thread(target=_cleanup, daemon=True).start()
+    return StreamingResponse(
+        iter_file(),
+        media_type="video/mp4",
+        headers={"Content-Disposition": 'attachment; filename="loop-perfecto.mp4"'},
+    )
 
 
 @app.post("/render")
@@ -247,14 +485,16 @@ async def render(
     v_end = float(p["videoEnd"])
     a_start = float(p["audioStart"])
     a_end = float(p["audioEnd"])
-    video_mode = p.get("videoMode", "cut")          # cut | crossfade
-    crossfade = float(p.get("crossfadeSec", 0.5))
-    sync_mode = p.get("syncMode", "repeat")          # repeat | speed
+    preview = bool(p.get("preview"))
+    target = float(p.get("targetDuration") or (a_end - a_start))
+    if preview:
+        target = min(target, 20.0)
+    plan = p.get("plan") or {}
 
     v_dur = v_end - v_start
     a_dur = a_end - a_start
-    if v_dur <= 0.1 or a_dur <= 0.1:
-        return JSONResponse({"error": "duraciones de loop demasiado cortas"}, 400)
+    if v_dur <= 0.1 or a_dur <= 0.1 or target <= 0.5:
+        return JSONResponse({"error": "duraciones demasiado cortas"}, 400)
 
     v_path = _save_upload(video, os.path.splitext(video.filename or "v.mp4")[1] or ".mp4")
     a_path = _save_upload(audio, os.path.splitext(audio.filename or "a.mp3")[1] or ".mp3")
@@ -262,90 +502,41 @@ async def render(
     os.close(out_fd)
     seg_fd, seg_path = tempfile.mkstemp(suffix=".mp4")
     os.close(seg_fd)
+    a_seg_path = None
 
     try:
-        v_dur = round(v_end - v_start, 6)
-
-        # --- Pasada 1: segmento de video del loop (con crossfade opcional) ---
-        # NOTA: -ss/-to ya recortan la entrada; los tiempos del filtro son
-        # RELATIVOS al segmento (empiezan en 0) para no recortar dos veces.
-        if video_mode == "crossfade" and v_dur > crossfade * 2.5:
-            f = min(crossfade, v_dur / 3)
-            # fadeloop: el final del segmento se funde hacia su inicio;
-            # la salida dura v_dur - f (el fundido reemplaza los últimos f seg)
-            vf = (
-                f"split[m][t];"
-                f"[t]trim=start={v_dur - f},setpts=PTS-STARTPTS[t1];"
-                f"[m]trim=end={v_dur - f},setpts=PTS-STARTPTS[m1];"
-                f"[m1][t1]xfade=transition=fade:duration={f}:offset={max(0.05, v_dur - 2 * f)}[out]"
-            )
-            seg_dur = v_dur - f
-        else:
-            vf = "setpts=PTS-STARTPTS[out]"
-            seg_dur = v_dur
-
-        _run([
-            "ffmpeg", "-y", "-v", "error",
-            "-ss", str(v_start), "-to", str(v_end), "-i", v_path,
-            "-filter_complex", vf,
-            "-map", "[out]",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "16",
-            "-pix_fmt", "yuv420p", "-an",
-            seg_path,
-        ], timeout=900)
-        # --- Pasada 2: repetir segmento + loop de audio, duración = loop de audio ---
-        if sync_mode == "speed":
-            # 1 pasada de video ajustada a la duración del loop de audio
-            reps = 1
-            factor = a_dur / seg_dur  # >1 ralentiza el video para que dure a_dur
-            speed_filter = ["-vf", f"setpts=PTS*{factor:.6f}"]
-        else:
-            reps = max(1, int(target_reps := round(a_dur / seg_dur)) +
-                       (1 if a_dur % seg_dur > 0.05 else 0))
-            speed_filter = []
-
-        _run([
-            "ffmpeg", "-y", "-v", "error",
-            "-stream_loop", str(reps - 1), "-i", seg_path,
-            "-stream_loop", "200", "-ss", str(a_start), "-to", str(a_end), "-i", a_path,
-            *speed_filter,
-            "-t", f"{a_dur:.6f}",
-            "-map", "0:v", "-map", "1:a",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
-            "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-b:a", "192k",
-            "-movflags", "+faststart",
-            "-shortest",
-            out_path,
-        ], timeout=1800)
-
-        def iter_file():
-            with open(out_path, "rb") as f:
-                while chunk := f.read(1 << 20):
-                    yield chunk
-
-        return StreamingResponse(
-            iter_file(),
-            media_type="video/mp4",
-            headers={"Content-Disposition": 'attachment; filename="loop-perfecto.mp4"'},
+        _loop_segment(v_path, v_start, v_end, seg_path)
+        audio_for_render = a_path
+        rs, re = a_start, a_end
+        if target > a_dur + 0.05:
+            afd, a_seg_path = tempfile.mkstemp(suffix=".wav")
+            os.close(afd)
+            re = _loop_audio(a_path, a_start, a_end, a_seg_path)
+            rs = 0.0
+            audio_for_render = a_seg_path
+        from layers import render_composed
+        render_composed(
+            video_seg=seg_path,
+            audio_path=audio_for_render,
+            audio_start=rs,
+            audio_end=re,
+            target=target,
+            plan=plan,
+            out_path=out_path,
+            preview=preview,
+            timeout=300 if preview else 2400,
         )
+        return _file_response(out_path)
     except subprocess.CalledProcessError as e:
-        return JSONResponse({"error": f"ffmpeg falló: {e.stderr[-800:]}"}, 500)
+        err = (e.stderr or "")[-800:]
+        return JSONResponse({"error": f"ffmpeg falló: {err}"}, 500)
+    except Exception as e:
+        return JSONResponse({"error": f"render falló: {e}"}, 500)
     finally:
-        for pth in (v_path, a_path, seg_path):
+        for pth in (v_path, a_path, seg_path, a_seg_path):
+            if not pth:
+                continue
             try:
                 os.unlink(pth)
             except OSError:
                 pass
-        # out_path se borra tras enviar la respuesta (tarea en segundo plano)
-        import threading
-
-        def _cleanup():
-            import time
-            time.sleep(60)
-            try:
-                os.unlink(out_path)
-            except OSError:
-                pass
-
-        threading.Thread(target=_cleanup, daemon=True).start()

@@ -57,3 +57,10 @@ companion/__pycache__/
 **/__pycache__/
 *.log
 /tmp/
+
+# fotos de referencia de personajes (locales)
+docs/refs/**/*.jpg
+docs/refs/**/*.jpeg
+docs/refs/**/*.png
+docs/refs/**/*.webp
+
