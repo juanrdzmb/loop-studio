@@ -434,6 +434,19 @@ def build_youtube_pack(
         f"{' '.join(hashes)}"
     )
 
+    shorts_hashes = ["#Shorts", "#slowedandreverb", "#animeaesthetic"]
+    for h in meta["hashtags"]:
+        if h not in shorts_hashes and len(shorts_hashes) < 5:
+            shorts_hashes.append(h)
+    shorts_title = f"{label} (Slowed + Reverb)"
+    if len(shorts_title) > 55:
+        shorts_title = shorts_title[:54].rsplit(" ", 1)[0]
+    shorts_desc = (
+        f"{label} slowed + reverb · {meta['series']} · {meta['name']}\n\n"
+        f"Full loop on the channel — this is the 20–30s teaser.\n\n"
+        f"{' '.join(shorts_hashes)}"
+    )
+
     return {
         "character": cid,
         "name": meta["name"],
@@ -451,5 +464,11 @@ def build_youtube_pack(
         "thumbnailTip": (
             "Thumbnail drives CTR. 1280×720, one clear subject, little text, "
             "readable on a phone. Use the frame picker below."
+        ),
+        "shortsTitle": shorts_title,
+        "shortsDescription": shorts_desc,
+        "shortsHashtags": shorts_hashes,
+        "shortsTagsLine": ", ".join(
+            ["shorts", "youtube shorts", "slowed and reverb", "anime aesthetic", meta["series"].lower(), meta["name"].lower()]
         ),
     }

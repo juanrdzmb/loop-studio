@@ -56,6 +56,7 @@ export default function VideoLoopPage() {
   const [audioCandidates, setAudioCandidates] = useState<LoopCandidate[]>([]);
   const [audioSel, setAudioSel] = useState<LoopCandidate | null>(null);
   const [targetMin, setTargetMin] = useState(1);
+  const [shortsSec, setShortsSec] = useState(25);
   const [analyzingAudio, setAnalyzingAudio] = useState(false);
   const [widened, setWidened] = useState(false);
   const [audioMode, setAudioMode] = useState<"loops" | "trim" | "full">("full");
@@ -72,6 +73,9 @@ export default function VideoLoopPage() {
   const [error, setError] = useState<string | null>(null);
   const [resultUrl, setResultUrl] = useState<string | null>(null);
   const [resultSize, setResultSize] = useState(0);
+  const [shortsUrl, setShortsUrl] = useState<string | null>(null);
+  const [shortsSize, setShortsSize] = useState(0);
+  const [shortsBusy, setShortsBusy] = useState(false);
 
   const [cast, setCast] = useState<CastMember[]>([]);
   const [guess, setGuess] = useState<CharacterGuess | null>(null);
@@ -94,8 +98,9 @@ export default function VideoLoopPage() {
     return () => {
       if (resultUrl) URL.revokeObjectURL(resultUrl);
       if (previewUrl) URL.revokeObjectURL(previewUrl);
+      if (shortsUrl) URL.revokeObjectURL(shortsUrl);
     };
-  }, [resultUrl, previewUrl]);
+  }, [resultUrl, previewUrl, shortsUrl]);
 
   const handleVideo = useCallback((f: File) => {
     setError(null);
@@ -378,6 +383,70 @@ export default function VideoLoopPage() {
     busy,
     plan,
     targetSec,
+    atmosphere,
+    sfxOn,
+    intensity,
+    watermark,
+    vStart,
+    vEnd,
+    onRenderProg,
+  ]);
+
+  const generateShort = useCallback(async () => {
+    if (!videoFile || !audioFile || !audioSel || shortsBusy) return;
+    setShortsBusy(true);
+    setError(null);
+    setRenderPct(0);
+    setRenderStage("planning");
+    try {
+      let used = plan;
+      if (!used) {
+        used = await planLayers(audioFile, {
+          audioStart: audioSel.start,
+          audioEnd: audioSel.end,
+          target: shortsSec,
+          atmosphere,
+          sfxOn,
+          intensity,
+          watermark,
+          video: videoFile,
+          videoStart: vStart,
+          videoEnd: vEnd,
+        });
+        setPlan(used);
+      }
+      const blob = await renderLoop(
+        videoFile,
+        audioFile,
+        {
+          videoStart: vStart,
+          videoEnd: vEnd,
+          audioStart: audioSel.start,
+          audioEnd: audioSel.end,
+          targetDuration: shortsSec,
+          preview: false,
+          aspect: "shorts",
+          plan: used,
+        },
+        onRenderProg
+      );
+      setShortsUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return URL.createObjectURL(blob);
+      });
+      setShortsSize(blob.size);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Short render failed");
+    } finally {
+      setShortsBusy(false);
+    }
+  }, [
+    videoFile,
+    audioFile,
+    audioSel,
+    shortsBusy,
+    plan,
+    shortsSec,
     atmosphere,
     sfxOn,
     intensity,
@@ -895,8 +964,27 @@ export default function VideoLoopPage() {
                   ).then(() => setCopied("all"));
                 }}
               >
-                {copied === "all" ? "Copied pack" : "Copy entire pack"}
+                {copied === "all" ? "Copied pack" : "Copy long-form pack"}
               </button>
+              {yt.shortsTitle && (
+                <div className="pt-2 border-t border-zinc-800 space-y-2">
+                  <div className="text-xs text-zinc-400">Shorts promo copy (English — paste on YouTube)</div>
+                  <FieldCopy label="Shorts title" value={yt.shortsTitle} copied={copied} onCopy={setCopied} />
+                  <FieldCopy
+                    label="Shorts description"
+                    value={yt.shortsDescription || ""}
+                    copied={copied}
+                    multiline
+                    onCopy={setCopied}
+                  />
+                  <FieldCopy
+                    label="Shorts tags"
+                    value={yt.shortsTagsLine || ""}
+                    copied={copied}
+                    onCopy={setCopied}
+                  />
+                </div>
+              )}
             </div>
           )}
 
@@ -911,17 +999,48 @@ export default function VideoLoopPage() {
         </section>
       )}
 
-      <button
-        onClick={generate}
-        disabled={!canWork || busy}
-        className="w-full py-3 rounded-xl font-bold bg-gradient-to-r from-cyan-600 to-fuchsia-600 hover:from-cyan-500 hover:to-fuchsia-500 disabled:opacity-40 disabled:cursor-not-allowed transition-all text-lg"
-      >
-        {busy
-          ? "Rendering…"
-          : `Generate video · ${targetMin >= 1 ? `${targetMin} min` : `${targetSec.toFixed(0)}s`}`}
-      </button>
+      <div className="space-y-3">
+        <button
+          onClick={generate}
+          disabled={!canWork || busy || shortsBusy}
+          className="w-full py-3 rounded-xl font-bold bg-gradient-to-r from-cyan-600 to-fuchsia-600 hover:from-cyan-500 hover:to-fuchsia-500 disabled:opacity-40 disabled:cursor-not-allowed transition-all text-lg"
+        >
+          {busy
+            ? "Rendering 16:9…"
+            : `Generate YouTube video · ${targetMin >= 1 ? `${targetMin} min` : `${targetSec.toFixed(0)}s`} · 16:9`}
+        </button>
 
-      {busy && <RenderBar pct={renderPct} stage={renderStage} />}
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs text-zinc-400">Shorts length</span>
+          {[20, 25, 30].map((s) => (
+            <button
+              key={s}
+              type="button"
+              onClick={() => setShortsSec(s)}
+              className={`px-2 py-1 rounded text-xs border ${
+                shortsSec === s
+                  ? "border-fuchsia-500 bg-fuchsia-500/15"
+                  : "border-zinc-700 hover:border-zinc-500"
+              }`}
+            >
+              {s}s
+            </button>
+          ))}
+          <button
+            onClick={generateShort}
+            disabled={!canWork || busy || shortsBusy}
+            className="flex-1 py-2.5 rounded-xl font-semibold bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 disabled:opacity-40"
+          >
+            {shortsBusy ? "Rendering 9:16…" : `Generate Short · ${shortsSec}s · 9:16`}
+          </button>
+        </div>
+        <p className="text-xs text-zinc-500">
+          20–30s is the retention sweet spot for music teasers. 1080×1920, center crop,
+          watermark in the Shorts safe zone. Use it to push the long loop.
+        </p>
+      </div>
+
+      {(busy || shortsBusy) && <RenderBar pct={renderPct} stage={renderStage} />}
 
       {error && (
         <div className="rounded-lg bg-red-950 border border-red-800 px-4 py-3 text-sm text-red-300">
@@ -932,7 +1051,7 @@ export default function VideoLoopPage() {
       {resultUrl && (
         <div className="bg-zinc-900 rounded-xl p-4 border border-zinc-800 space-y-3">
           <h2 className="font-semibold">
-            Ready{" "}
+            YouTube 16:9 ready{" "}
             <span className="text-xs text-zinc-400 font-normal">
               ({(resultSize / 1024 / 1024).toFixed(1)} MB)
             </span>
@@ -942,11 +1061,38 @@ export default function VideoLoopPage() {
             onClick={() =>
               fetch(resultUrl)
                 .then((r) => r.blob())
-                .then((b) => downloadBlob(b, "silent-vigil-loop.mp4"))
+                .then((b) => downloadBlob(b, "silent-vigil-youtube-16x9.mp4"))
             }
             className="w-full py-2 rounded-lg bg-green-600 hover:bg-green-500 font-semibold"
           >
-            Download MP4
+            Download 16:9 MP4
+          </button>
+        </div>
+      )}
+
+      {shortsUrl && (
+        <div className="bg-zinc-900 rounded-xl p-4 border border-zinc-800 space-y-3">
+          <h2 className="font-semibold">
+            Shorts 9:16 ready{" "}
+            <span className="text-xs text-zinc-400 font-normal">
+              ({(shortsSize / 1024 / 1024).toFixed(1)} MB · {shortsSec}s)
+            </span>
+          </h2>
+          <video
+            src={shortsUrl}
+            controls
+            loop
+            className="mx-auto max-h-[520px] rounded-lg border border-zinc-800"
+          />
+          <button
+            onClick={() =>
+              fetch(shortsUrl)
+                .then((r) => r.blob())
+                .then((b) => downloadBlob(b, "silent-vigil-shorts-9x16.mp4"))
+            }
+            className="w-full py-2 rounded-lg bg-green-600 hover:bg-green-500 font-semibold"
+          >
+            Download 9:16 Short
           </button>
         </div>
       )}

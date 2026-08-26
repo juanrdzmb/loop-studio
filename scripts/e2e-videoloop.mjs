@@ -46,13 +46,13 @@ await page.click('button:has-text("Preview how it would look")');
 await page.waitForSelector("text=Rough preview", { timeout: 180000 });
 ok("20s preview generated", true);
 
-await page.click('button:has-text("Generate video")');
-await page.waitForSelector("text=Ready", { timeout: 300000 });
+await page.click('button:has-text("Generate YouTube video")');
+await page.waitForSelector("text=YouTube 16:9 ready", { timeout: 300000 });
 ok("MP4 rendered", true);
 
 const [dl] = await Promise.all([
   page.waitForEvent("download", { timeout: 30000 }),
-  page.click('button:has-text("Download MP4")'),
+  page.click('button:has-text("Download 16:9 MP4")'),
 ]);
 const mp4 = `${MEDIA}/out-final-videoloop.mp4`;
 await dl.saveAs(mp4);

@@ -22,13 +22,22 @@ def brand_fontfile() -> str | None:
     return None
 
 
-def drawtext_filter() -> str:
-    """Texto en el borde superior: esquina izquierda ↔ derecha. No cruza el centro."""
+def drawtext_filter(*, shorts: bool = False) -> str:
+    """Top-edge brand. Shorts: keep inside YouTube UI safe zone."""
     font = brand_fontfile()
     fontopt = ""
     if font:
         escaped = font.replace("\\", "/").replace(":", r"\:")
         fontopt = f":fontfile={escaped}"
+    if shorts:
+        # Right rail + bottom chrome hide content; stay top, extra side margin
+        return (
+            f"drawtext=text='{BRAND}'{fontopt}"
+            f":fontsize=h/42:fontcolor=white@0.34"
+            f":shadowcolor=black@0.55:shadowx=1:shadowy=1"
+            f":x='64+(w-tw-128)*abs(mod(t/18\\,2)-1)'"
+            f":y='96'"
+        )
     return (
         f"drawtext=text='{BRAND}'{fontopt}"
         f":fontsize=h/36:fontcolor=white@0.32"

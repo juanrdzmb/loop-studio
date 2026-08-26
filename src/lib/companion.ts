@@ -66,6 +66,7 @@ export interface RenderParams {
   audioEnd: number;
   targetDuration: number;
   preview?: boolean;
+  aspect?: "landscape" | "shorts";
   plan?: LayerPlan | Record<string, unknown>;
 }
 
@@ -237,6 +238,10 @@ export interface YoutubePack {
   playlist: string;
   pinnedComment: string;
   thumbnailTip: string;
+  shortsTitle?: string;
+  shortsDescription?: string;
+  shortsHashtags?: string[];
+  shortsTagsLine?: string;
 }
 
 export async function listCharacters(): Promise<CastMember[]> {

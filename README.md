@@ -46,6 +46,7 @@ If port 8787 is busy, kill the old Python (`ss -ltnp | grep 8787`) and start the
 5. Watermark **Silent Vigil Music** (Montserrat, no ©) travels the **top edge**.
 6. The app guesses **Guts / Thorfinn / Musashi / Buntarō**. I can override. I copy title, description, tags, playlist, pinned comment — from `docs/` plus the formula that actually ranks.
 7. **Grab 1280×720** for the YouTube thumbnail (CTR lives there more than in tags).
+8. **Generate Short** → 9:16 **1080×1920**, 20 / 25 / 30 seconds (I use 25). Promo copy is separate: `#Shorts` in the description, not the title. That’s the teaser for the long loop.
 
 No “cut vs speed vs crossfade”: the video always fades; the duration I type wins.
 

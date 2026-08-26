@@ -480,8 +480,11 @@ def _execute_render(v_path: str, a_path: str, p: dict, on_progress=None) -> str:
     a_start = float(p["audioStart"])
     a_end = float(p["audioEnd"])
     preview = bool(p.get("preview"))
+    aspect = str(p.get("aspect") or "landscape")
     target = float(p.get("targetDuration") or (a_end - a_start))
-    if preview:
+    if aspect in ("shorts", "9:16", "vertical"):
+        target = min(30.0, max(20.0, target if target >= 20 else 25.0))
+    elif preview:
         target = min(target, 20.0)
     plan = p.get("plan") or {}
     v_dur = v_end - v_start
@@ -525,8 +528,9 @@ def _execute_render(v_path: str, a_path: str, p: dict, on_progress=None) -> str:
             plan=plan,
             out_path=out_path,
             preview=preview,
-            timeout=300 if preview else 2400,
+            timeout=180 if aspect in ("shorts", "9:16", "vertical") else (300 if preview else 2400),
             on_progress=mapped if on_progress else None,
+            aspect=aspect,
         )
         return out_path
     except Exception:

@@ -325,12 +325,17 @@ def render_composed(
     preview: bool = False,
     timeout: int = 1800,
     on_progress=None,
+    aspect: str = "landscape",
 ) -> None:
     """Loop video + song + atmosphere + SFX + watermark. YouTube-safe encode."""
+    shorts = aspect in ("shorts", "9:16", "vertical")
     w, h = _probe_wh(video_seg)
     fps = _probe_fps(video_seg)
 
-    if preview:
+    if shorts:
+        w, h = 1080, 1920
+        target = min(30.0, max(20.0, target))
+    elif preview:
         scale = min(1.0, 960 / max(w, 1))
         w, h = _even(int(w * scale)), _even(int(h * scale))
         target = min(target, 20.0)
@@ -340,7 +345,7 @@ def render_composed(
     blend = plan.get("blend") or "screen"
     aid = plan.get("ambience")
     sfx_list = list(plan.get("sfx") or [])
-    if preview:
+    if preview or shorts:
         sfx_list = [s for s in sfx_list if s["time"] < target]
     wm_on = bool(plan.get("watermark", True))
     amb_vol = float(plan.get("ambienceVolume") or 0.14)
@@ -375,22 +380,28 @@ def render_composed(
         idx += 1
 
     # --- video ---
-    vf: list[str] = [f"[0:v]scale={w}:{h}:flags=bicubic,setsar=1,setpts=PTS-STARTPTS[base]"]
+    if shorts:
+        cover = (
+            f"scale={w}:{h}:force_original_aspect_ratio=increase:flags=bicubic,"
+            f"crop={w}:{h},setsar=1,setpts=PTS-STARTPTS"
+        )
+        vf = [f"[0:v]{cover}[base]"]
+    else:
+        vf = [f"[0:v]scale={w}:{h}:flags=bicubic,setsar=1,setpts=PTS-STARTPTS[base]"]
     last = "base"
     if ov_idx is not None:
-        # Opacidad que respira (dinamismo sin cambiar de clip a cada rato)
         vf.append(
             f"[{ov_idx}:v]scale={w}:{h}:force_original_aspect_ratio=increase,"
             f"crop={w}:{h},setsar=1,format=gbrp,setpts=PTS-STARTPTS[ov]"
         )
-        vf.append(f"[base]format=gbrp[basef]")
+        vf.append("[base]format=gbrp[basef]")
         vf.append(
             f"[basef][ov]blend=all_mode={blend}:all_opacity={opacity:.3f},"
             f"format=yuv420p[blended]"
         )
         last = "blended"
     if wm_on:
-        vf.append(f"[{last}]{drawtext_filter()},format=yuv420p[outv]")
+        vf.append(f"[{last}]{drawtext_filter(shorts=shorts)},format=yuv420p[outv]")
     else:
         vf.append(f"[{last}]format=yuv420p[outv]")
     last = "outv"
@@ -426,7 +437,7 @@ def render_composed(
     fc = ";".join(vf + af)
     gop = max(24, int(round(fps * 2)))
     keymin = max(12, int(round(fps)))
-    maxrate = _yt_maxrate(w, h, fps)
+    maxrate = 10_000_000 if shorts else _yt_maxrate(w, h, fps)
     if preview:
         vflags = [
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
