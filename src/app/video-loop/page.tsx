@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import FileDropzone from "@/components/FileDropzone";
 import TrimTimeline from "@/components/TrimTimeline";
 import SongLoopWaveform from "@/components/SongLoopWaveform";
@@ -15,6 +15,7 @@ import {
   planLayers,
   renderLoop,
   youtubePack,
+  type RenderProgress,
   type CastMember,
   type CharacterGuess,
   type CompanionHealth,
@@ -78,6 +79,8 @@ export default function VideoLoopPage() {
   const [charLocked, setCharLocked] = useState(false);
   const [yt, setYt] = useState<YoutubePack | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
+  const [renderPct, setRenderPct] = useState(0);
+  const [renderStage, setRenderStage] = useState("");
 
   const companionUp = !!health?.ok;
 
@@ -260,10 +263,17 @@ export default function VideoLoopPage() {
   }, [character, companionUp, audioFile, targetMin, atmosphere]);
 
 
+  const onRenderProg = useCallback((p: RenderProgress) => {
+    setRenderPct(p.pct);
+    setRenderStage(p.stage);
+  }, []);
+
   const runPreview = useCallback(async () => {
     if (!videoFile || !audioFile || !audioSel || previewBusy) return;
     setPreviewBusy(true);
     setError(null);
+    setRenderPct(0);
+    setRenderStage("planning");
     try {
       const next = await planLayers(audioFile, {
         audioStart: audioSel.start,
@@ -278,21 +288,26 @@ export default function VideoLoopPage() {
         videoEnd: vEnd,
       });
       setPlan(next);
-      const blob = await renderLoop(videoFile, audioFile, {
-        videoStart: vStart,
-        videoEnd: vEnd,
-        audioStart: audioSel.start,
-        audioEnd: audioSel.end,
-        targetDuration: Math.min(20, targetSec),
-        preview: true,
-        plan: next,
-      });
+      const blob = await renderLoop(
+        videoFile,
+        audioFile,
+        {
+          videoStart: vStart,
+          videoEnd: vEnd,
+          audioStart: audioSel.start,
+          audioEnd: audioSel.end,
+          targetDuration: Math.min(20, targetSec),
+          preview: true,
+          plan: next,
+        },
+        onRenderProg
+      );
       setPreviewUrl((prev) => {
         if (prev) URL.revokeObjectURL(prev);
         return URL.createObjectURL(blob);
       });
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Error en la previsualización");
+      setError(e instanceof Error ? e.message : "Preview failed");
     } finally {
       setPreviewBusy(false);
     }
@@ -308,6 +323,7 @@ export default function VideoLoopPage() {
     watermark,
     vStart,
     vEnd,
+    onRenderProg,
   ]);
 
   const generate = useCallback(async () => {
@@ -315,6 +331,8 @@ export default function VideoLoopPage() {
     setBusy(true);
     setError(null);
     setResultUrl(null);
+    setRenderPct(0);
+    setRenderStage("planning");
     try {
       let used = plan;
       if (!used) {
@@ -332,19 +350,24 @@ export default function VideoLoopPage() {
         });
         setPlan(used);
       }
-      const blob = await renderLoop(videoFile, audioFile, {
-        videoStart: vStart,
-        videoEnd: vEnd,
-        audioStart: audioSel.start,
-        audioEnd: audioSel.end,
-        targetDuration: targetSec,
-        preview: false,
-        plan: used,
-      });
+      const blob = await renderLoop(
+        videoFile,
+        audioFile,
+        {
+          videoStart: vStart,
+          videoEnd: vEnd,
+          audioStart: audioSel.start,
+          audioEnd: audioSel.end,
+          targetDuration: targetSec,
+          preview: false,
+          plan: used,
+        },
+        onRenderProg
+      );
       setResultUrl(URL.createObjectURL(blob));
       setResultSize(blob.size);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Error generando el video");
+      setError(e instanceof Error ? e.message : "Render failed");
     } finally {
       setBusy(false);
     }
@@ -361,13 +384,14 @@ export default function VideoLoopPage() {
     watermark,
     vStart,
     vEnd,
+    onRenderProg,
   ]);
 
   return (
     <div className="space-y-8 max-w-3xl mx-auto">
       <section>
         <div className="flex items-center justify-between">
-          <h1 className="text-2xl font-bold mb-1">🎥 Video + Canción</h1>
+          <h1 className="text-2xl font-bold mb-1">Video + Song</h1>
           <span
             className={`text-xs px-2 py-1 rounded-full border ${
               companionUp
@@ -375,32 +399,29 @@ export default function VideoLoopPage() {
                 : "border-red-800 bg-red-950/50 text-red-400"
             }`}
           >
-            {companionUp ? "● Companion activo" : "● Companion apagado"}
+            {companionUp ? "● Companion online" : "● Companion offline"}
           </span>
         </div>
         <p className="text-zinc-400 text-sm mt-1">
-          Sube un video y una canción. Dices cuántos minutos debe durar el resultado: el
-          video y la canción se repiten solos (sin corte) hasta completar. La atmósfera y
-          los sonidos se colocan automáticamente — ves un preview de 20 s antes de generar.
+          Upload a clip and a song. Set the length in minutes — video and song loop
+          seamlessly to fill it. Atmosphere and SFX land automatically. Preview 20s
+          before you generate.
         </p>
         {!companionUp && (
           <div className="mt-3 rounded-lg bg-amber-950/60 border border-amber-800 px-4 py-3 text-sm text-amber-300">
-            Arranca el companion:{" "}
-            <code className="bg-black/40 px-1.5 py-0.5 rounded">
-              cd ~/Proyectos/loop-studio/companion && ./start.sh
-            </code>
+            Start the companion:{" "}
+            <code className="bg-black/40 px-1.5 py-0.5 rounded">cd companion && ./start.sh</code>
           </div>
         )}
       </section>
 
-      {/* 1 · Video */}
       <section className="bg-zinc-900 rounded-xl p-4 border border-zinc-800 space-y-3">
-        <h2 className="font-semibold">1 · Elige el trozo de video que se va a repetir</h2>
+        <h2 className="font-semibold">1 · Pick the video loop</h2>
         {!videoFile ? (
           <FileDropzone
             accept="video/*"
-            label="Arrastra tu video o haz clic"
-            hint="Detectamos loops suaves; el trozo elegido se funde y se repite"
+            label="Drop your video or click"
+            hint="We find seamless loops; the chosen slice fades and repeats"
             onFile={handleVideo}
           />
         ) : (
@@ -422,7 +443,7 @@ export default function VideoLoopPage() {
             </div>
             <div className="flex flex-wrap items-end gap-3">
               <label className="text-sm">
-                Analizar primeros
+                Analyze first
                 <div className="flex items-center gap-1 mt-1">
                   <input
                     type="number"
@@ -432,7 +453,7 @@ export default function VideoLoopPage() {
                     onChange={(e) => setWindowSec(Math.max(0, parseInt(e.target.value) || 0))}
                     className="w-20 bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5"
                   />
-                  <span className="text-zinc-400 text-xs">s · 0 = todo</span>
+                  <span className="text-zinc-400 text-xs">s · 0 = all</span>
                 </div>
               </label>
               <button
@@ -440,7 +461,7 @@ export default function VideoLoopPage() {
                 disabled={!companionUp || analyzingVideo}
                 className="px-4 py-2 rounded-lg text-sm font-semibold bg-cyan-600 hover:bg-cyan-500 disabled:opacity-40"
               >
-                {analyzingVideo ? "Buscando el mejor corte…" : "🔍 Encontrar loops suaves"}
+                {analyzingVideo ? "Finding the best cut…" : "Find seamless loops"}
               </button>
               <button
                 onClick={() => {
@@ -453,15 +474,15 @@ export default function VideoLoopPage() {
                     : "border-zinc-700 hover:border-zinc-500"
                 }`}
               >
-                ✂️ Recorte manual
+                Manual trim
               </button>
             </div>
 
             {videoCandidates.length > 0 && !useManualVideo && (
               <div className="space-y-2">
                 <p className="text-xs text-zinc-400">
-                  Pasa el cursor para ver el loop · clic para elegirlo. Al generar se funde
-                  el final con el inicio para que no se note el corte.
+                  Hover to preview · click to pick. Export fades end into start so the cut
+                  disappears.
                 </p>
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                   {videoCandidates.map((c, i) => (
@@ -509,7 +530,7 @@ export default function VideoLoopPage() {
                           {fmt(c.start)} → {fmt(c.end)}{" "}
                           <span className="text-zinc-400">({c.duration.toFixed(1)}s)</span>
                         </div>
-                        <div className="text-xs text-cyan-400">Calidad {c.score.toFixed(0)}%</div>
+                        <div className="text-xs text-cyan-400">Quality {c.score.toFixed(0)}%</div>
                       </div>
                     </button>
                   ))}
@@ -529,14 +550,13 @@ export default function VideoLoopPage() {
         )}
       </section>
 
-      {/* 2 · Canción + duración */}
       <section className="bg-zinc-900 rounded-xl p-4 border border-zinc-800 space-y-3">
-        <h2 className="font-semibold">2 · Canción y duración del video final</h2>
+        <h2 className="font-semibold">2 · Song and final length</h2>
         {!audioFile ? (
           <FileDropzone
             accept="audio/*"
-            label="Arrastra la canción o haz clic"
-            hint="Se repetirá sola hasta cubrir la duración que pidas"
+            label="Drop the song or click"
+            hint="It will loop to cover the minutes you ask for"
             onFile={handleAudio}
           />
         ) : (
@@ -559,9 +579,7 @@ export default function VideoLoopPage() {
             </div>
 
             <label className="block text-sm">
-              <span className="text-zinc-200 font-medium">
-                ¿Cuántos minutos debe durar el video final?
-              </span>
+              <span className="text-zinc-200 font-medium">How many minutes should the video last?</span>
               <div className="flex items-center gap-2 mt-1">
                 <input
                   type="number"
@@ -574,7 +592,7 @@ export default function VideoLoopPage() {
                   }
                   className="w-24 bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5"
                 />
-                <span className="text-zinc-400 text-xs">minutos</span>
+                <span className="text-zinc-400 text-xs">minutes</span>
                 {[1, 3, 5, 10, 30, 60].map((m) => (
                   <button
                     key={m}
@@ -594,9 +612,9 @@ export default function VideoLoopPage() {
             <div className="flex flex-wrap gap-2">
               {(
                 [
-                  ["full", "🎶 Toda la canción (se repite si hace falta)"],
-                  ["loops", "🎵 Un loop de la canción"],
-                  ["trim", "✂️ Recortar a mano"],
+                  ["full", "Full song (loops if needed)"],
+                  ["loops", "A detected song loop"],
+                  ["trim", "Trim by hand"],
                 ] as const
               ).map(([mode, label]) => (
                 <button
@@ -620,12 +638,10 @@ export default function VideoLoopPage() {
                   disabled={!companionUp || analyzingAudio}
                   className="px-4 py-2 rounded-lg font-semibold bg-fuchsia-600 hover:bg-fuchsia-500 disabled:opacity-40"
                 >
-                  {analyzingAudio ? "Analizando beats…" : "🎵 Detectar loops de la canción"}
+                  {analyzingAudio ? "Analyzing beats…" : "Detect song loops"}
                 </button>
                 {widened && (
-                  <span className="text-xs text-amber-400">
-                    Se ampliaron los límites de búsqueda
-                  </span>
+                  <span className="text-xs text-amber-400">Search window was widened</span>
                 )}
               </div>
             )}
@@ -661,15 +677,12 @@ export default function VideoLoopPage() {
 
             {aDur > 0 && (
               <p className="text-sm bg-zinc-950/60 border border-zinc-800 rounded-lg px-3 py-2 text-zinc-300">
-                El resultado durará{" "}
+                The result will last{" "}
                 <strong>{targetMin >= 1 ? `${targetMin} min` : `${targetSec.toFixed(0)}s`}</strong>
                 {songLoops > 1 && (
-                  <>
-                    {" "}
-                    · la canción se funde (final → inicio) y se repite ~{songLoops} veces
-                  </>
+                  <> · the song crossfades end→start and repeats ~{songLoops} times</>
                 )}
-                {videoLoops > 1 && <> · el video se repetirá ~{videoLoops} veces con fundido</>}
+                {videoLoops > 1 && <> · the video repeats ~{videoLoops} times with a fade</>}
                 .
               </p>
             )}
@@ -677,20 +690,18 @@ export default function VideoLoopPage() {
         )}
       </section>
 
-      {/* 3 · Ambiente */}
       {canWork && (
         <section className="bg-zinc-900 rounded-xl p-4 border border-zinc-800 space-y-4">
-          <h2 className="font-semibold">3 · Atmósfera (automático, tú apruebas)</h2>
+          <h2 className="font-semibold">3 · Atmosphere (auto, you approve)</h2>
           <p className="text-xs text-zinc-400 -mt-2">
-            Niebla, humo y partículas se mezclan en modo screen a baja opacidad. El ambiente
-            suena por debajo de la canción (filtro grave). Los SFX (trueno, metal) caen en
-            los valles de volumen de la música.
+            Fog, smoke and particles blend in screen mode at low opacity. Ambience sits
+            under the song (low-pass). SFX (thunder, metal) land in quiet valleys.
           </p>
 
           <div>
-            <div className="text-xs text-zinc-400 mb-1">Atmósfera visual</div>
+            <div className="text-xs text-zinc-400 mb-1">Visual atmosphere</div>
             <div className="flex flex-wrap gap-2">
-              {(overlays.length ? overlays : [{ id: "auto", label: "Automático" }]).map((o) => (
+              {(overlays.length ? overlays : [{ id: "auto", label: "Auto" }]).map((o) => (
                 <button
                   key={o.id}
                   onClick={() => {
@@ -711,7 +722,7 @@ export default function VideoLoopPage() {
           </div>
 
           <label className="block text-sm">
-            Intensidad: {Math.round(intensity * 100)}%
+            Intensity: {Math.round(intensity * 100)}%
             <input
               type="range"
               min={0.2}
@@ -739,7 +750,7 @@ export default function VideoLoopPage() {
                 }}
                 className="accent-fuchsia-500"
               />
-              Sonidos automáticos (truenos / metal en los silencios)
+              Auto SFX (thunder / metal in the quiet parts)
             </label>
             <label className="flex items-center gap-2">
               <input
@@ -752,7 +763,7 @@ export default function VideoLoopPage() {
                 }}
                 className="accent-fuchsia-500"
               />
-              Marca de agua Silent Vigil Music
+              Silent Vigil Music watermark
             </label>
           </div>
 
@@ -761,24 +772,25 @@ export default function VideoLoopPage() {
             disabled={previewBusy || !canWork}
             className="w-full py-2.5 rounded-lg font-semibold bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 disabled:opacity-40"
           >
-            {previewBusy ? "Preparando preview de 20 s…" : "👁 Ver cómo quedaría (20 segundos)"}
+            {previewBusy ? "Building 20s preview…" : "Preview how it would look (20 seconds)"}
           </button>
+          {(previewBusy || busy) && <RenderBar pct={renderPct} stage={renderStage} />}
 
           {plan && (
             <div className="text-xs space-y-1 bg-zinc-950/50 border border-zinc-800 rounded-lg p-3">
               <div>
-                Atmósfera: <strong>{plan.overlayLabel ?? "ninguna"}</strong>
+                Atmosphere: <strong>{plan.overlayLabel ?? "none"}</strong>
                 {plan.blend ? ` · blend ${plan.blend}` : ""}
-                {plan.opacity != null ? ` · opacidad ${(plan.opacity * 100).toFixed(0)}%` : ""}
+                {plan.opacity != null ? ` · opacity ${(plan.opacity * 100).toFixed(0)}%` : ""}
               </div>
               {plan.look?.overlayReason ? (
                 <div>
-                  Elegí {plan.overlayLabel} porque {plan.look.overlayReason}
+                  Picked {plan.overlayLabel} because {plan.look.overlayReason}
                 </div>
               ) : null}
               {plan.ambienceLabel && (
                 <div>
-                  Ambiente: {plan.ambienceLabel} (bajo, low-pass {plan.lowpassHz} Hz)
+                  Ambience: {plan.ambienceLabel} (low, low-pass {plan.lowpassHz} Hz)
                 </div>
               )}
               {plan.sfx.length > 0 && (
@@ -793,19 +805,19 @@ export default function VideoLoopPage() {
               )}
               {plan.chapters.length > 1 && (
                 <div>
-                  Videos largos: la atmósfera cambia cada ~90 s (
+                  Long videos: atmosphere rotates every ~90s (
                   {plan.chapters.map((c) => c.label).join(" → ")})
                 </div>
               )}
-              {plan.watermark && <div>Marca de agua: Silent Vigil Music (borde superior)</div>}
+              {plan.watermark && <div>Watermark: Silent Vigil Music (top edge)</div>}
             </div>
           )}
 
           {previewUrl && (
             <div className="space-y-2">
               <p className="text-xs text-zinc-400">
-                Preview aproximado (20 s, resolución reducida). El final es el mismo montaje a
-                duración completa.
+                Rough preview (20s, smaller resolution). The final export is the same
+                graph at full length.
               </p>
               <video src={previewUrl} controls className="w-full rounded-lg border border-zinc-800" />
             </div>
@@ -815,15 +827,15 @@ export default function VideoLoopPage() {
 
       {videoFile && (
         <section className="bg-zinc-900 rounded-xl p-4 border border-zinc-800 space-y-3">
-          <h2 className="font-semibold">4 · Personaje y YouTube</h2>
+          <h2 className="font-semibold">4 · Character, YouTube pack & thumbnail</h2>
           <p className="text-xs text-zinc-400 -mt-2">
-            Detecta a Guts, Thorfinn, Musashi o Buntarō por el dibujo (y el nombre del
-            archivo). Tú puedes corregirlo. El texto sale de tus ensayos en{" "}
-            <code>docs/</code>.
+            Detects Guts, Thorfinn, Musashi or Buntarō from the drawing (and the filename).
+            You can override. Copy uses the essays in <code>docs/</code> plus the title
+            formula that actually ranks: Song (Slowed + Reverb) | mood.
           </p>
           {guess && (
             <p className="text-xs text-cyan-300">
-              Creo que es <strong>{guess.name}</strong> ({guess.series}) · {guess.confidence}% ·{" "}
+              Guess: <strong>{guess.name}</strong> ({guess.series}) · {guess.confidence}% ·{" "}
               {guess.reason}
             </p>
           )}
@@ -857,33 +869,18 @@ export default function VideoLoopPage() {
 
           {yt && (
             <div className="space-y-2 text-sm">
+              <FieldCopy label="Title" value={yt.title} copied={copied} onCopy={setCopied} />
               <FieldCopy
-                label="Título"
-                value={yt.title}
-                copied={copied}
-                onCopy={setCopied}
-              />
-              <FieldCopy
-                label="Descripción"
+                label="Description"
                 value={yt.description}
                 copied={copied}
                 multiline
                 onCopy={setCopied}
               />
+              <FieldCopy label="Tags" value={yt.tagsLine} copied={copied} onCopy={setCopied} />
+              <FieldCopy label="Playlist" value={yt.playlist} copied={copied} onCopy={setCopied} />
               <FieldCopy
-                label="Tags"
-                value={yt.tagsLine}
-                copied={copied}
-                onCopy={setCopied}
-              />
-              <FieldCopy
-                label="Playlist"
-                value={yt.playlist}
-                copied={copied}
-                onCopy={setCopied}
-              />
-              <FieldCopy
-                label="Comentario anclado"
+                label="Pinned comment"
                 value={yt.pinnedComment}
                 copied={copied}
                 onCopy={setCopied}
@@ -895,16 +892,24 @@ export default function VideoLoopPage() {
                 onClick={() => {
                   void copyText(
                     `${yt.title}\n\n${yt.description}\n\nTags: ${yt.tagsLine}\nPlaylist: ${yt.playlist}\nPinned: ${yt.pinnedComment}`
-                  ).then(() => setCopied("todo"));
+                  ).then(() => setCopied("all"));
                 }}
               >
-                {copied === "todo" ? "Copiado todo" : "Copiar todo el pack"}
+                {copied === "all" ? "Copied pack" : "Copy entire pack"}
               </button>
             </div>
           )}
+
+          {videoUrl && (
+            <ThumbnailPicker
+              videoUrl={videoUrl}
+              start={vStart}
+              end={vEnd || videoDuration || 8}
+              caption={yt?.name || character || ""}
+            />
+          )}
         </section>
       )}
-
 
       <button
         onClick={generate}
@@ -912,26 +917,22 @@ export default function VideoLoopPage() {
         className="w-full py-3 rounded-xl font-bold bg-gradient-to-r from-cyan-600 to-fuchsia-600 hover:from-cyan-500 hover:to-fuchsia-500 disabled:opacity-40 disabled:cursor-not-allowed transition-all text-lg"
       >
         {busy
-          ? "Renderizando con ffmpeg…"
-          : `🎬 Generar video · ${targetMin >= 1 ? `${targetMin} min` : `${targetSec.toFixed(0)}s`}`}
+          ? "Rendering…"
+          : `Generate video · ${targetMin >= 1 ? `${targetMin} min` : `${targetSec.toFixed(0)}s`}`}
       </button>
 
-      {busy && (
-        <p className="text-xs text-zinc-400 animate-pulse text-center">
-          Fundiendo el loop de video, mezclando atmósfera + SFX + marca de agua…
-        </p>
-      )}
+      {busy && <RenderBar pct={renderPct} stage={renderStage} />}
 
       {error && (
         <div className="rounded-lg bg-red-950 border border-red-800 px-4 py-3 text-sm text-red-300">
-          ⚠️ {error}
+          {error}
         </div>
       )}
 
       {resultUrl && (
         <div className="bg-zinc-900 rounded-xl p-4 border border-zinc-800 space-y-3">
           <h2 className="font-semibold">
-            ✅ Listo{" "}
+            Ready{" "}
             <span className="text-xs text-zinc-400 font-normal">
               ({(resultSize / 1024 / 1024).toFixed(1)} MB)
             </span>
@@ -945,7 +946,7 @@ export default function VideoLoopPage() {
             }
             className="w-full py-2 rounded-lg bg-green-600 hover:bg-green-500 font-semibold"
           >
-            ⬇️ Descargar MP4
+            Download MP4
           </button>
         </div>
       )}
@@ -977,7 +978,7 @@ function FieldCopy({
             void copyText(value).then(() => onCopy(label));
           }}
         >
-          {copied === label ? "Copiado" : "Copiar"}
+          {copied === label ? "Copied" : "Copy"}
         </button>
       </div>
       {multiline ? (
@@ -991,6 +992,139 @@ function FieldCopy({
         <div className="text-xs bg-zinc-950 border border-zinc-800 rounded-lg p-2 font-mono break-words">
           {value}
         </div>
+      )}
+    </div>
+  );
+}
+
+function RenderBar({ pct, stage }: { pct: number; stage: string }) {
+  return (
+    <div className="space-y-1">
+      <div className="h-2 rounded-full bg-zinc-800 overflow-hidden">
+        <div
+          className="h-full bg-gradient-to-r from-cyan-500 to-fuchsia-500 transition-[width] duration-300"
+          style={{ width: `${Math.max(2, Math.min(100, pct))}%` }}
+        />
+      </div>
+      <p className="text-xs text-zinc-400 text-center">
+        {stage || "working"} · {Math.round(pct)}%
+      </p>
+    </div>
+  );
+}
+
+function ThumbnailPicker({
+  videoUrl,
+  start,
+  end,
+  caption,
+}: {
+  videoUrl: string;
+  start: number;
+  end: number;
+  caption: string;
+}) {
+  const ref = useRef<HTMLVideoElement>(null);
+  const [t, setT] = useState(start);
+  const [preview, setPreview] = useState<string | null>(null);
+
+  const grab = useCallback(() => {
+    const v = ref.current;
+    if (!v || !v.videoWidth) return;
+    const c = document.createElement("canvas");
+    c.width = 1280;
+    c.height = 720;
+    const ctx = c.getContext("2d");
+    if (!ctx) return;
+    const vr = v.videoWidth / v.videoHeight;
+    const tr = 16 / 9;
+    let sx = 0;
+    let sy = 0;
+    let sw = v.videoWidth;
+    let sh = v.videoHeight;
+    if (vr > tr) {
+      sw = v.videoHeight * tr;
+      sx = (v.videoWidth - sw) / 2;
+    } else {
+      sh = v.videoWidth / tr;
+      sy = (v.videoHeight - sh) / 2;
+    }
+    ctx.drawImage(v, sx, sy, sw, sh, 0, 0, 1280, 720);
+    const fade = ctx.createLinearGradient(0, 560, 0, 720);
+    fade.addColorStop(0, "rgba(0,0,0,0)");
+    fade.addColorStop(1, "rgba(0,0,0,0.45)");
+    ctx.fillStyle = fade;
+    ctx.fillRect(0, 560, 1280, 160);
+    if (caption) {
+      ctx.font = "600 36px Montserrat, system-ui, sans-serif";
+      ctx.fillStyle = "rgba(255,255,255,0.92)";
+      ctx.fillText(caption, 40, 680);
+    }
+    setPreview(c.toDataURL("image/jpeg", 0.92));
+  }, [caption]);
+
+  return (
+    <div className="space-y-2 pt-2 border-t border-zinc-800">
+      <div className="text-xs text-zinc-400">
+        YouTube thumbnail · 1280×720 · under 2 MB. CTR lives here more than in tags.
+      </div>
+      <video
+        ref={ref}
+        src={videoUrl}
+        muted
+        playsInline
+        className="w-full aspect-video object-cover rounded-lg bg-black"
+        onLoadedMetadata={(e) => {
+          e.currentTarget.currentTime = start;
+        }}
+      />
+      <label className="block text-xs text-zinc-400">
+        Frame {t.toFixed(1)}s
+        <input
+          type="range"
+          min={start}
+          max={Math.max(start + 0.1, end)}
+          step={0.05}
+          value={t}
+          onChange={(e) => {
+            const n = parseFloat(e.target.value);
+            setT(n);
+            const v = ref.current;
+            if (v) v.currentTime = n;
+          }}
+          className="w-full accent-cyan-500"
+        />
+      </label>
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={grab}
+          className="px-3 py-1.5 rounded-lg text-sm border border-zinc-700 hover:border-zinc-500"
+        >
+          Grab 1280×720
+        </button>
+        {preview && (
+          <button
+            type="button"
+            onClick={() => {
+              const a = document.createElement("a");
+              a.href = preview;
+              a.download = "youtube-thumbnail-1280x720.jpg";
+              a.click();
+            }}
+            className="px-3 py-1.5 rounded-lg text-sm bg-cyan-700 hover:bg-cyan-600"
+          >
+            Download thumbnail
+          </button>
+        )}
+      </div>
+      {preview && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={preview}
+          alt="YouTube thumbnail preview"
+          className="w-full rounded-lg border border-zinc-800"
+        />
       )}
     </div>
   );

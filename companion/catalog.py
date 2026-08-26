@@ -14,42 +14,42 @@ AMB_DIR = ASSETS / "audio_ambience"
 OVERLAYS: dict[str, dict] = {
     "fog": {
         "file": "fog.mp4",
-        "label": "Niebla",
+        "label": "Fog",
         "blend": "screen",
         "opacity": 0.32,
         "ambience": "night",
     },
     "smoke": {
         "file": "smoke.mp4",
-        "label": "Humo",
+        "label": "Smoke",
         "blend": "screen",
         "opacity": 0.28,
         "ambience": "cold",
     },
     "rain": {
         "file": "rain.mp4",
-        "label": "Lluvia",
+        "label": "Rain",
         "blend": "screen",
         "opacity": 0.34,
         "ambience": "rain",
     },
     "particles": {
         "file": "particles.mp4",
-        "label": "Partículas",
+        "label": "Particles",
         "blend": "screen",
         "opacity": 0.30,
         "ambience": "wind",
     },
     "spark": {
         "file": "particulas 3.mp4",
-        "label": "Chispas",
+        "label": "Sparks",
         "blend": "screen",
         "opacity": 0.26,
         "ambience": "wind",
     },
     "fire": {
         "file": "Fire.mp4",
-        "label": "Fuego",
+        "label": "Fire",
         "blend": "screen",
         "opacity": 0.22,
         "ambience": "fire",
@@ -57,22 +57,22 @@ OVERLAYS: dict[str, dict] = {
 }
 
 AMBIENCE: dict[str, dict] = {
-    "night": {"file": "night_ambience.mp3", "label": "Noche"},
-    "cold": {"file": "Cold_night.mp3", "label": "Noche fría"},
-    "sea": {"file": "sea.mp3", "label": "Mar"},
-    "wind": {"file": "wind.mp3", "label": "Viento"},
-    "rain": {"file": "rain.mp3", "label": "Lluvia"},
-    "fire": {"file": "camp_fire.mp3", "label": "Hoguera"},
-    "peace": {"file": "paceful.mp3", "label": "Calma"},
-    "bamboo": {"file": "bamboo.mp3", "label": "Bambú"},
-    "cave": {"file": "drop cave .mp3", "label": "Cueva"},
-    "farm": {"file": "farm_relax.mp3", "label": "Campo"},
+    "night": {"file": "night_ambience.mp3", "label": "Night"},
+    "cold": {"file": "Cold_night.mp3", "label": "Cold night"},
+    "sea": {"file": "sea.mp3", "label": "Sea"},
+    "wind": {"file": "wind.mp3", "label": "Wind"},
+    "rain": {"file": "rain.mp3", "label": "Rain"},
+    "fire": {"file": "camp_fire.mp3", "label": "Campfire"},
+    "peace": {"file": "paceful.mp3", "label": "Calm"},
+    "bamboo": {"file": "bamboo.mp3", "label": "Bamboo"},
+    "cave": {"file": "drop cave .mp3", "label": "Cave"},
+    "farm": {"file": "farm_relax.mp3", "label": "Farm"},
 }
 
-# Están en audio_ambience/ (audio_sfx/ está vacío)
+# Live in audio_ambience/ (audio_sfx/ is empty)
 SFX: dict[str, dict] = {
-    "thunder": {"file": "thunder.mp3", "label": "Trueno", "gain": 0.42},
-    "sword": {"file": "sword.mp3", "label": "Espada", "gain": 0.32},
+    "thunder": {"file": "thunder.mp3", "label": "Thunder", "gain": 0.42},
+    "sword": {"file": "sword.mp3", "label": "Sword", "gain": 0.32},
     "katana": {"file": "katana.mp3", "label": "Katana", "gain": 0.32},
 }
 
@@ -105,7 +105,7 @@ def sfx_path(sid: str) -> str | None:
 
 
 def available_overlays() -> list[dict]:
-    out = [{"id": "auto", "label": "Automático"}, {"id": "off", "label": "Sin atmósfera"}]
+    out = [{"id": "auto", "label": "Auto"}, {"id": "off", "label": "No atmosphere"}]
     for oid, m in OVERLAYS.items():
         if overlay_path(oid):
             out.append({"id": oid, "label": m["label"]})

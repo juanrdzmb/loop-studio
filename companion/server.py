@@ -13,10 +13,13 @@ import subprocess
 import sys
 import tempfile
 import contextlib
+import threading
+import uuid
 
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
+
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 LOOPYCUT_DIR = os.path.join(BASE, "loopycut")
@@ -471,16 +474,7 @@ def _file_response(out_path: str) -> StreamingResponse:
     )
 
 
-@app.post("/render")
-async def render(
-    video: UploadFile = File(...),
-    audio: UploadFile = File(...),
-    params: str = Form("{}"),
-):
-    if _which("ffmpeg") is None:
-        return JSONResponse({"error": "ffmpeg no está instalado"}, 503)
-
-    p = json.loads(params or "{}")
+def _execute_render(v_path: str, a_path: str, p: dict, on_progress=None) -> str:
     v_start = float(p["videoStart"])
     v_end = float(p["videoEnd"])
     a_start = float(p["audioStart"])
@@ -490,30 +484,37 @@ async def render(
     if preview:
         target = min(target, 20.0)
     plan = p.get("plan") or {}
-
     v_dur = v_end - v_start
     a_dur = a_end - a_start
     if v_dur <= 0.1 or a_dur <= 0.1 or target <= 0.5:
-        return JSONResponse({"error": "duraciones demasiado cortas"}, 400)
+        raise ValueError("durations too short")
 
-    v_path = _save_upload(video, os.path.splitext(video.filename or "v.mp4")[1] or ".mp4")
-    a_path = _save_upload(audio, os.path.splitext(audio.filename or "a.mp3")[1] or ".mp3")
     out_fd, out_path = tempfile.mkstemp(suffix=".mp4")
     os.close(out_fd)
     seg_fd, seg_path = tempfile.mkstemp(suffix=".mp4")
     os.close(seg_fd)
     a_seg_path = None
-
     try:
+        if on_progress:
+            on_progress(6, "Seamless video loop")
         _loop_segment(v_path, v_start, v_end, seg_path)
         audio_for_render = a_path
         rs, re = a_start, a_end
         if target > a_dur + 0.05:
+            if on_progress:
+                on_progress(16, "Seamless song loop")
             afd, a_seg_path = tempfile.mkstemp(suffix=".wav")
             os.close(afd)
             re = _loop_audio(a_path, a_start, a_end, a_seg_path)
             rs = 0.0
             audio_for_render = a_seg_path
+        if on_progress:
+            on_progress(24, "encoding")
+
+        def mapped(pct: int, stage: str) -> None:
+            if on_progress:
+                on_progress(24 + int(max(0, min(100, pct)) * 0.75), stage)
+
         from layers import render_composed
         render_composed(
             video_seg=seg_path,
@@ -525,18 +526,118 @@ async def render(
             out_path=out_path,
             preview=preview,
             timeout=300 if preview else 2400,
+            on_progress=mapped if on_progress else None,
         )
-        return _file_response(out_path)
-    except subprocess.CalledProcessError as e:
-        err = (e.stderr or "")[-800:]
-        return JSONResponse({"error": f"ffmpeg falló: {err}"}, 500)
-    except Exception as e:
-        return JSONResponse({"error": f"render falló: {e}"}, 500)
+        return out_path
+    except Exception:
+        try:
+            os.unlink(out_path)
+        except OSError:
+            pass
+        raise
     finally:
-        for pth in (v_path, a_path, seg_path, a_seg_path):
+        for pth in (seg_path, a_seg_path):
             if not pth:
                 continue
             try:
                 os.unlink(pth)
             except OSError:
                 pass
+
+
+_JOBS: dict[str, dict] = {}
+
+
+def _job_set(jid: str, **kw) -> None:
+    row = _JOBS.setdefault(
+        jid, {"pct": 0, "stage": "", "done": False, "error": None, "path": None}
+    )
+    row.update(kw)
+
+
+@app.post("/render")
+async def render(
+    video: UploadFile = File(...),
+    audio: UploadFile = File(...),
+    params: str = Form("{}"),
+):
+    if _which("ffmpeg") is None:
+        return JSONResponse({"error": "ffmpeg is not installed"}, 503)
+    p = json.loads(params or "{}")
+    v_path = _save_upload(video, os.path.splitext(video.filename or "v.mp4")[1] or ".mp4")
+    a_path = _save_upload(audio, os.path.splitext(audio.filename or "a.mp3")[1] or ".mp3")
+    try:
+        out_path = _execute_render(v_path, a_path, p)
+        return _file_response(out_path)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, 400)
+    except subprocess.CalledProcessError as e:
+        err = (e.stderr or "")[-800:]
+        return JSONResponse({"error": f"ffmpeg failed: {err}"}, 500)
+    except Exception as e:
+        return JSONResponse({"error": f"render failed: {e}"}, 500)
+    finally:
+        for pth in (v_path, a_path):
+            try:
+                os.unlink(pth)
+            except OSError:
+                pass
+
+
+@app.post("/render/start")
+async def render_start(
+    video: UploadFile = File(...),
+    audio: UploadFile = File(...),
+    params: str = Form("{}"),
+):
+    if _which("ffmpeg") is None:
+        return JSONResponse({"error": "ffmpeg is not installed"}, 503)
+    p = json.loads(params or "{}")
+    v_path = _save_upload(video, os.path.splitext(video.filename or "v.mp4")[1] or ".mp4")
+    a_path = _save_upload(audio, os.path.splitext(audio.filename or "a.mp3")[1] or ".mp3")
+    jid = uuid.uuid4().hex[:12]
+    _job_set(jid, pct=2, stage="queued", done=False)
+
+    def work() -> None:
+        try:
+            def prog(pct: int, stage: str) -> None:
+                _job_set(jid, pct=int(pct), stage=stage)
+
+            out_path = _execute_render(v_path, a_path, p, on_progress=prog)
+            _job_set(jid, pct=100, stage="done", done=True, path=out_path)
+        except Exception as e:
+            _job_set(jid, done=True, error=str(e)[-800:])
+        finally:
+            for pth in (v_path, a_path):
+                try:
+                    os.unlink(pth)
+                except OSError:
+                    pass
+
+    threading.Thread(target=work, daemon=True).start()
+    return {"id": jid}
+
+
+@app.get("/render/status/{jid}")
+def render_status(jid: str):
+    row = _JOBS.get(jid)
+    if not row:
+        return JSONResponse({"error": "unknown job"}, 404)
+    return {
+        "id": jid,
+        "pct": row.get("pct", 0),
+        "stage": row.get("stage") or "",
+        "done": bool(row.get("done")),
+        "error": row.get("error"),
+    }
+
+
+@app.get("/render/file/{jid}")
+def render_file(jid: str):
+    row = _JOBS.get(jid)
+    if not row or not row.get("done") or not row.get("path"):
+        return JSONResponse({"error": "not ready"}, 404)
+    if row.get("error"):
+        return JSONResponse({"error": row["error"]}, 500)
+    return _file_response(row["path"])
+

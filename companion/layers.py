@@ -239,6 +239,80 @@ def _even(n: int) -> int:
     return max(2, n - (n % 2))
 
 
+def _probe_fps(path: str) -> float:
+    import json
+    import subprocess
+
+    out = subprocess.run(
+        [
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=r_frame_rate,avg_frame_rate", "-of", "json", path,
+        ],
+        capture_output=True, text=True,
+    )
+    try:
+        st = json.loads(out.stdout)["streams"][0]
+        raw = st.get("avg_frame_rate") or st.get("r_frame_rate") or "24/1"
+        a, b = raw.split("/")
+        fps = float(a) / max(1.0, float(b))
+        return fps if 1.0 <= fps <= 120.0 else 24.0
+    except Exception:
+        return 24.0
+
+
+def _yt_maxrate(w: int, h: int, fps: float) -> int:
+    """YouTube recommended SDR ceiling — extra bits get thrown away on re-encode."""
+    hi = fps >= 48
+    long = max(w, h)
+    if long >= 2000:
+        return 45_000_000 if not hi else 68_000_000
+    if long >= 1080:
+        return 8_000_000 if not hi else 12_000_000
+    return 5_000_000 if not hi else 7_500_000
+
+
+def _run_ffmpeg(
+    cmd: list[str],
+    *,
+    timeout: int,
+    target: float,
+    on_progress=None,
+) -> None:
+    import subprocess
+    import time
+
+    argv = cmd[:-1] + ["-progress", "pipe:1", "-nostats", cmd[-1]]
+    proc = subprocess.Popen(
+        argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    last = -1
+    deadline = time.time() + timeout
+    assert proc.stdout is not None
+    while True:
+        if time.time() > deadline:
+            proc.kill()
+            raise RuntimeError("ffmpeg timed out")
+        line = proc.stdout.readline()
+        if not line:
+            if proc.poll() is not None:
+                break
+            continue
+        line = line.strip()
+        if line.startswith("out_time_ms=") and on_progress:
+            try:
+                ms = int(line.split("=", 1)[1])
+                pct = int(min(99, max(0, 100.0 * (ms / 1_000_000.0) / max(0.2, target))))
+                if pct != last:
+                    on_progress(pct, "encoding")
+                    last = pct
+            except ValueError:
+                pass
+    err = proc.stderr.read() if proc.stderr else ""
+    rc = proc.wait()
+    if rc != 0:
+        raise RuntimeError((err or "ffmpeg error")[-1200:])
+
+
 def render_composed(
     *,
     video_seg: str,
@@ -250,17 +324,12 @@ def render_composed(
     out_path: str,
     preview: bool = False,
     timeout: int = 1800,
+    on_progress=None,
 ) -> None:
-    """Monta video looped + canción looped + atmósfera + SFX + marca de agua."""
-    import subprocess
-
-    def run(cmd: list[str], to: int = timeout) -> None:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=to)
-        if r.returncode != 0:
-            raise RuntimeError((r.stderr or r.stdout or "ffmpeg error")[-1200:])
-
-
+    """Loop video + song + atmosphere + SFX + watermark. YouTube-safe encode."""
     w, h = _probe_wh(video_seg)
+    fps = _probe_fps(video_seg)
+
     if preview:
         scale = min(1.0, 960 / max(w, 1))
         w, h = _even(int(w * scale)), _even(int(h * scale))
@@ -355,14 +424,36 @@ def render_composed(
         )
 
     fc = ";".join(vf + af)
+    gop = max(24, int(round(fps * 2)))
+    keymin = max(12, int(round(fps)))
+    maxrate = _yt_maxrate(w, h, fps)
+    if preview:
+        vflags = [
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+            "-pix_fmt", "yuv420p", "-profile:v", "high",
+        ]
+        a_br = "192k"
+    else:
+        vflags = [
+            "-c:v", "libx264", "-preset", "fast", "-crf", "17",
+            "-maxrate", str(maxrate), "-bufsize", str(maxrate * 2),
+            "-pix_fmt", "yuv420p", "-profile:v", "high",
+            "-g", str(gop), "-keyint_min", str(keymin), "-bf", "2",
+            "-sc_threshold", "0",
+        ]
+        a_br = "320k"
     cmd = [
         "ffmpeg", *inputs,
         "-filter_complex", fc,
         "-map", "[outv]", "-map", "[outa]",
         "-t", f"{target:.4f}",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20" if preview else "18",
-        "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-b:a", "192k",
+        *vflags,
+        "-c:a", "aac", "-b:a", a_br, "-ar", "48000",
+        "-movflags", "+faststart",
         out_path,
     ]
-    run(cmd, timeout)
+    if on_progress:
+        on_progress(1, "encoding")
+    _run_ffmpeg(cmd, timeout=timeout, target=target, on_progress=on_progress)
+    if on_progress:
+        on_progress(100, "done")

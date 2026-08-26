@@ -10,12 +10,12 @@ import numpy as np
 from catalog import overlay_path, sfx_path
 
 REASONS = {
-    "fog": "oscuro y poco saturado",
-    "smoke": "oscuro y apagado",
-    "rain": "tonos fríos y húmedos",
-    "fire": "tonos cálidos",
-    "particles": "mucho movimiento",
-    "spark": "destellos y movimiento",
+    "fog": "dark and desaturated",
+    "smoke": "dark and muted",
+    "rain": "cold, wet tones",
+    "fire": "warm tones",
+    "particles": "lots of motion",
+    "spark": "sparks and motion",
 }
 
 # Más específico primero: en empate de score gana el primero.

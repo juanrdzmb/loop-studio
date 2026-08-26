@@ -164,27 +164,45 @@ export async function planLayers(
   return data as LayerPlan;
 }
 
+export interface RenderProgress {
+  pct: number;
+  stage: string;
+  done: boolean;
+  error?: string | null;
+}
+
 export async function renderLoop(
   video: File,
   audio: File,
-  params: RenderParams
+  params: RenderParams,
+  onProgress?: (p: RenderProgress) => void
 ): Promise<Blob> {
   const fd = new FormData();
   fd.append("video", video);
   fd.append("audio", audio);
   fd.append("params", JSON.stringify(params));
-  const res = await fetch(`${COMPANION_URL}/render`, { method: "POST", body: fd });
-  if (!res.ok) {
-    let msg = "Error renderizando";
-    try {
-      const data = await res.json();
-      if (data.error) msg = data.error;
-    } catch {
-      /* noop */
+  const start = await fetch(`${COMPANION_URL}/render/start`, { method: "POST", body: fd });
+  const started = await start.json();
+  if (!start.ok) throw new Error(started.error || "Could not start render");
+  const id = started.id as string;
+  for (;;) {
+    const st = await fetch(`${COMPANION_URL}/render/status/${id}`);
+    const data = (await st.json()) as RenderProgress & { error?: string };
+    if (!st.ok) throw new Error(data.error || "Status failed");
+    onProgress?.({
+      pct: data.pct ?? 0,
+      stage: data.stage || "",
+      done: !!data.done,
+      error: data.error,
+    });
+    if (data.error) throw new Error(data.error);
+    if (data.done) {
+      const file = await fetch(`${COMPANION_URL}/render/file/${id}`);
+      if (!file.ok) throw new Error("Download failed");
+      return file.blob();
     }
-    throw new Error(msg);
+    await new Promise((r) => setTimeout(r, 400));
   }
-  return res.blob();
 }
 
 export interface CastMember {

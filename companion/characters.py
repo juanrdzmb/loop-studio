@@ -20,14 +20,15 @@ CHARACTERS: dict[str, dict] = {
         "id": "guts",
         "name": "Guts",
         "series": "Berserk",
-        "aka": "El Espadachín Negro",
+        "aka": "The Black Swordsman",
         "playlist": "Silent Vigil · Struggler (Guts)",
         "hooks": ["The Black Swordsman", "Struggler", "Guts"],
         "hashtags": ["#slowedandreverb", "#berserk", "#guts", "#animeaesthetic", "#doomerwave"],
         "tags": [
-            "slowed reverb", "slowed and reverb", "berserk", "guts",
-            "black swordsman", "doomerwave", "anime mix", "study music",
-            "sleep music", "lofi anime", "corecore",
+            "slowed and reverb", "slowed + reverb", "slowed reverb",
+            "anime aesthetic", "anime edit", "lofi",
+            "songs to study", "sleep music", "sad songs slowed",
+            "berserk", "guts", "black swordsman", "doomerwave",
         ],
         "filename_keys": (
             "guts", "berserk", "griffith", "casca", "struggler",
@@ -56,12 +57,13 @@ CHARACTERS: dict[str, dict] = {
         "name": "Miyamoto Musashi",
         "series": "Vagabond",
         "aka": "Takezo",
-        "playlist": "Silent Vigil · El eco de la espada (Musashi)",
+        "playlist": "Silent Vigil · Echo of the Sword (Musashi)",
         "hooks": ["Vagabond", "Musashi", "Takezo"],
         "hashtags": ["#slowedandreverb", "#vagabond", "#musashi", "#animeaesthetic", "#samurai"],
         "tags": [
-            "slowed reverb", "vagabond", "miyamoto musashi", "takezo",
-            "samurai", "ink", "study music", "sleep music", "lofi anime",
+            "slowed and reverb", "slowed + reverb", "slowed reverb",
+            "anime aesthetic", "anime edit", "lofi",
+            "songs to study", "sleep music", "vagabond", "musashi",
         ],
         "filename_keys": (
             "musashi", "miyamoto", "vagabond", "takezo", "inoue", "gorin",
@@ -72,12 +74,13 @@ CHARACTERS: dict[str, dict] = {
         "name": "Buntarō Mori",
         "series": "The Climber",
         "aka": "Katou Buntarou",
-        "playlist": "Silent Vigil · Arquitectura del silencio (Mori)",
+        "playlist": "Silent Vigil · Architecture of Silence (Mori)",
         "hooks": ["The Climber", "K2", "Buntarō Mori"],
-        "hashtags": ["#slowedandreverb", "#theclimber", "#kokounohito", "#animeaesthetic", "#doomer"],
+        "hashtags": ["#slowedandreverb", "#theclimber", "#animeaesthetic", "#lofi", "#doomer"],
         "tags": [
-            "slowed reverb", "the climber", "kokou no hito", "buntaro mori",
-            "k2", "alpinismo", "doomer", "study music", "sleep music",
+            "slowed and reverb", "slowed + reverb", "slowed reverb",
+            "anime aesthetic", "anime edit", "lofi",
+            "songs to study", "sleep music", "the climber", "kokou no hito",
         ],
         "filename_keys": (
             "buntaro", "buntarou", "buntarō", "mori", "climber",
@@ -144,24 +147,28 @@ def load_essay(cid: str) -> str:
 
 
 def _blurb(cid: str, limit: int = 380) -> str:
-    text = load_essay(cid)
-    if not text:
-        meta = CHARACTERS[cid]
-        return f"{meta['name']} ({meta['series']}). Slowed + Reverb para quedarte en la escena."
-    parts = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if len(s.strip()) > 90]
-    body: list[str] = []
-    for s in parts:
-        if s.count(":") >= 1 and len(s) < 140:
-            continue
-        if re.match(r"^\d+\.", s):
-            continue
-        body.append(s)
-        if sum(len(x) for x in body) > 240:
-            break
-    out = " ".join(body or parts[:2]).strip()
-    if len(out) > limit:
-        out = out[: limit - 1].rsplit(" ", 1)[0] + "…"
-    return out
+    canned = {
+        "guts": (
+            "Slowed + reverb as a nervous-system brake. The Black Swordsman’s "
+            "hypervigilance needs a room he can stay in — doomerwave, struggler, "
+            "not invincible, just still here."
+        ),
+        "thorfinn": (
+            "After revenge there is a cathedral of echo. Thorfinn’s redemption is "
+            "a low-pass on trauma — Vinland as quiet, not conquest."
+        ),
+        "musashi": (
+            "Takezo was high BPM. Musashi is the slowdown: from the farm arc to "
+            "Reigandō, mastery is learning to sit in the reverb of what the sword did."
+        ),
+        "buntaro": (
+            "Long reverb is hedgehog distance — close enough to feel, far enough not "
+            "to bleed. On K2 the Immortal Climber dissolves; the outro is the man coming home."
+        ),
+    }
+    text = canned.get(cid, "Slowed + reverb aesthetic loop.")
+    return text if len(text) <= limit else text[: limit - 1]
+
 
 
 def _sample_frames(video_path: str, start: float, end: float, n: int = 8):
@@ -331,13 +338,14 @@ def identify_character(
     hit = _filename_hit(filename)
     if hit:
         scores[hit] = scores.get(hit, 0.0) + 1.4
-        reason = f"el archivo menciona «{hit}»"
+        reason = f"filename mentions “{hit}”"
         if has_refs:
-            reason += " + fotos de referencia"
+            reason += " + reference photos"
     elif has_refs:
-        reason = "fotos de referencia + estilo del dibujo"
+        reason = "reference photos + drawing style"
     else:
-        reason = "estilo del dibujo (fotogramas)"
+        reason = "drawing style (frames)"
+
 
     winner = max(scores, key=scores.get)
     ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
@@ -386,36 +394,44 @@ def build_youtube_pack(
     meta = CHARACTERS[cid]
     hook = meta["hooks"][0]
     song_l = _song_label(song)
+    label = song_l or meta["name"]
 
     if song_l:
         title = f"{song_l} (Slowed + Reverb) | {hook}"
     else:
-        title = f"{meta['name']} | {hook} (Slowed + Reverb)"
+        title = f"{meta['name']} (Slowed + Reverb) | {hook}"
     if len(title) > 70:
         title = title[:69].rsplit(" ", 1)[0]
 
-    dur = f"{minutes:g} min" if minutes >= 1 else f"{int(minutes * 60)} s"
-    atmo = f"Atmósfera: {atmosphere}. " if atmosphere and atmosphere not in ("auto", "off") else ""
+    dur = f"{minutes:g} min" if minutes >= 1 else f"{int(minutes * 60)}s"
+    mood = atmosphere if atmosphere and atmosphere not in ("auto", "off") else None
     blurb = _blurb(cid)
 
+    # First ~150 chars = YouTube search snippet
     first = (
-        f"Slowed + Reverb · {meta['series']} · {meta['name']} · "
-        f"anime aesthetic / study / sleep"
+        f"{label} (slowed + reverb) — {meta['series']} aesthetic loop "
+        f"for late nights, study, and sleep."
     )
+    tags = list(meta["tags"])
+    if song_l:
+        tags = [song_l.lower(), *tags]
+    # 5 hashtags max: global winners + character
+    hashes = ["#slowedandreverb", "#animeaesthetic", "#lofi"]
+    for h in meta["hashtags"]:
+        if h not in hashes and len(hashes) < 5:
+            hashes.append(h)
+
     desc = (
         f"{first}\n\n"
+        f"0:00 {label} (Slowed + Reverb)\n\n"
         f"{blurb}\n\n"
-        f"{atmo}Loop de {dur} — el corte del video se funde solo; "
-        f"si la canción es más corta, el final se une con el inicio.\n\n"
+        f"{dur} seamless loop"
+        f"{f' · {mood} atmosphere' if mood else ''}. "
+        f"The cut never shows — video and song crossfade at the seam.\n\n"
         f"Silent Vigil Music\n"
         f"Playlist: {meta['playlist']}\n\n"
-        f"¿Qué tema bajo al siguiente?\n\n"
-        f"{' '.join(meta['hashtags'])}"
-    )
-
-    pinned = (
-        f"Hoy: {meta['name']} ({meta['series']}). "
-        f"¿Qué canción quieres en slowed + reverb?"
+        f"What should I slow down next?\n\n"
+        f"{' '.join(hashes)}"
     )
 
     return {
@@ -424,13 +440,16 @@ def build_youtube_pack(
         "series": meta["series"],
         "title": title,
         "description": desc,
-        "hashtags": meta["hashtags"],
-        "tags": meta["tags"],
-        "tagsLine": ", ".join(meta["tags"]),
+        "hashtags": hashes,
+        "tags": tags,
+        "tagsLine": ", ".join(tags),
         "playlist": meta["playlist"],
-        "pinnedComment": pinned,
+        "pinnedComment": (
+            f"Today: {meta['name']} ({meta['series']}). "
+            f"What song should I slow + reverb next?"
+        ),
         "thumbnailTip": (
-            "Un solo fotograma limpio del personaje, poco texto, alto contraste. "
-            "El thumbnail es el SEO visual de este nicho."
+            "Thumbnail drives CTR. 1280×720, one clear subject, little text, "
+            "readable on a phone. Use the frame picker below."
         ),
     }

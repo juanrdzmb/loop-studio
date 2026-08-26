@@ -1,4 +1,4 @@
-/* E2E: Video + Canción (loops, atmósfera, preview 20s, render) */
+/* E2E: Video + Song (loops, atmosphere, 20s preview, render) */
 import { chromium } from "playwright-core";
 import fs from "node:fs";
 import { execSync } from "node:child_process";
@@ -21,50 +21,49 @@ const page = await browser.newPage();
 page.on("pageerror", (e) => console.log("pageerror:", e.message));
 
 await page.goto(BASE + "/video-loop", { waitUntil: "networkidle" });
-await page.waitForSelector("text=Companion activo", { timeout: 10000 });
-ok("Badge de companion activo", true);
+await page.waitForSelector("text=Companion online", { timeout: 10000 });
+ok("Companion online badge", true);
 
 await page.setInputFiles("input[type=file]", `${MEDIA}/sample.mp4`);
-await page.click('button:has-text("Encontrar loops suaves")');
-await page.waitForSelector("text=Calidad", { timeout: 120000 });
-const vidCands = await page.locator("button:has-text('Calidad')").count();
-ok("Candidatos de video", vidCands > 0, `(${vidCands})`);
-await page.locator("button:has-text('Calidad')").first().click();
+await page.click('button:has-text("Find seamless loops")');
+await page.waitForSelector("text=Quality", { timeout: 120000 });
+const vidCands = await page.locator("button:has-text('Quality')").count();
+ok("Video candidates", vidCands > 0, `(${vidCands})`);
+await page.locator("button:has-text('Quality')").first().click();
 
 await page.setInputFiles("input[type=file]", `${MEDIA}/testsong.mp3`);
-await page.waitForSelector("text=Toda la canción", { timeout: 20000 });
-ok("Canción cargada (modo completa)", true);
+await page.waitForSelector("text=Full song", { timeout: 20000 });
+ok("Song loaded (full song)", true);
 
-// duración corta para el test
-const num = page.locator('input[type=number]').nth(1);
+const num = page.locator("input[type=number]").nth(1);
 await num.fill("0.25");
-ok("Duración objetivo en minutos", true);
+ok("Target length in minutes", true);
 
-await page.waitForSelector("text=Atmósfera", { timeout: 10000 });
-ok("Panel de atmósfera visible", true);
+await page.waitForSelector("text=Atmosphere", { timeout: 10000 });
+ok("Atmosphere panel visible", true);
 
-await page.click('button:has-text("Ver cómo quedaría")');
-await page.waitForSelector("text=Preview aproximado", { timeout: 180000 });
-ok("Preview de 20s generado", true);
+await page.click('button:has-text("Preview how it would look")');
+await page.waitForSelector("text=Rough preview", { timeout: 180000 });
+ok("20s preview generated", true);
 
-await page.click('button:has-text("Generar video")');
-await page.waitForSelector("text=Listo", { timeout: 300000 });
-ok("MP4 renderizado", true);
+await page.click('button:has-text("Generate video")');
+await page.waitForSelector("text=Ready", { timeout: 300000 });
+ok("MP4 rendered", true);
 
 const [dl] = await Promise.all([
   page.waitForEvent("download", { timeout: 30000 }),
-  page.click('button:has-text("Descargar MP4")'),
+  page.click('button:has-text("Download MP4")'),
 ]);
 const mp4 = `${MEDIA}/out-final-videoloop.mp4`;
 await dl.saveAs(mp4);
-ok("MP4 descargado", fs.statSync(mp4).size > 50000);
+ok("MP4 downloaded", fs.statSync(mp4).size > 50000);
 
 const probe = execSync(
   `ffprobe -v error -show_entries stream=codec_name -show_entries format=duration -of compact "${mp4}"`
 ).toString();
 const dur = parseFloat((probe.match(/duration=([\d.]+)/) || [0, "0"])[1]);
 ok(
-  "MP4 h264+aac con duración pedida (~15s)",
+  "MP4 h264+aac ~15s",
   probe.includes("h264") && probe.includes("aac") && dur >= 12 && dur <= 20,
   probe.replace(/\n/g, " ").trim().slice(0, 70)
 );
@@ -73,5 +72,5 @@ await page.screenshot({ path: `${MEDIA}/videoloop.png` });
 await browser.close();
 
 const failed = results.filter((r) => !r).length;
-console.log(`\n${results.length - failed}/${results.length} pruebas pasaron`);
+console.log(`\n${results.length - failed}/${results.length} tests passed`);
 process.exit(failed ? 1 : 0);

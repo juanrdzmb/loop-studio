@@ -1,137 +1,111 @@
 # Loop Studio
 
-Soy Juan. Monté esto para hacer **loops de video + canción slowed/reverb** listos para YouTube (marca Silent Vigil Music) sin subir nada a la nube. También sirve para GIFs pixel art y para combinar un GIF con el WAV.
+I’m Juan. I built this to make **video + song loops** (slowed / reverb aesthetic) ready for YouTube — Silent Vigil Music — without sending anything to the cloud. It also makes pixel-art GIFs and combines a GIF with a WAV.
 
-Todo corre en tu máquina. El navegador hace GIF, slowed y Combinar. La pestaña **Video + Canción** habla con un companion local en Python (`:8787`) para detectar loops, personaje, atmósfera y renderizar con ffmpeg.
+Everything runs on your machine. The browser handles GIF, Slowed + Reverb, and Combine. **Video + Song** talks to a local Python companion (`:8787`) for loop detection, character ID, atmosphere, and ffmpeg.
 
 Repo: https://github.com/juanrdzmb/loop-studio
 
-## Qué hace
+## What it does
 
-| Pestaña | Para qué la uso | Companion |
+| Tab | What I use it for | Companion |
 |---|---|---|
-| **GIF Studio** `/` | Recorto, elijo el loop, aplico estilo pixel y bajo el GIF (el preview es el mismo pipeline que el export) | No |
-| **Slowed + Reverb** `/slowed-reverb` | Bajo el tempo con reverb Dattorro, vinilo, 8D… exporto WAV | No |
-| **Combinar** `/combinar` | GIF ya editado + WAV → MP4 en el navegador | No |
-| **Video + Canción** `/video-loop` | Loop de video + canción a N minutos + niebla/SFX/marca + pack de YouTube | Sí |
+| **GIF Studio** `/` | Trim, pick a loop, pixel style, download a GIF (preview = export) | No |
+| **Slowed + Reverb** `/slowed-reverb` | Slow the track with Dattorro reverb, vinyl, 8D… export WAV | No |
+| **Combine** `/combinar` | Finished GIF + WAV → MP4 in the browser | No |
+| **Video + Song** `/video-loop` | Video loop + song to N minutes + fog/SFX/watermark + YouTube pack + thumbnail | Yes |
 
-## Instalar
+## Install
 
-Necesitas **Node 20+**, **ffmpeg** y, para Video + Canción, **uv**.
+You need **Node 20+**, **ffmpeg**, and **uv** for Video + Song.
 
 ```bash
 git clone https://github.com/juanrdzmb/loop-studio.git
 cd loop-studio
 npm install
 
-# companion (una vez)
 curl -LsSf https://astral.sh/uv/install.sh | sh
 source ~/.bashrc
 uv tool install pymusiclooper
-# Debian/Ubuntu:
-sudo apt install ffmpeg
-# Fedora:
-# sudo dnf install ffmpeg
+sudo apt install ffmpeg   # Fedora: sudo dnf install ffmpeg
 
 chmod +x start.sh companion/start.sh
-```
-
-Arranque:
-
-```bash
 ./start.sh
-# App    → http://localhost:3000
-# Companion → http://localhost:8787/health
+# App        → http://localhost:3000
+# Companion  → http://localhost:8787/health
 ```
 
-O por separado: `npm run dev` y `companion/start.sh`.
+If port 8787 is busy, kill the old Python (`ss -ltnp | grep 8787`) and start the companion again. The badge must say **Companion online**.
 
-Si el 8787 está ocupado, mata el Python viejo (`ss -ltnp | grep 8787`) y vuelve a lanzar el companion. El badge de la pestaña tiene que decir **Companion activo**.
+## How I use Video + Song
 
-## Cómo lo uso (Video + Canción)
+1. Drop the clip → **Find seamless loops** → hover the cards → pick one. Quality is how well the end matches the start (not a fake 100%).
+2. Drop the song. Default is the **full track**. If I ask for more minutes than it lasts, the companion **crossfades the end into the start** and repeats. If I ask for less, it just uses the slice.
+3. Set minutes (`1m 3m 5m 10m 30m 1h`).
+4. Atmosphere: Auto (looks at the clip) or I pick. **Preview 20s**, then **Generate**. A bar shows loop / encode progress.
+5. Watermark **Silent Vigil Music** (Montserrat, no ©) travels the **top edge**.
+6. The app guesses **Guts / Thorfinn / Musashi / Buntarō**. I can override. I copy title, description, tags, playlist, pinned comment — from `docs/` plus the formula that actually ranks.
+7. **Grab 1280×720** for the YouTube thumbnail (CTR lives there more than in tags).
 
-1. Subo el clip. Pulso **Encontrar loops suaves**. Paso el cursor por las tarjetas (calidad = qué tan bien encaja el final con el inicio; ya no sale todo a 100 %).
-2. Subo la canción. Por defecto va **entera**. Si pido más minutos de los que dura, el companion **funde el final con el inicio** y la repite. Si pido menos, no la corta en loop: usa el trozo.
-3. Pongo los minutos (`1m 3m 5m 10m 30m 1h`).
-4. Atmósfera: automático (mira el clip: fuego, niebla, lluvia…) o la elijo yo. **Ver cómo quedaría (20 s)** y luego **Generar**.
-5. La marca **Silent Vigil Music** (Montserrat, sin ©) recorre el **borde superior**.
-6. Al subir el video detecta si es **Guts, Thorfinn, Musashi o Buntarō**. Puedo corregirlo. Ahí mismo copio título, descripción, tags, playlist y comentario anclado — salen de los ensayos en `docs/`.
+No “cut vs speed vs crossfade”: the video always fades; the duration I type wins.
 
-No hay “corte vs speed vs crossfade”: el video siempre se funde; la duración que pido manda.
+## YouTube copy (what I paste)
 
-## Archivos que no van al git (los pongo yo en local)
+Winners in this niche look like:
+
+- **Title** (front-load keywords, keep it under ~70 chars):  
+  `Song Name (Slowed + Reverb) | The Black Swordsman`
+- **Description first line** (search snippet):  
+  `Song (slowed + reverb) — Berserk aesthetic loop for late nights, study, and sleep.`
+- **Timestamp:** `0:00 Song (Slowed + Reverb)`
+- **Hashtags:** 3–5 — `#slowedandreverb #animeaesthetic #lofi` + character
+- **Tags:** `slowed and reverb`, `slowed + reverb`, `anime aesthetic`, `songs to study`, `sleep music`, plus series/character
+- **Pinned comment:** a question (“What should I slow down next?”)
+- **Thumbnail:** 1280×720, 16:9, JPG under 2 MB, one clear subject, little text
+
+## Encode (quality for YouTube, no wasted bits)
+
+YouTube re-encodes everything. I don’t crush the file. I give it a clean master at **their recommended ceiling**:
+
+- H.264 High, yuv420p, native fps (no resample)
+- CRF 17, `preset fast` (same look as slower presets, smaller than `veryfast`)
+- GOP 2 seconds, 2 B-frames
+- `-maxrate` / `-bufsize` at YouTube SDR targets (5 Mbps 720p / 8 Mbps 1080p / 12 Mbps 1080p60)
+- AAC-LC 48 kHz **320 kbps** stereo
+- `+faststart`
+
+Preview stays `veryfast` / CRF 20 / 192k so the 20s check is quick.
+
+## Files that stay local (not in git)
 
 ```
-assets/
-  overlays/          fog.mp4 smoke.mp4 rain.mp4 particles.mp4 Fire.mp4 …
-  audio_ambience/    night, wind, rain, thunder.mp3, sword.mp3, katana.mp3 …
-docs/refs/
-  guts/ thorfinn/ musashi/ buntaro/    # capturas jpg/png/webp (no hace falta AVIF)
+assets/overlays/          fog.mp4 smoke.mp4 rain.mp4 …
+assets/audio_ambience/    night, wind, thunder.mp3, sword.mp3 …
+docs/refs/guts|thorfinn|musashi|buntaro/   # jpg/png/webp — AVIF not needed
 ```
 
-`assets/README.md` y `docs/refs/README.md` dicen los nombres. Sin overlays, el render funciona igual, solo que sin niebla. Sin fotos en `refs/`, el personaje se adivina por el dibujo y el nombre del archivo; con fotos acierta más.
+See `assets/README.md` and `docs/refs/README.md`. Without overlays, render still works (no fog). Without refs, character ID uses drawing style + filename.
 
-## Adaptarlo a tu canal
+## Make it yours
 
-No está atado a Silent Vigil. Cambia esto y es tuyo:
-
-| Quieres… | Dónde |
+| Change | Where |
 |---|---|
-| Otra marca de agua | `companion/watermark.py` → `BRAND` y la fuente |
-| Otros overlays / SFX | `assets/` + `companion/catalog.py` (`OVERLAYS`, `AMBIENCE`, `SFX`) |
-| Otros protagonistas | `companion/characters.py` → dict `CHARACTERS` (id, series, hashtags, `filename_keys`) |
-| Otros ensayos para YouTube | sustituye los `.md` de `docs/` (el pack lee el texto al vuelo) |
-| Otras caras de referencia | `docs/refs/<id>/*.jpg` — jpg/png/webp, da igual el peso |
-| Otro puerto | app `npm run dev -- -p …`; companion en `companion/start.sh` |
+| Watermark brand | `companion/watermark.py` → `BRAND` |
+| Overlays / SFX | `assets/` + `companion/catalog.py` |
+| Cast | `companion/characters.py` → `CHARACTERS` |
+| YouTube essays | replace `docs/*.md` |
+| Face refs | `docs/refs/<id>/` |
 
-Los ids de `CHARACTERS` tienen que coincidir con la carpeta `docs/refs/<id>/` y con una palabra en el nombre del `.md` (`Guts.md`, `Thorfinn.md`, `Miyamoto Musashi.md`, `Buntarō Mori.md`).
+`CHARACTERS` ids must match `docs/refs/<id>/` and a word in the essay filename.
 
-## Cómo detecto al personaje
-
-1. Nombre del archivo (`guts`, `berserk`, `thorfinn`, `vinland`, `musashi`, `vagabond`, `buntaro`, `climber`, `k2`…).
-2. Histograma frente a `docs/refs/<id>/`.
-3. Estilo del fotograma: tinta (Vagabond), nieve (The Climber), oscuro/armadura (Berserk), frío (Vinland).
-
-Siempre elige uno de los cuatro. Si se equivoca, lo cambio a mano en la UI.
-
-## Pack de YouTube (lo que copio al subir)
-
-Sigo lo que funciona ahora en el nicho slowed + reverb / aesthetic:
-
-- Título corto, keywords delante: `Tema (Slowed + Reverb) | The Black Swordsman`
-- Descripción: *slowed reverb + serie + study/sleep* en las dos primeras líneas, luego un recorte del ensayo, CTA, playlist, 3–5 hashtags
-- Thumbnail: un fotograma limpio, poco texto
-- Comentario anclado: una pregunta
-- La música entra al segundo 0 (el render no lleva intro)
-
-## Pruebas
+## Tests
 
 ```bash
 npm run lint
-npm run build
-# app en :3000 y companion en :8787
-node scripts/e2e.mjs
-node scripts/e2e-live.mjs
-node scripts/e2e-session.mjs
+# app :3000 + companion :8787
 node scripts/e2e-videoloop.mjs
 ```
 
-Los e2e fabrican clips en `/tmp/opencode/loop-e2e`.
-
-## Detalles que me importan
-
-- GIF: una paleta global + dither Bayer (sin pixelar el modo Original).
-- Slowed: seek en el dominio de la fuente, Dattorro en worklet, no re-decodifica el buffer.
-- Video loop: LoopyCut a resolución baja; la **calidad** es la diferencia real inicio/fin.
-- Capas: ffmpeg `blend=screen`, ambiente con low-pass, SFX en valles RMS (librosa) y tipo de SFX según el look del clip.
-- Canción más corta que el target: acrossfade final→inicio y `stream_loop` (sin `-shortest`, que cortaba el vídeo).
-
-## Requisitos
-
-- Node 20+, Chrome/Edge (WebCodecs; hay fallback)
-- ffmpeg, uv, Python 3.12 (lo crea `companion/start.sh`)
-- Font de marca: Montserrat Light en el sistema (`/usr/share/fonts/julietaula-montserrat-fonts/`); si no, Liberation Sans
-
-## Créditos
+## Credits
 
 [PyMusicLooper](https://github.com/arkrow/PyMusicLooper) · [LoopyCut](https://github.com/carmelosantana/loopycut-cli) · [fadeloop](https://github.com/flatpickles/fadeloop) · [DattorroReverbNode](https://github.com/khoin/DattorroReverbNode) · [mediabunny](https://github.com/Vanilagy/mediabunny) · [gifenc](https://github.com/mattdesl/gifenc)
