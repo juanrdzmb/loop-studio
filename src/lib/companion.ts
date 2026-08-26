@@ -65,6 +65,7 @@ export interface LayerPlan {
   sfxPalette?: string[];
   visualStyle?: string;
   visualStyleLabel?: string;
+  pixelSize?: number;
 }
 export interface RenderParams {
   videoStart: number;
@@ -159,6 +160,7 @@ export async function planLayers(
     intensity: number;
     watermark: boolean;
     visualStyle?: string;
+    pixelSize?: number;
     video?: File | null;
     videoStart?: number;
     videoEnd?: number;
@@ -171,8 +173,8 @@ export async function planLayers(
   fd.append("target", String(opts.target));
   fd.append("atmosphere", opts.atmosphere);
   if (opts.visualStyle) fd.append("visual_style", opts.visualStyle);
+  if (opts.pixelSize) fd.append("pixel_size", String(opts.pixelSize));
   fd.append("sfx_on", opts.sfxOn ? "1" : "0");
-  fd.append("intensity", String(opts.intensity));
   fd.append("watermark", opts.watermark ? "1" : "0");
   if (opts.video) {
     fd.append("video", opts.video);

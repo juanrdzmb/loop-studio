@@ -43,6 +43,10 @@ export function getVisualStyleCss(styleId: string): string {
   }
 }
 
+export function getPixelScale(size: number): number {
+  return size > 1 ? size * 1.5 : 1;
+}
+
 export function parseGifMetadata(buffer: ArrayBuffer): {
   duration: number;
   width: number;
@@ -158,6 +162,7 @@ export default function VideoLoopPage() {
   const [overlays, setOverlays] = useState<OverlayOption[]>([]);
   const [visualStyles, setVisualStyles] = useState<VisualStyleOption[]>([]);
   const [visualStyle, setVisualStyle] = useState("anime_lofi");
+  const [pixelSize, setPixelSize] = useState<number>(1);
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [videoDuration, setVideoDuration] = useState(0);
@@ -486,6 +491,7 @@ export default function VideoLoopPage() {
         target: targetSec,
         atmosphere,
         visualStyle,
+        pixelSize,
         sfxOn,
         intensity,
         watermark,
@@ -525,6 +531,7 @@ export default function VideoLoopPage() {
     targetSec,
     atmosphere,
     visualStyle,
+    pixelSize,
     sfxOn,
     intensity,
     watermark,
@@ -549,6 +556,7 @@ export default function VideoLoopPage() {
           target: targetSec,
           atmosphere,
           visualStyle,
+          pixelSize,
           sfxOn,
           intensity,
           watermark,
@@ -588,6 +596,7 @@ export default function VideoLoopPage() {
     targetSec,
     atmosphere,
     visualStyle,
+    pixelSize,
     sfxOn,
     intensity,
     watermark,
@@ -611,6 +620,7 @@ export default function VideoLoopPage() {
           target: shortsSec,
           atmosphere,
           visualStyle,
+          pixelSize,
           sfxOn,
           intensity,
           watermark,
@@ -654,6 +664,7 @@ export default function VideoLoopPage() {
     shortsSec,
     atmosphere,
     visualStyle,
+    pixelSize,
     sfxOn,
     intensity,
     watermark,
@@ -747,25 +758,42 @@ export default function VideoLoopPage() {
                 </div>
                 {videoUrl && (
                   <div className="relative rounded-lg overflow-hidden border border-zinc-800 bg-black aspect-video max-h-60 flex items-center justify-center">
-                    {isGif ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={videoUrl}
-                        alt="GIF loop preview"
-                        style={{ filter: getVisualStyleCss(visualStyle) }}
-                        className="w-full h-full object-contain pointer-events-none transition-[filter] duration-300"
-                      />
-                    ) : (
-                      <video
-                        src={videoUrl}
-                        muted
-                        loop
-                        autoPlay
-                        playsInline
-                        style={{ filter: getVisualStyleCss(visualStyle) }}
-                        className="w-full h-full object-contain transition-[filter] duration-300"
-                      />
-                    )}
+                    <div
+                      className="w-full h-full flex items-center justify-center overflow-hidden"
+                      style={{ imageRendering: pixelSize > 1 ? "pixelated" : "auto" }}
+                    >
+                      {isGif ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={videoUrl}
+                          alt="GIF loop preview"
+                          style={{
+                            filter: getVisualStyleCss(visualStyle),
+                            imageRendering: pixelSize > 1 ? "pixelated" : "auto",
+                            transform: pixelSize > 1 ? `scale(${getPixelScale(pixelSize)})` : "none",
+                            width: pixelSize > 1 ? `${100 / getPixelScale(pixelSize)}%` : "100%",
+                            height: pixelSize > 1 ? `${100 / getPixelScale(pixelSize)}%` : "100%",
+                          }}
+                          className="object-contain pointer-events-none transition-[filter,transform] duration-200"
+                        />
+                      ) : (
+                        <video
+                          src={videoUrl}
+                          muted
+                          loop
+                          autoPlay
+                          playsInline
+                          style={{
+                            filter: getVisualStyleCss(visualStyle),
+                            imageRendering: pixelSize > 1 ? "pixelated" : "auto",
+                            transform: pixelSize > 1 ? `scale(${getPixelScale(pixelSize)})` : "none",
+                            width: pixelSize > 1 ? `${100 / getPixelScale(pixelSize)}%` : "100%",
+                            height: pixelSize > 1 ? `${100 / getPixelScale(pixelSize)}%` : "100%",
+                          }}
+                          className="object-contain transition-[filter,transform] duration-200"
+                        />
+                      )}
+                    </div>
                     {visualStyle !== "clean" && (
                       <div
                         className="absolute inset-0 pointer-events-none"
@@ -1096,11 +1124,61 @@ export default function VideoLoopPage() {
               ).find((s) => s.id === visualStyle)?.hint}
             </p>
           </div>
+          <div>
+            <div className="flex items-center justify-between text-xs text-zinc-400 mb-1">
+              <span>Retro Pixelation / Pixel Art style</span>
+              <span className="text-cyan-400 font-medium">
+                {pixelSize === 1 ? "Smooth 1080p (Off)" : `${pixelSize * 2}px pixel blocks`}
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-2 mb-2">
+              {[
+                { size: 1, label: "Smooth (Off)" },
+                { size: 2, label: "Subtle (2px)" },
+                { size: 3, label: "Anime Pixel (3px)" },
+                { size: 4, label: "Retro 16-Bit (4px)" },
+                { size: 6, label: "8-Bit Classic (6px)" },
+              ].map((p) => (
+                <button
+                  key={p.size}
+                  type="button"
+                  onClick={() => {
+                    setPixelSize(p.size);
+                    setPlan(null);
+                    setPreviewUrl(null);
+                  }}
+                  className={`px-3 py-1.5 rounded-lg text-sm border ${
+                    pixelSize === p.size
+                      ? "border-cyan-500 bg-cyan-500/15 text-cyan-300 font-medium"
+                      : "border-zinc-700 hover:border-zinc-500 text-zinc-300"
+                  }`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+            <label className="block text-xs text-zinc-400">
+              Custom pixel size: {pixelSize === 1 ? "1 (Off)" : `${pixelSize} (${pixelSize * 2}px block size)`}
+              <input
+                type="range"
+                min={1}
+                max={8}
+                step={1}
+                value={pixelSize}
+                onChange={(e) => {
+                  setPixelSize(parseInt(e.target.value) || 1);
+                  setPlan(null);
+                  setPreviewUrl(null);
+                }}
+                className="w-full accent-cyan-500 mt-1"
+              />
+            </label>
+          </div>
 
           {videoUrl && (
             <div className="space-y-1.5 pt-1">
               <div className="flex items-center justify-between text-xs text-zinc-400">
-                <span>Live filter preview (real-time in browser)</span>
+                <span>Live filter & pixel preview (real-time in browser)</span>
                 <span className="text-fuchsia-400 font-medium">
                   {(visualStyles.length
                     ? visualStyles
@@ -1112,28 +1190,46 @@ export default function VideoLoopPage() {
                         { id: "clean", label: "Clean 1080p" },
                       ]
                   ).find((s) => s.id === visualStyle)?.label || "Anime Lo-Fi"}
+                  {pixelSize > 1 ? ` · ${pixelSize * 2}px pixelated` : ""}
                 </span>
               </div>
               <div className="relative rounded-xl overflow-hidden border border-zinc-800 bg-black aspect-video max-h-64 flex items-center justify-center shadow-lg">
-                {isGif ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={videoUrl}
-                    alt="Live styled preview"
-                    style={{ filter: getVisualStyleCss(visualStyle) }}
-                    className="w-full h-full object-contain pointer-events-none transition-[filter] duration-300"
-                  />
-                ) : (
-                  <video
-                    src={videoUrl}
-                    muted
-                    loop
-                    autoPlay
-                    playsInline
-                    style={{ filter: getVisualStyleCss(visualStyle) }}
-                    className="w-full h-full object-contain transition-[filter] duration-300"
-                  />
-                )}
+                <div
+                  className="w-full h-full flex items-center justify-center overflow-hidden"
+                  style={{ imageRendering: pixelSize > 1 ? "pixelated" : "auto" }}
+                >
+                  {isGif ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={videoUrl}
+                      alt="Live styled preview"
+                      style={{
+                        filter: getVisualStyleCss(visualStyle),
+                        imageRendering: pixelSize > 1 ? "pixelated" : "auto",
+                        transform: pixelSize > 1 ? `scale(${getPixelScale(pixelSize)})` : "none",
+                        width: pixelSize > 1 ? `${100 / getPixelScale(pixelSize)}%` : "100%",
+                        height: pixelSize > 1 ? `${100 / getPixelScale(pixelSize)}%` : "100%",
+                      }}
+                      className="object-contain pointer-events-none transition-[filter,transform] duration-200"
+                    />
+                  ) : (
+                    <video
+                      src={videoUrl}
+                      muted
+                      loop
+                      autoPlay
+                      playsInline
+                      style={{
+                        filter: getVisualStyleCss(visualStyle),
+                        imageRendering: pixelSize > 1 ? "pixelated" : "auto",
+                        transform: pixelSize > 1 ? `scale(${getPixelScale(pixelSize)})` : "none",
+                        width: pixelSize > 1 ? `${100 / getPixelScale(pixelSize)}%` : "100%",
+                        height: pixelSize > 1 ? `${100 / getPixelScale(pixelSize)}%` : "100%",
+                      }}
+                      className="object-contain transition-[filter,transform] duration-200"
+                    />
+                  )}
+                </div>
                 {visualStyle !== "clean" && (
                   <div
                     className="absolute inset-0 pointer-events-none"
@@ -1376,6 +1472,7 @@ export default function VideoLoopPage() {
               caption={yt?.name || character || ""}
               isGif={isGif}
               visualStyle={visualStyle}
+              pixelSize={pixelSize}
             />
           )}
         </section>
@@ -1547,6 +1644,7 @@ function ThumbnailPicker({
   caption,
   isGif,
   visualStyle,
+  pixelSize,
 }: {
   videoUrl: string;
   start: number;
@@ -1554,6 +1652,7 @@ function ThumbnailPicker({
   caption: string;
   isGif?: boolean;
   visualStyle?: string;
+  pixelSize?: number;
 }) {
   const ref = useRef<HTMLVideoElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
@@ -1605,6 +1704,22 @@ function ThumbnailPicker({
     ctx.drawImage(sourceEl, sx, sy, sw, sh, 0, 0, c.width, c.height);
     ctx.filter = "none";
 
+    if (pixelSize && pixelSize > 1) {
+      const block = pixelSize * 2;
+      const smallW = Math.max(16, Math.round(c.width / block));
+      const smallH = Math.max(16, Math.round(c.height / block));
+      const off = document.createElement("canvas");
+      off.width = smallW;
+      off.height = smallH;
+      const octx = off.getContext("2d");
+      if (octx) {
+        octx.imageSmoothingEnabled = false;
+        octx.drawImage(c, 0, 0, smallW, smallH);
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(off, 0, 0, smallW, smallH, 0, 0, c.width, c.height);
+      }
+    }
+
     if (visualStyle && visualStyle !== "clean") {
       const grad = ctx.createRadialGradient(
         c.width / 2,
@@ -1621,7 +1736,7 @@ function ThumbnailPicker({
     }
 
     return c;
-  }, [isGif, visualStyle]);
+  }, [isGif, visualStyle, pixelSize]);
   const grabThumb = useCallback(() => {
     const c = drawCover(1280, 16 / 9);
     if (!c) return;
@@ -1670,28 +1785,45 @@ function ThumbnailPicker({
         1280×720 thumbnail · 3000×3000 album (DistroKid / YouTube Music if the track is yours).
         The in-video Music card is Content ID — not something you attach by hand.
       </div>
-      {isGif ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          ref={imgRef}
-          src={videoUrl}
-          alt="Thumbnail source preview"
-          style={{ filter: getVisualStyleCss(visualStyle || "clean") }}
-          className="w-full aspect-video object-contain rounded-lg bg-black transition-[filter] duration-300"
-        />
-      ) : (
-        <video
-          ref={ref}
-          src={videoUrl}
-          muted
-          playsInline
-          style={{ filter: getVisualStyleCss(visualStyle || "clean") }}
-          className="w-full aspect-video object-cover rounded-lg bg-black transition-[filter] duration-300"
-          onLoadedMetadata={(e) => {
-            e.currentTarget.currentTime = start;
-          }}
-        />
-      )}
+      <div
+        className="relative rounded-lg overflow-hidden border border-zinc-800 bg-black aspect-video flex items-center justify-center"
+        style={{ imageRendering: pixelSize && pixelSize > 1 ? "pixelated" : "auto" }}
+      >
+        {isGif ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            ref={imgRef}
+            src={videoUrl}
+            alt="Thumbnail source preview"
+            style={{
+              filter: getVisualStyleCss(visualStyle || "clean"),
+              imageRendering: pixelSize && pixelSize > 1 ? "pixelated" : "auto",
+              transform: pixelSize && pixelSize > 1 ? `scale(${getPixelScale(pixelSize)})` : "none",
+              width: pixelSize && pixelSize > 1 ? `${100 / getPixelScale(pixelSize)}%` : "100%",
+              height: pixelSize && pixelSize > 1 ? `${100 / getPixelScale(pixelSize)}%` : "100%",
+            }}
+            className="object-contain transition-[filter,transform] duration-200"
+          />
+        ) : (
+          <video
+            ref={ref}
+            src={videoUrl}
+            muted
+            playsInline
+            style={{
+              filter: getVisualStyleCss(visualStyle || "clean"),
+              imageRendering: pixelSize && pixelSize > 1 ? "pixelated" : "auto",
+              transform: pixelSize && pixelSize > 1 ? `scale(${getPixelScale(pixelSize)})` : "none",
+              width: pixelSize && pixelSize > 1 ? `${100 / getPixelScale(pixelSize)}%` : "100%",
+              height: pixelSize && pixelSize > 1 ? `${100 / getPixelScale(pixelSize)}%` : "100%",
+            }}
+            className="object-cover transition-[filter,transform] duration-200"
+            onLoadedMetadata={(e) => {
+              e.currentTarget.currentTime = start;
+            }}
+          />
+        )}
+      </div>
       {!isGif && (
         <label className="block text-xs text-zinc-400">
           Frame {t.toFixed(1)}s
