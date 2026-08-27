@@ -66,6 +66,8 @@ export interface LayerPlan {
   visualStyle?: string;
   visualStyleLabel?: string;
   pixelSize?: number;
+  seamMode?: "smooth" | "pingpong" | "cut";
+  seamFade?: number;
 }
 export interface RenderParams {
   videoStart: number;
@@ -76,6 +78,8 @@ export interface RenderParams {
   preview?: boolean;
   aspect?: "landscape" | "shorts";
   plan?: LayerPlan | Record<string, unknown>;
+  seamMode?: "smooth" | "pingpong" | "cut";
+  seamFade?: number;
 }
 
 export async function companionHealth(timeoutMs = 2500): Promise<CompanionHealth | null> {

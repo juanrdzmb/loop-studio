@@ -399,11 +399,46 @@ async def analyze_video(
         os.unlink(path)
 
 
-def _loop_segment(v_path: str, v_start: float, v_end: float, seg_path: str) -> float:
-    """Recorta el loop de video manteniendo el inicio limpio y natural (sin fundido fantasma en t=0)."""
+def _loop_segment(
+    v_path: str,
+    v_start: float,
+    v_end: float,
+    seg_path: str,
+    seam_mode: str = "smooth",
+    seam_fade: float = 0.5,
+) -> float:
+    """
+    Recorta y optimiza el loop de video:
+    - 'smooth': Aplica un micro-fundido suave (seam_fade) al final del ciclo para enlazar
+      de forma continua con el inicio sin saltos ni cortes bruscos.
+    - 'pingpong': Modo ida y vuelta (forward -> reverse) para movimiento continuo 2.5D infinito.
+    - 'cut': Corte directo tradicional.
+    """
     v_dur = round(v_end - v_start, 6)
-    vf = "setpts=PTS-STARTPTS,format=yuv420p[out]"
-    seg_dur = v_dur
+    fade = min(1.5, max(0.2, seam_fade if seam_fade > 0 else min(0.6, v_dur * 0.12)))
+
+    if seam_mode == "pingpong" and v_dur >= 1.0:
+        vf = (
+            f"[0:v]format=yuv420p,split=2[fwd][rev_src];"
+            f"[fwd]setpts=PTS-STARTPTS,settb=AVTB[f];"
+            f"[rev_src]reverse,setpts=PTS-STARTPTS,settb=AVTB[r];"
+            f"[f][r]concat=n=2:v=1:a=0,format=yuv420p[out]"
+        )
+        seg_dur = v_dur * 2
+    elif seam_mode == "smooth" and v_dur > fade * 2.2:
+        vf = (
+            f"[0:v]format=yuv420p,split=3[beg][mid][end];"
+            f"[beg]trim=start=0:end={fade:.4f},setpts=PTS-STARTPTS,settb=AVTB[b];"
+            f"[mid]trim=start={fade:.4f}:end={v_dur - fade:.4f},setpts=PTS-STARTPTS,settb=AVTB[m];"
+            f"[end]trim=start={v_dur - fade:.4f}:end={v_dur:.4f},setpts=PTS-STARTPTS,settb=AVTB[e];"
+            f"[m][e]concat=n=2:v=1:a=0,settb=AVTB[me];"
+            f"[me][b]xfade=transition=fade:duration={fade:.4f}:offset={v_dur - 2*fade:.4f},format=yuv420p[out]"
+        )
+        seg_dur = v_dur - fade
+    else:
+        vf = "setpts=PTS-STARTPTS,format=yuv420p[out]"
+        seg_dur = v_dur
+
     _run([
         "ffmpeg", "-y", "-v", "error",
         "-ss", str(v_start), "-to", str(v_end), "-i", v_path,
@@ -532,6 +567,9 @@ def _execute_render(v_path: str, a_path: str, p: dict, on_progress=None) -> str:
     if v_dur <= 0.1 or a_dur <= 0.1 or target <= 0.5:
         raise ValueError("durations too short")
 
+    seam_mode = str(p.get("seamMode") or plan.get("seamMode") or "smooth")
+    seam_fade = float(p.get("seamFade") or plan.get("seamFade") or 0.5)
+
     out_fd, out_path = tempfile.mkstemp(suffix=".mp4")
     os.close(out_fd)
     seg_fd, seg_path = tempfile.mkstemp(suffix=".mp4")
@@ -540,7 +578,7 @@ def _execute_render(v_path: str, a_path: str, p: dict, on_progress=None) -> str:
     try:
         if on_progress:
             on_progress(6, "Seamless video loop")
-        _loop_segment(v_path, v_start, v_end, seg_path)
+        _loop_segment(v_path, v_start, v_end, seg_path, seam_mode=seam_mode, seam_fade=seam_fade)
         audio_for_render = a_path
         rs, re = a_start, a_end
         if target > a_dur + 0.05:

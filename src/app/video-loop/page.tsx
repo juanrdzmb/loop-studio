@@ -265,6 +265,8 @@ function VideoSong16x9Player({
   particleIntensity,
   particleSpeed,
   videoDuration,
+  seamMode = "smooth",
+  seamFade = 0.5,
 }: {
   videoUrl: string;
   isGif?: boolean;
@@ -279,6 +281,8 @@ function VideoSong16x9Player({
   particleIntensity: number;
   particleSpeed: number;
   videoDuration: number;
+  seamMode?: "smooth" | "pingpong" | "cut";
+  seamFade?: number;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -336,8 +340,15 @@ function VideoSong16x9Player({
         }
       }
 
-      // Calculate camera transformations
-      const cycleProgress = (elapsed % Math.max(1, videoDuration || 10)) / Math.max(1, videoDuration || 10);
+      // Calculate camera transformations with smooth turnaround
+      const loopDur = Math.max(1, videoDuration || 10);
+      let cycleProgress = 0;
+      if (seamMode === "pingpong") {
+        const pingPhase = (elapsed % (loopDur * 2)) / loopDur;
+        cycleProgress = pingPhase <= 1.0 ? pingPhase : 2.0 - pingPhase;
+      } else {
+        cycleProgress = (elapsed % loopDur) / loopDur;
+      }
       const intNorm = cameraIntensity / 100;
       const cAnim = elapsed * cameraSpeed;
       let zoom = Math.max(1.0, cameraZoom);
@@ -530,6 +541,8 @@ export default function VideoLoopPage() {
   const [particleIntensity, setParticleIntensity] = useState<number>(50);
   const [particleSpeed, setParticleSpeed] = useState<number>(1.0);
   const [animTime, setAnimTime] = useState<number>(0);
+  const [seamMode, setSeamMode] = useState<"smooth" | "pingpong" | "cut">("smooth");
+  const [seamFade, setSeamFade] = useState<number>(0.5);
 
   const handleSelectCameraMode = (mode: CameraMovement) => {
     const defaults = CAMERA_MODE_DEFAULTS[mode];
@@ -913,6 +926,8 @@ export default function VideoLoopPage() {
           targetDuration: Math.min(20, targetSec),
           preview: true,
           plan: next,
+          seamMode,
+          seamFade,
         },
         onRenderProg
       );
@@ -979,6 +994,8 @@ export default function VideoLoopPage() {
           targetDuration: targetSec,
           preview: false,
           plan: used,
+          seamMode,
+          seamFade,
         },
         onRenderProg
       );
@@ -1328,6 +1345,83 @@ export default function VideoLoopPage() {
                 onChange={setManualTrim}
               />
             )}
+
+            {/* Transición y Suavizado de Bucle (Loop Seam Smoothing) */}
+            <div className="space-y-3 pt-3 border-t border-zinc-800">
+              <div className="flex items-center justify-between text-xs text-zinc-400">
+                <span className="font-semibold uppercase tracking-wider text-zinc-300">
+                  🌊 Transición de Bucle (Suavizado de Costura Continuo)
+                </span>
+                <span className="text-cyan-400 font-mono">
+                  {seamMode === "smooth"
+                    ? `Fundido Suave (${seamFade.toFixed(2)}s)`
+                    : seamMode === "pingpong"
+                    ? "Ida y Vuelta (Boomerang)"
+                    : "Corte Directo"}
+                </span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                {[
+                  {
+                    id: "smooth",
+                    label: "🌊 Fundido Suave (Recomendado)",
+                    desc: "Transición imperceptible en el retorno. 0 saltos.",
+                  },
+                  {
+                    id: "pingpong",
+                    label: "🔄 Ida y Vuelta (Boomerang)",
+                    desc: "Movimiento continuo infinito hacia adelante y atrás.",
+                  },
+                  {
+                    id: "cut",
+                    label: "✂️ Corte Directo",
+                    desc: "Para loops ya perfectos fotograma a fotograma.",
+                  },
+                ].map((m) => (
+                  <button
+                    key={m.id}
+                    type="button"
+                    onClick={() => {
+                      setSeamMode(m.id as "smooth" | "pingpong" | "cut");
+                      setPlan(null);
+                      setPreviewUrl(null);
+                    }}
+                    className={`p-2.5 rounded-xl border text-left transition-all ${
+                      seamMode === m.id
+                        ? "border-cyan-500 bg-cyan-950/60 text-white font-semibold ring-1 ring-cyan-400/40 shadow-sm"
+                        : "border-zinc-800 bg-zinc-950 hover:bg-zinc-900 text-zinc-300"
+                    }`}
+                  >
+                    <div className="text-xs font-bold truncate">{m.label}</div>
+                    <div className="text-[10px] text-zinc-400 truncate mt-0.5">{m.desc}</div>
+                  </button>
+                ))}
+              </div>
+              {seamMode === "smooth" && (
+                <div className="p-3 rounded-xl bg-zinc-950/80 border border-zinc-800 space-y-1.5 text-xs">
+                  <div className="flex justify-between text-[11px] text-zinc-400">
+                    <span>Duración del Suavizado de Costura (Crossfade de Enlace)</span>
+                    <span className="font-mono text-cyan-400">{seamFade.toFixed(2)}s</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0.2"
+                    max="1.2"
+                    step="0.05"
+                    value={seamFade}
+                    onChange={(e) => {
+                      setSeamFade(parseFloat(e.target.value));
+                      setPlan(null);
+                      setPreviewUrl(null);
+                    }}
+                    className="w-full accent-cyan-500 h-1 bg-zinc-800 rounded"
+                  />
+                  <p className="text-[10px] text-zinc-500">
+                    El video arranca limpio en el segundo 0 y se funde suavemente solo en la costura de cada repetición para un movimiento continuo sin saltos.
+                  </p>
+                </div>
+              )}
+            </div>
           </div>
         )}
       </section>
@@ -1785,6 +1879,8 @@ export default function VideoLoopPage() {
                 particleIntensity={particleIntensity}
                 particleSpeed={particleSpeed}
                 videoDuration={videoDuration}
+                seamMode={seamMode}
+                seamFade={seamFade}
               />
             </div>
           )}
