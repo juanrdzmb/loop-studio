@@ -5,6 +5,7 @@ import FileDropzone from "@/components/FileDropzone";
 import TrimTimeline from "@/components/TrimTimeline";
 import SongLoopWaveform from "@/components/SongLoopWaveform";
 import { downloadBlob } from "@/lib/gifEncoder";
+import { studioStore } from "@/lib/sessionStore";
 import {
   analyzeMusic,
   analyzeVideo,
@@ -300,6 +301,17 @@ export default function VideoLoopPage() {
       };
     }
   }, []);
+
+  // Auto-cargar video o audio de la sesión (ej. desde Manga Motion 2.5D)
+  useEffect(() => {
+    const file = studioStore.videoFile;
+    if (file && !videoFile) {
+      const timer = setTimeout(() => {
+        void handleVideo(file);
+      }, 0);
+      return () => clearTimeout(timer);
+    }
+  }, [handleVideo, videoFile]);
 
   const handleAudio = useCallback(async (f: File) => {
     setError(null);

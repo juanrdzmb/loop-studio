@@ -52,7 +52,7 @@ export default function CombinarPage() {
   const [audioFile, setAudioFile] = useState<File | null>(() => studioStore.audioFile);
 
   // Ruta manual (sin GIF de sesión)
-  const [videoFile, setVideoFile] = useState<File | null>(null);
+  const [videoFile, setVideoFile] = useState<File | null>(() => studioStore.videoFile);
   const [duration, setDuration] = useState(0);
   const [trim, setTrim] = useState({ start: 0, end: 0 });
   const [fps, setFps] = useState(12);

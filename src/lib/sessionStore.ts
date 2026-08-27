@@ -15,6 +15,15 @@ export interface GifSessionResult {
   label: string;
 }
 
+/** Resultado de un Manga Motion generado */
+export interface MangaMotionSessionResult {
+  blobUrl: string;
+  file: File;
+  aspect: "9:16" | "16:9" | "1:1";
+  duration: number;
+  label: string;
+}
+
 /**
  * Almacén en memoria para pasar archivos/ajustes entre pestañas durante
  * la navegación del lado cliente. Se pierde al recargar (intencional).
@@ -26,6 +35,8 @@ export const studioStore = {
   audioFile: null as File | null,
   /** GIF YA generado y editado: Combinar lo usa sin re-procesar */
   gifResult: null as GifSessionResult | null,
+  /** Video de Manga Motion generado */
+  mangaMotionResult: null as MangaMotionSessionResult | null,
 };
 
 export function setVideoForSession(f: File | null) {
@@ -40,3 +51,14 @@ export function setGifResult(r: GifSessionResult | null) {
   if (studioStore.gifResult) URL.revokeObjectURL(studioStore.gifResult.blobUrl);
   studioStore.gifResult = r;
 }
+
+export function setMangaMotionResult(r: MangaMotionSessionResult | null) {
+  if (studioStore.mangaMotionResult) {
+    URL.revokeObjectURL(studioStore.mangaMotionResult.blobUrl);
+  }
+  studioStore.mangaMotionResult = r;
+  if (r?.file) {
+    studioStore.videoFile = r.file;
+  }
+}
+

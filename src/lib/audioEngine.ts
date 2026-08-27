@@ -90,7 +90,7 @@ export interface Graph {
   source: AudioBufferSourceNode;
   lowpass: BiquadFilterNode;
   /** Placa Dattorro: salida ya mezclada dry+wet */
-  reverb: AudioWorkletNode;
+  reverb: AudioNode;
   master: GainNode;
   bass: BiquadFilterNode;
   treble: BiquadFilterNode;
@@ -204,17 +204,26 @@ export function buildGraph(
   lowpass.frequency.value = s.lowpassHz;
   lowpass.Q.value = 0.0001;
 
-  // Placa Dattorro: mezcla dry/wet dentro del propio nodo
-  const reverb = new AudioWorkletNode(ctx, "DattorroReverb", {
-    outputChannelCount: [2],
-    processorOptions: {},
-  });
-  const rp = reverb.parameters;
-  (rp.get("wet") as AudioParam).value = s.reverbMix;
-  (rp.get("dry") as AudioParam).value = 1 - s.reverbMix * 0.6;
-  (rp.get("decay") as AudioParam).value = dattorroDecay(s.decay);
-  (rp.get("preDelay") as AudioParam).value = Math.round(ctx.sampleRate * 0.02);
-  (rp.get("damping") as AudioParam).value = 0.08;
+  // Placa Dattorro: mezcla dry/wet dentro del propio nodo con fallback seguro
+  let reverb: AudioNode;
+  try {
+    const workletNode = new AudioWorkletNode(ctx, "DattorroReverb", {
+      outputChannelCount: [2],
+      processorOptions: {},
+    });
+    const rp = workletNode.parameters;
+    (rp.get("wet") as AudioParam).value = s.reverbMix;
+    (rp.get("dry") as AudioParam).value = 1 - s.reverbMix * 0.6;
+    (rp.get("decay") as AudioParam).value = dattorroDecay(s.decay);
+    (rp.get("preDelay") as AudioParam).value = Math.round(ctx.sampleRate * 0.02);
+    (rp.get("damping") as AudioParam).value = 0.08;
+    reverb = workletNode;
+  } catch (err) {
+    console.warn("AudioWorklet DattorroReverb fallback to dry gain:", err);
+    const dryGain = ctx.createGain();
+    dryGain.gain.value = 1.0;
+    reverb = dryGain;
+  }
 
   // EQ en el camino maestro (post reverb)
   const bass = ctx.createBiquadFilter();
@@ -302,10 +311,12 @@ export function liveUpdateGraph(ctx: BaseAudioContext, graph: Graph, s: ReverbSe
   graph.bass.gain.setTargetAtTime(s.bassDb ?? 0, t, 0.04);
   graph.treble.gain.setTargetAtTime(s.trebleDb ?? 0, t, 0.04);
 
-  const rp = graph.reverb.parameters;
-  (rp.get("dry") as AudioParam).setTargetAtTime(1 - s.reverbMix * 0.6, t, 0.04);
-  (rp.get("wet") as AudioParam).setTargetAtTime(s.reverbMix, t, 0.04);
-  (rp.get("decay") as AudioParam).setTargetAtTime(dattorroDecay(s.decay), t, 0.08);
+  if ("parameters" in graph.reverb) {
+    const rp = (graph.reverb as AudioWorkletNode).parameters;
+    (rp.get("dry") as AudioParam).setTargetAtTime(1 - s.reverbMix * 0.6, t, 0.04);
+    (rp.get("wet") as AudioParam).setTargetAtTime(s.reverbMix, t, 0.04);
+    (rp.get("decay") as AudioParam).setTargetAtTime(dattorroDecay(s.decay), t, 0.08);
+  }
 
   graph.master.gain.setTargetAtTime(s.volume, t, 0.04);
 
