@@ -709,7 +709,8 @@ class PhysicsParticleSystem {
   }
 }
 
-const globalParticles = new PhysicsParticleSystem();
+export { PhysicsParticleSystem };
+export const globalParticles = new PhysicsParticleSystem();
 
 /**
  * Draw Interactive Katana Slash Arc with Luminous Blade Trail & Shimmer

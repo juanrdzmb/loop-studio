@@ -6,6 +6,7 @@ import TrimTimeline from "@/components/TrimTimeline";
 import SongLoopWaveform from "@/components/SongLoopWaveform";
 import { downloadBlob } from "@/lib/gifEncoder";
 import { studioStore } from "@/lib/sessionStore";
+import { ParticleType, PhysicsParticleSystem } from "@/lib/mangaMotionEngine";
 import {
   analyzeMusic,
   analyzeVideo,
@@ -250,6 +251,270 @@ function fmt(t: number): string {
 }
 
 
+function VideoSong16x9Player({
+  videoUrl,
+  isGif,
+  visualStyle,
+  pixelSize,
+  cameraMode,
+  cameraSpeed,
+  cameraIntensity,
+  cameraAngle,
+  cameraZoom,
+  particles,
+  particleIntensity,
+  particleSpeed,
+  videoDuration,
+}: {
+  videoUrl: string;
+  isGif?: boolean;
+  visualStyle: string;
+  pixelSize: number;
+  cameraMode: CameraMovement;
+  cameraSpeed: number;
+  cameraIntensity: number;
+  cameraAngle: number;
+  cameraZoom: number;
+  particles: ParticleType;
+  particleIntensity: number;
+  particleSpeed: number;
+  videoDuration: number;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const imgRef = useRef<HTMLImageElement>(null);
+  const particlesRef = useRef<PhysicsParticleSystem>(new PhysicsParticleSystem());
+  const [isPlaying, setIsPlaying] = useState(true);
+
+  useEffect(() => {
+    let animId: number;
+    let lastTime = performance.now();
+    let elapsed = 0;
+
+    const render = (now: number) => {
+      const dt = Math.min(0.1, (now - lastTime) / 1000);
+      lastTime = now;
+      if (isPlaying) {
+        elapsed += dt;
+      }
+
+      const canvas = canvasRef.current;
+      if (!canvas) {
+        animId = requestAnimationFrame(render);
+        return;
+      }
+
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        animId = requestAnimationFrame(render);
+        return;
+      }
+
+      const W = canvas.width;
+      const H = canvas.height;
+
+      ctx.save();
+      ctx.clearRect(0, 0, W, H);
+
+      let sourceEl: CanvasImageSource | null = null;
+      let sw = 0;
+      let sh = 0;
+
+      if (isGif) {
+        const img = imgRef.current;
+        if (img && img.naturalWidth) {
+          sourceEl = img;
+          sw = img.naturalWidth;
+          sh = img.naturalHeight;
+        }
+      } else {
+        const vid = videoRef.current;
+        if (vid && vid.videoWidth) {
+          sourceEl = vid;
+          sw = vid.videoWidth;
+          sh = vid.videoHeight;
+        }
+      }
+
+      // Calculate camera transformations
+      const cycleProgress = (elapsed % Math.max(1, videoDuration || 10)) / Math.max(1, videoDuration || 10);
+      const intNorm = cameraIntensity / 100;
+      const cAnim = elapsed * cameraSpeed;
+      let zoom = Math.max(1.0, cameraZoom);
+      let rot = (cameraAngle * Math.PI) / 180;
+      let panX = 0;
+      let panY = 0;
+
+      if (cameraMode === "slow_push") {
+        const push = 0.5 - 0.5 * Math.cos(cycleProgress * Math.PI * 2);
+        zoom = cameraZoom * (1.0 + 0.14 * push * intNorm);
+        rot = (cameraAngle * Math.PI) / 180 + Math.sin(cycleProgress * Math.PI * 2) * 0.026 * intNorm;
+      } else if (cameraMode === "dutch_drift") {
+        rot = (cameraAngle * Math.PI) / 180 + Math.sin(cycleProgress * Math.PI * 2) * 0.087 * intNorm;
+        zoom = cameraZoom * (1.12 + 0.08 * intNorm);
+        panX = Math.sin(cycleProgress * Math.PI * 2) * 14 * intNorm;
+        panY = Math.cos(cycleProgress * Math.PI * 2) * 10 * intNorm;
+      } else if (cameraMode === "whip_pan") {
+        const snap = Math.sin(cycleProgress * Math.PI * 4);
+        const easeWhip = Math.sign(snap) * Math.pow(Math.abs(snap), 3);
+        zoom = cameraZoom * (1.15 + 0.1 * Math.abs(easeWhip) * intNorm);
+        panX = easeWhip * 32 * intNorm;
+        rot = (cameraAngle * Math.PI) / 180 + easeWhip * 0.07 * intNorm;
+      } else if (cameraMode === "vertigo_zoom") {
+        const vCycle = Math.sin(cycleProgress * Math.PI * 2);
+        zoom = cameraZoom * (1.0 + 0.28 * (0.5 + 0.5 * vCycle) * intNorm);
+        panY = -vCycle * 12 * intNorm;
+      } else if (cameraMode === "spiral_vortex") {
+        const sPhase = cAnim * 1.5;
+        rot = (cameraAngle * Math.PI) / 180 + Math.sin(sPhase) * 0.13 * intNorm;
+        zoom = cameraZoom * (1.12 + 0.14 * (0.5 + 0.5 * Math.sin(sPhase * 2)) * intNorm);
+        panX = Math.cos(sPhase) * 14 * intNorm;
+        panY = Math.sin(sPhase) * 14 * intNorm;
+      } else if (cameraMode === "cinematic_scan") {
+        const sProg = 0.5 - 0.5 * Math.cos(cycleProgress * Math.PI * 2);
+        zoom = cameraZoom * (1.18 + 0.08 * intNorm);
+        panX = (sProg - 0.5) * 35 * intNorm;
+        panY = (sProg - 0.5) * 45 * intNorm;
+      } else if (cameraMode === "impact_shake") {
+        const shakeFreq = cAnim * 28.0;
+        const decay = Math.exp(-((elapsed % 1.5) * 3.2));
+        zoom = cameraZoom * (1.06 + 0.08 * decay * intNorm);
+        panX = (Math.sin(shakeFreq) + Math.cos(shakeFreq * 1.6)) * 16.0 * decay * intNorm;
+        panY = (Math.cos(shakeFreq * 1.2) + Math.sin(shakeFreq * 2.0)) * 16.0 * decay * intNorm;
+        rot = (cameraAngle * Math.PI) / 180 + Math.sin(shakeFreq * 0.8) * 0.035 * decay * intNorm;
+      }
+
+      ctx.translate(W / 2 + panX, H / 2 + panY);
+      ctx.rotate(rot);
+      ctx.scale(zoom, zoom);
+      ctx.translate(-W / 2, -H / 2);
+
+      if (visualStyle && visualStyle !== "clean") {
+        ctx.filter = getVisualStyleCss(visualStyle);
+      } else {
+        ctx.filter = "none";
+      }
+
+      if (sourceEl && sw > 0 && sh > 0) {
+        // Draw 16:9 Cover
+        const targetRatio = W / H;
+        const srcRatio = sw / sh;
+        let drawW = W;
+        let drawH = H;
+        let offX = 0;
+        let offY = 0;
+
+        if (srcRatio > targetRatio) {
+          drawW = H * srcRatio;
+          offX = (W - drawW) / 2;
+        } else {
+          drawH = W / srcRatio;
+          offY = (H - drawH) / 2;
+        }
+        ctx.drawImage(sourceEl, offX, offY, drawW, drawH);
+      } else {
+        ctx.fillStyle = "#09090b";
+        ctx.fillRect(0, 0, W, H);
+      }
+
+      ctx.restore();
+
+      // Pixelation
+      if (pixelSize > 1) {
+        const block = pixelSize * 2;
+        const smallW = Math.max(16, Math.round(W / block));
+        const smallH = Math.max(16, Math.round(H / block));
+        const off = document.createElement("canvas");
+        off.width = smallW;
+        off.height = smallH;
+        const octx = off.getContext("2d");
+        if (octx) {
+          octx.imageSmoothingEnabled = false;
+          octx.drawImage(canvas, 0, 0, smallW, smallH);
+          ctx.save();
+          ctx.imageSmoothingEnabled = false;
+          ctx.drawImage(off, 0, 0, smallW, smallH, 0, 0, W, H);
+          ctx.restore();
+        }
+      }
+
+      // Screentone overlay
+      if (visualStyle === "screentone") {
+        ctx.save();
+        ctx.globalAlpha = 0.22;
+        ctx.fillStyle = "#ffffff";
+        for (let y = 0; y < H; y += 6) {
+          for (let x = 0; x < W; x += 6) {
+            ctx.beginPath();
+            ctx.arc(x + 3, y + 3, 1.2, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+        ctx.restore();
+      }
+
+      // Atmospheric Particles simulation
+      if (particles && particles !== "none") {
+        particlesRef.current.update(particles, particleIntensity, W, H, elapsed, particleSpeed);
+        particlesRef.current.draw(ctx, particles);
+      }
+
+      // Vignette
+      if (visualStyle !== "clean") {
+        ctx.save();
+        const vig = ctx.createRadialGradient(W / 2, H / 2, W * 0.35, W / 2, H / 2, W * 0.68);
+        vig.addColorStop(0, "rgba(0,0,0,0)");
+        vig.addColorStop(1, "rgba(0,0,0,0.42)");
+        ctx.fillStyle = vig;
+        ctx.fillRect(0, 0, W, H);
+        ctx.restore();
+      }
+
+      animId = requestAnimationFrame(render);
+    };
+
+    animId = requestAnimationFrame(render);
+    return () => cancelAnimationFrame(animId);
+  }, [
+    isPlaying,
+    isGif,
+    visualStyle,
+    pixelSize,
+    cameraMode,
+    cameraSpeed,
+    cameraIntensity,
+    cameraAngle,
+    cameraZoom,
+    particles,
+    particleIntensity,
+    particleSpeed,
+    videoDuration,
+  ]);
+
+  return (
+    <div className="relative rounded-2xl overflow-hidden border border-zinc-800 bg-black aspect-video max-h-80 w-full shadow-2xl flex items-center justify-center">
+      {isGif ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img ref={imgRef} src={videoUrl} alt="source gif" className="hidden" />
+      ) : (
+        <video ref={videoRef} src={videoUrl} muted loop autoPlay playsInline className="hidden" />
+      )}
+      <canvas ref={canvasRef} width={960} height={540} className="w-full h-full object-contain" />
+      <div className="absolute top-2.5 right-2.5 flex items-center gap-2 bg-black/60 backdrop-blur-md px-2.5 py-1 rounded-lg border border-white/10 text-[11px] text-zinc-300">
+        <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
+        <span>16:9 HD · 60 FPS</span>
+      </div>
+      <button
+        onClick={() => setIsPlaying(!isPlaying)}
+        className="absolute bottom-2.5 right-2.5 px-3 py-1.5 rounded-lg bg-zinc-900/80 hover:bg-zinc-800 text-xs text-zinc-300 border border-zinc-700/60 flex items-center gap-1.5 backdrop-blur-sm shadow-md"
+      >
+        {isPlaying ? "⏸️ Pausar" : "▶️ Reproducir"}
+      </button>
+    </div>
+  );
+}
+
+
 export default function VideoLoopPage() {
   const [health, setHealth] = useState<CompanionHealth | null>(null);
   const [overlays, setOverlays] = useState<OverlayOption[]>([]);
@@ -261,6 +526,9 @@ export default function VideoLoopPage() {
   const [cameraIntensity, setCameraIntensity] = useState<number>(30);
   const [cameraAngle, setCameraAngle] = useState<number>(0);
   const [cameraZoom, setCameraZoom] = useState<number>(1.0);
+  const [particles, setParticles] = useState<ParticleType>("none");
+  const [particleIntensity, setParticleIntensity] = useState<number>(50);
+  const [particleSpeed, setParticleSpeed] = useState<number>(1.0);
   const [animTime, setAnimTime] = useState<number>(0);
 
   const handleSelectCameraMode = (mode: CameraMovement) => {
@@ -1254,6 +1522,75 @@ export default function VideoLoopPage() {
             </div>
           </div>
 
+          {/* Atmospheric HD Particle Effects */}
+          <div className="space-y-3 pt-3 border-t border-zinc-800">
+            <div className="flex items-center justify-between text-xs text-zinc-400">
+              <span className="font-semibold uppercase tracking-wider text-zinc-300">✨ Partículas Atmosféricas HD (Manga Motion 2.5)</span>
+              <span className="text-amber-400 font-mono">
+                {particles.toUpperCase()}
+              </span>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              {[
+                { id: "none", label: "🚫 Ninguna", desc: "Sin partículas visuales" },
+                { id: "bamboo_leaves", label: "🎋 Hojas de Bambú", desc: "Vagabond / Viento tradicional" },
+                { id: "embers_fire", label: "🔥 Brasas Ardientes", desc: "Berserk / Fuego ascendente" },
+                { id: "sakura_petals", label: "🌸 Pétalos Sakura", desc: "Brisa suave anime Shonen" },
+                { id: "cinematic_rain", label: "🌧️ Lluvia Cinemática", desc: "Gotas de lluvia continua" },
+                { id: "dark_ink_fog", label: "🌫️ Humo de Tinta", desc: "Niebla mística oscura" },
+                { id: "blood_drips", label: "🩸 Gotas de Sangre", desc: "Combate Seinen dramático" },
+                { id: "golden_sparks", label: "✨ Destellos Anime", desc: "Estrellas doradas luminosas" },
+              ].map((p) => (
+                <button
+                  key={p.id}
+                  onClick={() => setParticles(p.id as ParticleType)}
+                  className={`p-2.5 rounded-xl border text-left transition-all ${
+                    particles === p.id
+                      ? "border-amber-500 bg-amber-950/60 text-white font-semibold ring-1 ring-amber-400/40 shadow-sm"
+                      : "border-zinc-800 bg-zinc-950 hover:bg-zinc-900 text-zinc-300"
+                  }`}
+                >
+                  <div className="text-xs font-bold truncate">{p.label}</div>
+                  <div className="text-[10px] text-zinc-400 truncate mt-0.5">{p.desc}</div>
+                </button>
+              ))}
+            </div>
+            {particles !== "none" && (
+              <div className="grid grid-cols-2 gap-3 p-3.5 rounded-xl bg-zinc-950/80 border border-zinc-800 text-xs">
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[11px] text-zinc-400">
+                    <span>Intensidad de Partículas</span>
+                    <span className="font-mono text-amber-400">{particleIntensity}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="10"
+                    max="100"
+                    step="5"
+                    value={particleIntensity}
+                    onChange={(e) => setParticleIntensity(parseInt(e.target.value))}
+                    className="w-full accent-amber-500 h-1 bg-zinc-800 rounded"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[11px] text-zinc-400">
+                    <span>Velocidad de Partículas</span>
+                    <span className="font-mono text-amber-400">{particleSpeed.toFixed(1)}x</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0.3"
+                    max="3.0"
+                    step="0.1"
+                    value={particleSpeed}
+                    onChange={(e) => setParticleSpeed(parseFloat(e.target.value))}
+                    className="w-full accent-amber-500 h-1 bg-zinc-800 rounded"
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
           {/* Cinematic Manga Camera Modes */}
           <div className="space-y-3 pt-3 border-t border-zinc-800">
             <div className="flex items-center justify-between text-xs text-zinc-400">
@@ -1406,69 +1743,28 @@ export default function VideoLoopPage() {
           </div>
 
           {videoUrl && (
-            <div className="space-y-1.5 pt-1">
+            <div className="space-y-2 pt-2 border-t border-zinc-800">
               <div className="flex items-center justify-between text-xs text-zinc-400">
-                <span>Live filter & pixel preview (real-time in browser)</span>
-                <span className="text-fuchsia-400 font-medium">
-                  {(visualStyles.length
-                    ? visualStyles
-                    : [
-                        { id: "anime_lofi", label: "Anime Lo-Fi" },
-                        { id: "golden_sunset", label: "Golden Sunset" },
-                        { id: "vintage_anime", label: "Vintage 90s Anime" },
-                        { id: "dark_fantasy", label: "Dark Fantasy (Doomer)" },
-                        { id: "clean", label: "Clean 1080p" },
-                      ]
-                  ).find((s) => s.id === visualStyle)?.label || "Anime Lo-Fi"}
-                  {pixelSize > 1 ? ` · ${pixelSize * 2}px pixelated` : ""}
+                <span className="font-semibold text-zinc-300">📺 Previsualización en Vivo 16:9 (Filtros + Partículas + Cámara)</span>
+                <span className="text-cyan-400 font-mono text-[11px]">
+                  {visualStyle.toUpperCase()} · {cameraMode.toUpperCase()} · {particles.toUpperCase()}
                 </span>
               </div>
-              <div className="relative rounded-xl overflow-hidden border border-zinc-800 bg-black aspect-video max-h-64 flex items-center justify-center shadow-lg">
-                <div
-                  className="w-full h-full flex items-center justify-center overflow-hidden"
-                  style={{ imageRendering: pixelSize > 1 ? "pixelated" : "auto" }}
-                >
-                  {isGif ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      src={videoUrl}
-                      alt="Live styled preview"
-                      style={{
-                        filter: getVisualStyleCss(visualStyle),
-                        imageRendering: pixelSize > 1 ? "pixelated" : "auto",
-                        transform: pixelSize > 1 ? `scale(${getPixelScale(pixelSize)})` : "none",
-                        width: pixelSize > 1 ? `${100 / getPixelScale(pixelSize)}%` : "100%",
-                        height: pixelSize > 1 ? `${100 / getPixelScale(pixelSize)}%` : "100%",
-                      }}
-                      className="object-contain pointer-events-none transition-[filter,transform] duration-200"
-                    />
-                  ) : (
-                    <video
-                      src={videoUrl}
-                      muted
-                      loop
-                      autoPlay
-                      playsInline
-                      style={{
-                        filter: getVisualStyleCss(visualStyle),
-                        imageRendering: pixelSize > 1 ? "pixelated" : "auto",
-                        transform: pixelSize > 1 ? `scale(${getPixelScale(pixelSize)})` : "none",
-                        width: pixelSize > 1 ? `${100 / getPixelScale(pixelSize)}%` : "100%",
-                        height: pixelSize > 1 ? `${100 / getPixelScale(pixelSize)}%` : "100%",
-                      }}
-                      className="object-contain transition-[filter,transform] duration-200"
-                    />
-                  )}
-                </div>
-                {visualStyle !== "clean" && (
-                  <div
-                    className="absolute inset-0 pointer-events-none"
-                    style={{
-                      background: "radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,0.38) 100%)",
-                    }}
-                  />
-                )}
-              </div>
+              <VideoSong16x9Player
+                videoUrl={videoUrl}
+                isGif={isGif}
+                visualStyle={visualStyle}
+                pixelSize={pixelSize}
+                cameraMode={cameraMode}
+                cameraSpeed={cameraSpeed}
+                cameraIntensity={cameraIntensity}
+                cameraAngle={cameraAngle}
+                cameraZoom={cameraZoom}
+                particles={particles}
+                particleIntensity={particleIntensity}
+                particleSpeed={particleSpeed}
+                videoDuration={videoDuration}
+              />
             </div>
           )}
           <label className="block text-sm">
@@ -1711,40 +2007,15 @@ export default function VideoLoopPage() {
       <div className="space-y-3">
         <button
           onClick={generate}
-          disabled={!canWork || busy || shortsBusy}
-          className="w-full py-3 rounded-xl font-bold bg-gradient-to-r from-cyan-600 to-fuchsia-600 hover:from-cyan-500 hover:to-fuchsia-500 disabled:opacity-40 disabled:cursor-not-allowed transition-all text-lg"
+          disabled={!canWork || busy}
+          className="w-full py-4 rounded-xl font-bold bg-gradient-to-r from-cyan-600 via-indigo-600 to-fuchsia-600 hover:from-cyan-500 hover:to-fuchsia-500 disabled:opacity-40 disabled:cursor-not-allowed transition-all text-lg shadow-xl shadow-cyan-500/20"
         >
           {busy
-            ? "Rendering 16:9…"
-            : `Generate YouTube video · ${targetMin >= 1 ? `${targetMin} min` : `${targetSec.toFixed(0)}s`} · 16:9`}
+            ? "Renderizando Master 16:9 HD…"
+            : `Generar Video YouTube · ${targetMin >= 1 ? `${targetMin} min` : `${targetSec.toFixed(0)}s`} · 16:9 HD`}
         </button>
-
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-xs text-zinc-400">Shorts length</span>
-          {[20, 25, 30].map((s) => (
-            <button
-              key={s}
-              type="button"
-              onClick={() => setShortsSec(s)}
-              className={`px-2 py-1 rounded text-xs border ${
-                shortsSec === s
-                  ? "border-fuchsia-500 bg-fuchsia-500/15"
-                  : "border-zinc-700 hover:border-zinc-500"
-              }`}
-            >
-              {s}s
-            </button>
-          ))}
-          <button
-            onClick={generateShort}
-            disabled={!canWork || busy || shortsBusy}
-            className="flex-1 py-2.5 rounded-xl font-semibold bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 disabled:opacity-40"
-          >
-            {shortsBusy ? "Rendering 9:16…" : `Generate Short · ${shortsSec}s · 9:16`}
-          </button>
-        </div>
-        <p className="text-xs text-zinc-500">
-          20–30s is the retention sweet spot for music teasers. 1080×1920 vertical with ambient blur framing (keeps 100% of the artwork visible) and watermark in the Shorts safe zone. Use it to push the long loop.
+        <p className="text-xs text-zinc-500 text-center">
+          Renderizado maestro 1080p Full HD 16:9 para YouTube (1920×1080) con loop continuo sin cortes y efectos en tiempo real.
         </p>
       </div>
 
@@ -1774,33 +2045,6 @@ export default function VideoLoopPage() {
             className="w-full py-2 rounded-lg bg-green-600 hover:bg-green-500 font-semibold"
           >
             Download 16:9 MP4
-          </button>
-        </div>
-      )}
-
-      {shortsUrl && (
-        <div className="bg-zinc-900 rounded-xl p-4 border border-zinc-800 space-y-3">
-          <h2 className="font-semibold">
-            Shorts 9:16 ready{" "}
-            <span className="text-xs text-zinc-400 font-normal">
-              ({(shortsSize / 1024 / 1024).toFixed(1)} MB · {shortsSec}s)
-            </span>
-          </h2>
-          <video
-            src={shortsUrl}
-            controls
-            loop
-            className="mx-auto max-h-[520px] rounded-lg border border-zinc-800"
-          />
-          <button
-            onClick={() =>
-              fetch(shortsUrl)
-                .then((r) => r.blob())
-                .then((b) => downloadBlob(b, "silent-vigil-shorts-9x16.mp4"))
-            }
-            className="w-full py-2 rounded-lg bg-green-600 hover:bg-green-500 font-semibold"
-          >
-            Download 9:16 Short
           </button>
         </div>
       )}

@@ -394,23 +394,10 @@ async def analyze_video(
 
 
 def _loop_segment(v_path: str, v_start: float, v_end: float, seg_path: str) -> float:
-    """Recorta el loop de video y funde final→inicio para que al repetir no se note el corte."""
+    """Recorta el loop de video manteniendo el inicio limpio y natural (sin fundido fantasma en t=0)."""
     v_dur = round(v_end - v_start, 6)
-    if v_dur > 1.2:
-        if v_dur >= 3.0:
-            f = min(2.0, max(0.5, v_dur / 3.0))
-        else:
-            f = max(0.2, v_dur / 4.0)
-        vf = (
-            f"split[h_full][t_full];"
-            f"[t_full]trim=start={v_dur - f:.4f}:end={v_dur:.4f},setpts=PTS-STARTPTS[t];"
-            f"[h_full]trim=start=0:end={v_dur - f:.4f},setpts=PTS-STARTPTS[h];"
-            f"[t][h]xfade=transition=fade:duration={f:.4f}:offset=0,format=yuv420p[out]"
-        )
-        seg_dur = v_dur - f
-    else:
-        vf = "setpts=PTS-STARTPTS,format=yuv420p[out]"
-        seg_dur = v_dur
+    vf = "setpts=PTS-STARTPTS,format=yuv420p[out]"
+    seg_dur = v_dur
     _run([
         "ffmpeg", "-y", "-v", "error",
         "-ss", str(v_start), "-to", str(v_end), "-i", v_path,
