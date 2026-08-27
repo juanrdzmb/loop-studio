@@ -1061,24 +1061,22 @@ export default function VideoLoopPage() {
     setRenderPct(0);
     setRenderStage("planning");
     try {
-      let used = plan;
-      if (!used) {
-        used = await planLayers(audioFile, {
-          audioStart: audioSel.start,
-          audioEnd: audioSel.end,
-          target: targetSec,
-          atmosphere: atmosphere === "off" ? "off" : (particles !== "none" ? particles : atmosphere),
-          visualStyle,
-          pixelSize,
-          sfxOn: atmosphere !== "off" && sfxOn,
-          intensity: particleIntensity / 100,
-          watermark,
-          video: videoFile,
-          videoStart: vStart,
-          videoEnd: vEnd,
-        });
-        setPlan(used);
-      }
+      const used = await planLayers(audioFile, {
+        audioStart: audioSel.start,
+        audioEnd: audioSel.end,
+        target: targetSec,
+        atmosphere: atmosphere === "off" ? "off" : (particles !== "none" ? particles : atmosphere),
+        visualStyle,
+        pixelSize,
+        sfxOn: atmosphere !== "off" && sfxOn,
+        intensity: particleIntensity / 100,
+        watermark,
+        video: videoFile,
+        videoStart: vStart,
+        videoEnd: vEnd,
+      });
+      setPlan(used);
+
       const blob = await renderLoop(
         videoFile,
         audioFile,
@@ -1089,7 +1087,13 @@ export default function VideoLoopPage() {
           audioEnd: audioSel.end,
           targetDuration: targetSec,
           preview: false,
-          plan: used,
+          plan: {
+            ...used,
+            visualStyle,
+            overlay: atmosphere === "off" ? null : (particles !== "none" ? particles : used.overlay),
+            seamMode,
+            seamFade,
+          },
           seamMode,
           seamFade,
         },

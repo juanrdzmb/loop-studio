@@ -561,7 +561,19 @@ def _execute_render(v_path: str, a_path: str, p: dict, on_progress=None) -> str:
         target = min(30.0, max(20.0, target if target >= 20 else 25.0))
     elif preview:
         target = min(target, 20.0)
-    plan = p.get("plan") or {}
+    plan = dict(p.get("plan") or {})
+    if p.get("visualStyle"):
+        plan["visualStyle"] = str(p["visualStyle"])
+    if p.get("particles"):
+        from catalog import PARTICLE_TO_OVERLAY
+        pt = str(p["particles"])
+        if pt != "none":
+            plan["overlay"] = PARTICLE_TO_OVERLAY.get(pt, pt)
+            plan["opacity"] = max(0.40, min(0.95, 0.55 * (0.6 + float(p.get("intensity", 0.5)))))
+    if p.get("atmosphere") in ("off", "none"):
+        plan["overlay"] = None
+        plan["ambience"] = None
+        plan["sfx"] = []
     v_dur = v_end - v_start
     a_dur = a_end - a_start
     if v_dur <= 0.1 or a_dur <= 0.1 or target <= 0.5:
@@ -636,6 +648,115 @@ def _job_set(jid: str, **kw) -> None:
         jid, {"pct": 0, "stage": "", "done": False, "error": None, "path": None}
     )
     row.update(kw)
+
+
+def _execute_manga_motion_render(v_path: str, a_path: str | None, p: dict) -> str:
+    target_dur = float(p.get("duration") or 10.0)
+    aspect = str(p.get("aspectRatio") or "9:16")
+    particles = str(p.get("particles") or "none")
+    visual_style = str(p.get("aestheticStyle") or "original")
+    seam_mode = str(p.get("seamMode") or "smooth")
+    intensity = float(p.get("particleIntensity") or 50) / 100.0
+
+    if aspect == "16:9":
+        w, h = 1280, 720
+    elif aspect == "1:1":
+        w, h = 1080, 1080
+    else:
+        w, h = 720, 1280
+
+    from catalog import PARTICLE_TO_OVERLAY, overlay_path, visual_style_filter
+    sfilter = visual_style_filter(visual_style)
+    ov_key = PARTICLE_TO_OVERLAY.get(particles, particles)
+    ov_path = overlay_path(ov_key) if ov_key not in ("none", "off") else None
+
+    out_fd, out_path = tempfile.mkstemp(suffix=".mp4")
+    os.close(out_fd)
+
+    inputs = []
+    vf_parts = []
+
+    if seam_mode == "pingpong":
+        inputs += ["-stream_loop", "-1", "-i", v_path]
+        vf_parts.append(
+            "[0:v]split=2[fwd][rev_src];"
+            "[rev_src]reverse[rev];"
+            f"[fwd][rev]concat=n=2:v=1:a=0,scale={w}:{h}:force_original_aspect_ratio=increase,"
+            f"crop={w}:{h},setsar=1,{sfilter},format=gbrp,setpts=PTS-STARTPTS[base]"
+        )
+    else:
+        inputs += ["-stream_loop", "-1", "-i", v_path]
+        vf_parts.append(
+            f"[0:v]scale={w}:{h}:force_original_aspect_ratio=increase,"
+            f"crop={w}:{h},setsar=1,{sfilter},format=gbrp,setpts=PTS-STARTPTS[base]"
+        )
+
+    last_v = "base"
+    if ov_path:
+        inputs += ["-stream_loop", "-1", "-i", ov_path]
+        opacity = max(0.40, min(0.95, 0.55 * (0.6 + intensity)))
+        vf_parts.append(
+            f"[1:v]scale={w}:{h}:force_original_aspect_ratio=increase,"
+            f"crop={w}:{h},setsar=1,format=gbrp,setpts=PTS-STARTPTS[ov];"
+            f"[base][ov]blend=all_mode=screen:all_opacity={opacity:.3f},format=yuv420p[outv]"
+        )
+        last_v = "outv"
+    else:
+        vf_parts.append(f"[base]format=yuv420p[outv]")
+        last_v = "outv"
+
+    cmd = ["ffmpeg", "-y", "-v", "error"] + inputs
+    if a_path and os.path.exists(a_path):
+        cmd += ["-stream_loop", "-1", "-i", a_path]
+        audio_idx = 2 if ov_path else 1
+        vf_parts.append(f"[{audio_idx}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[outa]")
+        cmd += [
+            "-filter_complex", ";".join(vf_parts),
+            "-map", f"[{last_v}]",
+            "-map", "[outa]",
+            "-t", str(target_dur),
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "17",
+            "-c:a", "aac", "-b:a", "192k",
+            out_path
+        ]
+    else:
+        cmd += [
+            "-filter_complex", ";".join(vf_parts),
+            "-map", f"[{last_v}]",
+            "-t", str(target_dur),
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "17",
+            out_path
+        ]
+
+    _run(cmd, timeout=300)
+    return out_path
+
+
+@app.post("/manga-motion/render")
+async def manga_motion_render(
+    video: UploadFile = File(...),
+    audio: UploadFile | None = File(None),
+    params: str = Form("{}"),
+):
+    if _which("ffmpeg") is None:
+        return JSONResponse({"error": "ffmpeg is not installed"}, 503)
+    p = json.loads(params or "{}")
+    v_path = _save_upload(video, os.path.splitext(video.filename or "v.mp4")[1] or ".mp4")
+    a_path = None
+    if audio and audio.filename:
+        a_path = _save_upload(audio, os.path.splitext(audio.filename)[1] or ".mp3")
+    try:
+        out_path = _execute_manga_motion_render(v_path, a_path, p)
+        return _file_response(out_path)
+    except Exception as e:
+        return JSONResponse({"error": f"Manga motion render failed: {e}"}, 500)
+    finally:
+        for pth in (v_path, a_path):
+            if pth:
+                try:
+                    os.unlink(pth)
+                except OSError:
+                    pass
 
 
 @app.post("/render")

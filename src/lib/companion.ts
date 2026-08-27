@@ -327,3 +327,45 @@ export async function saveExportImage(blob: Blob, kind: "thumbs" | "covers"): Pr
     return null;
   }
 }
+
+export async function renderMangaMotionVideoBackend(
+  videoFile: File,
+  audioFile: File | null,
+  config: {
+    duration?: number;
+    aspectRatio?: string;
+    particles?: string;
+    aestheticStyle?: string;
+    seamMode?: string;
+    loopCrossfadeDuration?: number;
+    particleIntensity?: number;
+  }
+): Promise<Blob> {
+  const fd = new FormData();
+  fd.append("video", videoFile);
+  if (audioFile) {
+    fd.append("audio", audioFile);
+  }
+  fd.append(
+    "params",
+    JSON.stringify({
+      duration: config.duration || 10,
+      aspectRatio: config.aspectRatio || "9:16",
+      particles: config.particles || "none",
+      aestheticStyle: config.aestheticStyle || "original",
+      seamMode: config.seamMode || "smooth",
+      loopCrossfadeDuration: config.loopCrossfadeDuration || 1.5,
+      particleIntensity: config.particleIntensity || 50,
+    })
+  );
+
+  const res = await fetch(`${COMPANION_URL}/manga-motion/render`, {
+    method: "POST",
+    body: fd,
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || "Fallo en renderizado backend de Manga Motion");
+  }
+  return await res.blob();
+}

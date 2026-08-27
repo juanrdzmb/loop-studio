@@ -15,6 +15,7 @@ import {
   renderMangaMotionFrame,
 } from "@/lib/mangaMotionEngine";
 import { exportMangaMotionVideo } from "@/lib/mangaMotionExport";
+import { renderMangaMotionVideoBackend } from "@/lib/companion";
 import {
   MangaTextItem,
   BubbleType,
@@ -43,6 +44,8 @@ export default function MangaMotionStudioPage() {
 
   // Loaded Media (Image or Video)
   const [mediaEl, setMediaEl] = useState<HTMLImageElement | HTMLVideoElement | null>(null);
+  const [rawMediaFile, setRawMediaFile] = useState<File | null>(null);
+  const [rawAudioFile, setRawAudioFile] = useState<File | null>(null);
   const [mediaFileName, setMediaFileName] = useState<string>("");
   const [isVideo, setIsVideo] = useState<boolean>(false);
   const [videoDuration, setVideoDuration] = useState<number>(0);
@@ -159,6 +162,7 @@ export default function MangaMotionStudioPage() {
   const handleMediaFile = (file: File) => {
     pausePlayback();
     setExportedVideoUrl(null);
+    setRawMediaFile(file);
 
     if (file.type.startsWith("video/")) {
       const video = document.createElement("video");
@@ -206,6 +210,7 @@ export default function MangaMotionStudioPage() {
   const handleAudioFile = async (file: File) => {
     pausePlayback();
     setIsAudioLoading(true);
+    setRawAudioFile(file);
     setError(null);
     try {
       const arrayBuffer = await file.arrayBuffer();
@@ -779,6 +784,29 @@ export default function MangaMotionStudioPage() {
 
     try {
       const targetDuration = Math.max(3, Math.min(60, config.duration));
+
+      if (isVideo && rawMediaFile) {
+        setExportStatus("Renderizando video con aceleración FFmpeg (partículas + filtros + loop continuo)...");
+        setExportProgress(20);
+        try {
+          const blob = await renderMangaMotionVideoBackend(rawMediaFile, rawAudioFile, {
+            ...config,
+            duration: targetDuration,
+          });
+          setExportProgress(100);
+          if (exportedVideoUrl) {
+            URL.revokeObjectURL(exportedVideoUrl);
+          }
+          const videoUrl = URL.createObjectURL(blob);
+          setExportedVideoUrl(videoUrl);
+          setExportedBlob(blob);
+          setExportStatus(`¡Video HD (${targetDuration}s) generado con éxito! Puedes reproducirlo abajo o descargarlo.`);
+          return;
+        } catch (backendErr) {
+          console.warn("Backend render fallback to client:", backendErr);
+        }
+      }
+
       let finalAudio: AudioBuffer | null = null;
       if (audioBuffer) {
         finalAudio = await renderMangaMasterAudio(
