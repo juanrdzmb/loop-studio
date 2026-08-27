@@ -183,29 +183,41 @@ def build_plan(
         except Exception:
             look = None
 
-    auto = atmosphere == "auto" or atmosphere not in OVERLAYS
+    from catalog import PARTICLE_TO_OVERLAY
+
+    auto = (atmosphere == "auto")
+    overlay_id = None
     if atmosphere in ("off", "none"):
         overlay_id = None
         sfx_on = False
-    elif not auto and overlay_path(atmosphere):
-        overlay_id = atmosphere
-    elif look:
-        overlay_id = pick_overlay(look)
+    elif atmosphere == "auto":
+        if look:
+            overlay_id = pick_overlay(look)
+        else:
+            overlay_id = first_existing_overlay()
     else:
-        overlay_id = first_existing_overlay()
+        resolved = PARTICLE_TO_OVERLAY.get(atmosphere, atmosphere)
+        if resolved in OVERLAYS and overlay_path(resolved):
+            overlay_id = resolved
+        elif overlay_path(atmosphere):
+            overlay_id = atmosphere
+        elif look:
+            overlay_id = pick_overlay(look)
+        else:
+            overlay_id = first_existing_overlay()
 
     palette = pick_sfx_palette(look) if look else [
         sid for sid in ("bamboo", "cave", "sword", "katana") if sfx_path(sid)
     ]
 
     ambience_id = None
-    if overlay_id and atmosphere not in ("off", "none"):
+    if overlay_id and overlay_id in OVERLAYS and atmosphere not in ("off", "none"):
         ambience_id = OVERLAYS.get(overlay_id, {}).get("ambience")
         if ambience_id and not ambience_path(ambience_id):
             ambience_id = next((k for k in AMBIENCE if ambience_path(k)), None)
 
     chapters: list[dict] = []
-    if overlay_id and target >= 180:
+    if overlay_id and overlay_id in OVERLAYS and target >= 180:
         usable = [oid for oid in LONG_ROTATION if overlay_path(oid)]
         if overlay_id in usable:
             usable = [overlay_id] + [x for x in usable if x != overlay_id]
@@ -219,11 +231,11 @@ def build_plan(
                 "start": round(t, 2),
                 "end": round(t1, 2),
                 "overlay": oid,
-                "label": OVERLAYS[oid]["label"],
+                "label": OVERLAYS.get(oid, {}).get("label", oid),
             })
             t = t1
             i += 1
-    elif overlay_id:
+    elif overlay_id and overlay_id in OVERLAYS:
         chapters = [{
             "start": 0,
             "end": round(target, 2),
@@ -237,9 +249,9 @@ def build_plan(
         hits = tile_sfx(raw, cycle, target)
 
     opacity = None
-    if overlay_id:
-        base = OVERLAYS[overlay_id]["opacity"]
-        opacity = round(base * (0.55 + intensity), 3)
+    if overlay_id and overlay_id in OVERLAYS:
+        base = OVERLAYS[overlay_id].get("opacity", 0.35)
+        opacity = max(0.35, min(0.92, round(base * 1.5 * (0.6 + intensity), 3)))
 
     look_out = None
     if look:
