@@ -345,6 +345,9 @@ async def analyze_video(
         with contextlib.redirect_stderr(err_capture):
             from frame_analyzer import FrameAnalyzer
             from loop_detector import LoopDetector
+            from motion_loop import compute_motion_periodicity, evaluate_motion_loop
+
+            motion_period, flows = compute_motion_periodicity(smalls, fps, stride)
 
             fa = FrameAnalyzer(similarity_threshold=similarity / 100.0)
             ld = LoopDetector(fa)
@@ -365,18 +368,20 @@ async def analyze_video(
         for l in loops:
             start = float(l["start_time"])
             end = float(l["end_time"])
+            score, label = evaluate_motion_loop(start, end, smalls, flows, fps, stride, motion_period)
             cands.append({
                 "start": round(start, 3),
                 "end": round(end, 3),
                 "duration": round(float(l["duration"]), 3),
-                "score": _seam_pct(smalls, start, end, fps, stride),
+                "score": score,
+                "label": label,
             })
         full_cand = {
             "start": 0.0,
             "end": round(duration, 3),
             "duration": round(duration, 3),
             "score": 100.0,
-            "label": "Full clip (seamless crossfade)",
+            "label": "Clip completo (Toma continua)" if motion_period <= 0 else f"Clip completo · Ciclo armónico ({duration:.1f}s)",
         }
         longer = [c for c in cands if c["duration"] >= 3.0]
         if not longer:
@@ -386,6 +391,7 @@ async def analyze_video(
             "candidates": cands,
             "duration": round(duration, 3),
             "fps": round(float(fps), 3),
+            "motion_period": round(float(motion_period), 2),
         }
     except Exception as e:
         return JSONResponse({"error": f"análisis falló: {e}"}, 500)

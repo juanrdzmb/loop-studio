@@ -1281,15 +1281,36 @@ export default function VideoLoopPage() {
                               }}
                             />
                           )}
-                          <div className="px-2 py-1.5">
-                            <div className="font-medium text-xs">
-                              {c.label ? (
-                                <div className="text-cyan-400 font-semibold mb-0.5 truncate">{c.label}</div>
-                              ) : null}
-                              {fmt(c.start)} → {fmt(c.end)}{" "}
-                              <span className="text-zinc-400">({c.duration.toFixed(1)}s)</span>
+                          <div className="px-2.5 py-2 space-y-1">
+                            {c.label ? (
+                              <div className="text-[11px] font-semibold text-cyan-300 truncate">
+                                {c.label}
+                              </div>
+                            ) : null}
+                            <div className="flex items-center justify-between text-xs">
+                              <span className="font-medium text-zinc-200">
+                                {fmt(c.start)} → {fmt(c.end)}
+                              </span>
+                              <span className="text-zinc-400 font-mono text-[11px]">
+                                {c.duration.toFixed(1)}s
+                              </span>
                             </div>
-                            <div className="text-xs text-cyan-400">Quality {c.score.toFixed(0)}%</div>
+                            <div className="flex items-center justify-between pt-0.5">
+                              <span
+                                className={`text-[10px] px-1.5 py-0.5 rounded font-mono font-bold ${
+                                  c.score >= 90
+                                    ? "bg-green-500/20 text-green-300 border border-green-500/30"
+                                    : c.score >= 80
+                                    ? "bg-cyan-500/20 text-cyan-300 border border-cyan-500/30"
+                                    : "bg-zinc-800 text-zinc-400"
+                                }`}
+                              >
+                                Match {c.score.toFixed(0)}%
+                              </span>
+                              {c.duration >= 3.0 && (
+                                <span className="text-[10px] text-zinc-400">Toma larga</span>
+                              )}
+                            </div>
                           </div>
                         </button>
                       ))}

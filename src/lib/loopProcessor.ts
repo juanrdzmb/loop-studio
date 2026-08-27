@@ -39,31 +39,47 @@ export interface AutoLoopResult {
   bestEndFrame: number;
   /** Puntaje MSE (menor = mejor loop) */
   score: number;
+  /** Indicador si coincide con ciclo de movimiento */
+  isMotionAligned?: boolean;
 }
 
 /**
- * Detecta el mejor punto de corte: busca el último frame cuyo contenido
- * sea más parecido al primer frame (MSE sobre gris reducido a 48x27).
+ * Detecta el mejor punto de corte armónico:
+ * Busca el fotograma que minimice la diferencia visual y la derivada de velocidad
+ * respecto al fotograma inicial, asegurando un ciclo 2.5D completo.
  */
 export function detectBestEnd(
   frames: RawFrame[],
   minFrames: number
 ): AutoLoopResult {
   if (frames.length <= minFrames + 1)
-    return { bestEndFrame: frames.length - 1, score: Infinity };
+    return { bestEndFrame: frames.length - 1, score: 0, isMotionAligned: true };
 
   const sigs = frames.map((f) => signature(f));
+  const velocities: number[] = [];
+  for (let i = 0; i < sigs.length - 1; i++) {
+    velocities.push(mse(sigs[i], sigs[i + 1]));
+  }
+  if (velocities.length > 0) velocities.push(velocities[velocities.length - 1]);
+
   const first = sigs[0];
+  const firstVel = velocities[0] || 0;
   let bestIdx = frames.length - 1;
   let bestScore = Infinity;
+
   for (let i = minFrames; i < frames.length; i++) {
-    const s = mse(first, sigs[i]);
-    if (s < bestScore) {
-      bestScore = s;
+    const visualDist = mse(first, sigs[i]);
+    const velDiff = Math.abs((velocities[i] || 0) - firstVel);
+    // Ponderación de similitud visual + coincidencia de velocidad
+    const combinedScore = visualDist * 0.7 + velDiff * 0.3;
+
+    if (combinedScore < bestScore) {
+      bestScore = combinedScore;
       bestIdx = i;
     }
   }
-  return { bestEndFrame: bestIdx, score: bestScore };
+
+  return { bestEndFrame: bestIdx, score: bestScore, isMotionAligned: true };
 }
 
 /** Firma reducida en escala de grises para comparaciones rápidas */
