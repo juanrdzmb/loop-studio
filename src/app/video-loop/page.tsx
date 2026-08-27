@@ -300,6 +300,17 @@ function VideoSong16x9Player({
   const effEnd = vEnd > effStart + 0.1 ? vEnd : effStart + (videoDuration || 10);
   const loopDur = Math.max(0.5, effEnd - effStart);
 
+  // Sync play/pause with underlying video
+  useEffect(() => {
+    const vid = videoRef.current;
+    if (!vid) return;
+    if (isPlaying) {
+      vid.play().catch(() => {});
+    } else {
+      vid.pause();
+    }
+  }, [isPlaying]);
+
   useEffect(() => {
     let animId: number;
     let lastTime = performance.now();
@@ -335,6 +346,7 @@ function VideoSong16x9Player({
       let blendAlpha = 0;
       let sw = 0;
       let sh = 0;
+      let curLoopSec = 0;
 
       if (isGif) {
         const img = imgRef.current;
@@ -342,6 +354,7 @@ function VideoSong16x9Player({
           sourceEl = img;
           sw = img.naturalWidth;
           sh = img.naturalHeight;
+          curLoopSec = elapsed % loopDur;
         }
       } else {
         const vid = videoRef.current;
@@ -351,53 +364,40 @@ function VideoSong16x9Player({
           sw = vid.videoWidth;
           sh = vid.videoHeight;
 
-          if (seamMode === "pingpong") {
-            const pingPhase = (elapsed % (loopDur * 2)) / loopDur;
-            const normPhase = pingPhase <= 1.0 ? pingPhase : 2.0 - pingPhase;
-            const targetTime = effStart + normPhase * loopDur;
-            if (Math.abs(vid.currentTime - targetTime) > 0.08) {
-              vid.currentTime = targetTime;
+          // Non-blocking smooth loop wrap
+          if (isPlaying) {
+            if (vid.paused) {
+              vid.play().catch(() => {});
             }
-          } else if (seamMode === "smooth") {
-            const localT = elapsed % loopDur;
-            const targetTime = effStart + localT;
-            if (Math.abs(vid.currentTime - targetTime) > 0.08) {
-              vid.currentTime = targetTime;
+            if (vid.currentTime >= effEnd || vid.currentTime < effStart - 0.2) {
+              vid.currentTime = effStart;
             }
+          }
 
-            const fadeDuration = Math.min(seamFade, loopDur * 0.45);
-            const fadeStart = loopDur - fadeDuration;
-            if (localT >= fadeStart && fadeDuration > 0) {
-              const headT = effStart + (localT - fadeStart);
+          curLoopSec = Math.max(0, Math.min(loopDur, vid.currentTime - effStart));
+
+          // Real-time smooth seam crossfade with head frame
+          if (seamMode === "smooth" && loopDur > seamFade) {
+            const fadeStart = loopDur - seamFade;
+            if (curLoopSec >= fadeStart) {
+              const headT = effStart + (curLoopSec - fadeStart);
               if (headVid && headVid.videoWidth) {
                 headEl = headVid;
-                if (Math.abs(headVid.currentTime - headT) > 0.08) {
+                if (Math.abs(headVid.currentTime - headT) > 0.15) {
                   headVid.currentTime = headT;
                 }
-                const progress = (localT - fadeStart) / fadeDuration;
+                const progress = (curLoopSec - fadeStart) / seamFade;
                 blendAlpha = 0.5 - 0.5 * Math.cos(progress * Math.PI);
               }
-            }
-          } else {
-            const localT = elapsed % loopDur;
-            const targetTime = effStart + localT;
-            if (Math.abs(vid.currentTime - targetTime) > 0.08) {
-              vid.currentTime = targetTime;
             }
           }
         }
       }
 
-      let cycleProgress = 0;
-      if (seamMode === "pingpong") {
-        const pingPhase = (elapsed % (loopDur * 2)) / loopDur;
-        cycleProgress = pingPhase <= 1.0 ? pingPhase : 2.0 - pingPhase;
-      } else {
-        cycleProgress = (elapsed % loopDur) / loopDur;
-      }
+      setCurrentLoopTime(curLoopSec);
 
-      setCurrentLoopTime(cycleProgress * loopDur);
-
+      // Calculate camera transformations
+      const cycleProgress = curLoopSec / loopDur;
       const intNorm = cameraIntensity / 100;
       const cAnim = elapsed * cameraSpeed;
       let zoom = Math.max(1.0, cameraZoom);
@@ -564,7 +564,7 @@ function VideoSong16x9Player({
         <img ref={imgRef} src={videoUrl} alt="source gif" className="hidden" />
       ) : (
         <>
-          <video ref={videoRef} src={videoUrl} muted playsInline className="hidden" />
+          <video ref={videoRef} src={videoUrl} muted playsInline autoPlay className="hidden" />
           <video ref={headVideoRef} src={videoUrl} muted playsInline className="hidden" />
         </>
       )}
@@ -1000,11 +1000,11 @@ export default function VideoLoopPage() {
         audioStart: audioSel.start,
         audioEnd: audioSel.end,
         target: targetSec,
-        atmosphere,
+        atmosphere: atmosphere === "off" ? "off" : (particles !== "none" ? particles : atmosphere),
         visualStyle,
         pixelSize,
-        sfxOn,
-        intensity,
+        sfxOn: atmosphere !== "off" && sfxOn,
+        intensity: particleIntensity / 100,
         watermark,
         video: videoFile,
         videoStart: vStart,
@@ -1067,11 +1067,11 @@ export default function VideoLoopPage() {
           audioStart: audioSel.start,
           audioEnd: audioSel.end,
           target: targetSec,
-          atmosphere,
+          atmosphere: atmosphere === "off" ? "off" : (particles !== "none" ? particles : atmosphere),
           visualStyle,
           pixelSize,
-          sfxOn,
-          intensity,
+          sfxOn: atmosphere !== "off" && sfxOn,
+          intensity: particleIntensity / 100,
           watermark,
           video: videoFile,
           videoStart: vStart,
@@ -1671,9 +1671,24 @@ export default function VideoLoopPage() {
           </p>
 
           <div>
-            <div className="text-xs text-zinc-400 mb-1">Visual atmosphere</div>
+            <div className="flex items-center justify-between text-xs text-zinc-400 mb-1.5">
+              <span className="font-semibold uppercase tracking-wider text-zinc-300">🌫️ Atmósfera y Efectos Ambientales</span>
+              <span className="text-cyan-400 font-mono">
+                {atmosphere === "off" ? "DESACTIVADA (LIMPIO)" : atmosphere.toUpperCase()}
+              </span>
+            </div>
             <div className="flex flex-wrap gap-2">
-              {(overlays.length ? overlays : [{ id: "auto", label: "Auto" }]).map((o) => (
+              {[
+                { id: "auto", label: "✨ Auto (Recomendado)" },
+                { id: "off", label: "🚫 Ninguna / Desactivada (Limpio)" },
+                ...(overlays.length ? overlays.filter(o => o.id !== "auto" && o.id !== "off") : [
+                  { id: "fog", label: "Niebla Mística" },
+                  { id: "smoke", label: "Humo Sutil" },
+                  { id: "rain", label: "Lluvia" },
+                  { id: "particles", label: "Partículas" },
+                  { id: "fire", label: "Fuego / Brasas" },
+                ]),
+              ].map((o) => (
                 <button
                   key={o.id}
                   onClick={() => {

@@ -184,8 +184,9 @@ def build_plan(
             look = None
 
     auto = atmosphere == "auto" or atmosphere not in OVERLAYS
-    if atmosphere == "off":
+    if atmosphere in ("off", "none"):
         overlay_id = None
+        sfx_on = False
     elif not auto and overlay_path(atmosphere):
         overlay_id = atmosphere
     elif look:
@@ -198,8 +199,8 @@ def build_plan(
     ]
 
     ambience_id = None
-    if overlay_id:
-        ambience_id = OVERLAYS[overlay_id].get("ambience")
+    if overlay_id and atmosphere not in ("off", "none"):
+        ambience_id = OVERLAYS.get(overlay_id, {}).get("ambience")
         if ambience_id and not ambience_path(ambience_id):
             ambience_id = next((k for k in AMBIENCE if ambience_path(k)), None)
 

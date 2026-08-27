@@ -493,10 +493,10 @@ def _dedup_loops(cands: list[dict]) -> list[dict]:
 
 
 def _loop_audio(a_path: str, a_start: float, a_end: float, seg_path: str) -> float:
-    """Ciclo de canción con final fundido al inicio, para repetir sin corte seco."""
+    """Ciclo de canción con final fundido al inicio usando crossfade de potencia constante (qsin) sin caídas de volumen ni clics."""
     a_dur = round(a_end - a_start, 6)
-    fade = min(2.0, max(0.8, a_dur * 0.05))
-    if a_dur < fade * 3:
+    fade = min(2.5, max(1.2, a_dur * 0.05))
+    if a_dur < fade * 2.5:
         _run([
             "ffmpeg", "-y", "-v", "error",
             "-ss", str(a_start), "-to", str(a_end), "-i", a_path,
@@ -510,7 +510,7 @@ def _loop_audio(a_path: str, a_start: float, a_end: float, seg_path: str) -> flo
         f"[beg]atrim=start=0:end={fade:.4f},asetpts=PTS-STARTPTS[b];"
         f"[end]atrim=start={a_dur - fade:.4f}:end={a_dur:.4f},asetpts=PTS-STARTPTS[e];"
         f"[mid]atrim=start={fade:.4f}:end={a_dur - fade:.4f},asetpts=PTS-STARTPTS[m];"
-        f"[e][b]acrossfade=d={fade:.4f}:c1=tri:c2=tri[x];"
+        f"[e][b]acrossfade=d={fade:.4f}:c1=qsin:c2=qsin[x];"
         f"[m][x]concat=n=2:v=0:a=1[out]"
     )
     _run([

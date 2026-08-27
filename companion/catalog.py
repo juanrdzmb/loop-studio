@@ -82,7 +82,24 @@ SFX: dict[str, dict] = {
 LONG_ROTATION = ["fog", "smoke", "particles", "rain"]
 
 
+PARTICLE_TO_OVERLAY: dict[str, str] = {
+    "embers_fire": "fire",
+    "bamboo_leaves": "particles",
+    "cinematic_rain": "rain",
+    "dark_ink_fog": "fog",
+    "golden_sparks": "spark",
+    "sakura_petals": "particles",
+    "blood_drips": "particles",
+    "none": "off",
+    "off": "off",
+}
+
+
 def overlay_path(oid: str) -> str | None:
+    if oid in PARTICLE_TO_OVERLAY:
+        oid = PARTICLE_TO_OVERLAY[oid]
+    if oid in ("off", "none"):
+        return None
     meta = OVERLAYS.get(oid)
     if not meta:
         return None
