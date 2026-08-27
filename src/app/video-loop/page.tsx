@@ -28,20 +28,112 @@ import {
   type VisualStyleOption,
   type YoutubePack,
 } from "@/lib/companion";
+export type CameraMovement =
+  | "static"
+  | "slow_push"
+  | "dutch_drift"
+  | "whip_pan"
+  | "vertigo_zoom"
+  | "spiral_vortex"
+  | "cinematic_scan"
+  | "impact_shake";
+
+export const CAMERA_MODE_DEFAULTS: Record<
+  CameraMovement,
+  { cameraSpeed: number; cameraIntensity: number; cameraAngle: number; cameraBaseZoom: number }
+> = {
+  static: { cameraSpeed: 1.0, cameraIntensity: 0, cameraAngle: 0, cameraBaseZoom: 1.0 },
+  slow_push: { cameraSpeed: 0.8, cameraIntensity: 40, cameraAngle: 0, cameraBaseZoom: 1.0 },
+  dutch_drift: { cameraSpeed: 0.6, cameraIntensity: 35, cameraAngle: -8, cameraBaseZoom: 1.12 },
+  whip_pan: { cameraSpeed: 1.2, cameraIntensity: 50, cameraAngle: 0, cameraBaseZoom: 1.15 },
+  vertigo_zoom: { cameraSpeed: 0.7, cameraIntensity: 45, cameraAngle: 0, cameraBaseZoom: 1.0 },
+  spiral_vortex: { cameraSpeed: 0.9, cameraIntensity: 35, cameraAngle: -5, cameraBaseZoom: 1.12 },
+  cinematic_scan: { cameraSpeed: 0.7, cameraIntensity: 40, cameraAngle: 0, cameraBaseZoom: 1.18 },
+  impact_shake: { cameraSpeed: 1.4, cameraIntensity: 60, cameraAngle: 0, cameraBaseZoom: 1.06 },
+};
+
 export function getVisualStyleCss(styleId: string): string {
   switch (styleId) {
+    case "seinen_bw":
+      return "grayscale(100%) contrast(160%) brightness(95%)";
+    case "retro_90s":
+    case "vintage_anime":
+      return "contrast(118%) saturate(130%) sepia(18%)";
+    case "dark_fantasy":
+      return "contrast(140%) saturate(75%) hue-rotate(190deg) brightness(90%)";
+    case "cyberpunk_neon":
+      return "contrast(135%) saturate(160%) hue-rotate(320deg)";
+    case "screentone":
+      return "contrast(170%) grayscale(100%) brightness(92%)";
+    case "vintage_sepia":
+      return "sepia(70%) contrast(110%) brightness(92%)";
     case "anime_lofi":
-      return "contrast(1.14) brightness(0.98) saturate(1.24) sepia(0.25) hue-rotate(-6deg)";
+      return "saturate(140%) hue-rotate(15deg) contrast(105%)";
     case "golden_sunset":
       return "contrast(1.16) brightness(1.02) saturate(1.34) sepia(0.42) hue-rotate(-14deg)";
-    case "vintage_anime":
-      return "contrast(1.18) brightness(0.95) saturate(1.36) sepia(0.18) hue-rotate(6deg)";
-    case "dark_fantasy":
-      return "contrast(1.32) brightness(0.9) saturate(0.72) hue-rotate(185deg) sepia(0.1)";
     case "clean":
     default:
       return "none";
   }
+}
+
+export function getCameraTransformCss(
+  cameraMode: CameraMovement,
+  t: number,
+  duration: number = 10,
+  speed: number = 1.0,
+  intensity: number = 30,
+  angle: number = 0,
+  baseZoom: number = 1.0
+): string {
+  const cycleProgress = (t % Math.max(1, duration)) / Math.max(1, duration);
+  const intNorm = intensity / 100;
+  const animTime = t * speed;
+  let zoom = Math.max(1.0, baseZoom);
+  let rot = angle;
+  let panX = 0;
+  let panY = 0;
+
+  if (cameraMode === "slow_push") {
+    const push = 0.5 - 0.5 * Math.cos(cycleProgress * Math.PI * 2);
+    zoom = baseZoom * (1.0 + 0.14 * push * intNorm);
+    rot = angle + Math.sin(cycleProgress * Math.PI * 2) * 1.5 * intNorm;
+  } else if (cameraMode === "dutch_drift") {
+    rot = angle + Math.sin(cycleProgress * Math.PI * 2) * 5.0 * intNorm;
+    zoom = baseZoom * (1.12 + 0.08 * intNorm);
+    panX = Math.sin(cycleProgress * Math.PI * 2) * 5 * intNorm;
+    panY = Math.cos(cycleProgress * Math.PI * 2) * 4 * intNorm;
+  } else if (cameraMode === "whip_pan") {
+    const snap = Math.sin(cycleProgress * Math.PI * 4);
+    const easeWhip = Math.sign(snap) * Math.pow(Math.abs(snap), 3);
+    zoom = baseZoom * (1.15 + 0.1 * Math.abs(easeWhip) * intNorm);
+    panX = easeWhip * 12 * intNorm;
+    rot = angle + easeWhip * 4 * intNorm;
+  } else if (cameraMode === "vertigo_zoom") {
+    const vCycle = Math.sin(cycleProgress * Math.PI * 2);
+    zoom = baseZoom * (1.0 + 0.28 * (0.5 + 0.5 * vCycle) * intNorm);
+    panY = -vCycle * 4 * intNorm;
+  } else if (cameraMode === "spiral_vortex") {
+    const sPhase = animTime * 1.5;
+    rot = angle + Math.sin(sPhase) * 7.5 * intNorm;
+    zoom = baseZoom * (1.12 + 0.14 * (0.5 + 0.5 * Math.sin(sPhase * 2)) * intNorm);
+    panX = Math.cos(sPhase) * 5 * intNorm;
+    panY = Math.sin(sPhase) * 5 * intNorm;
+  } else if (cameraMode === "cinematic_scan") {
+    const sProg = 0.5 - 0.5 * Math.cos(cycleProgress * Math.PI * 2);
+    zoom = baseZoom * (1.18 + 0.08 * intNorm);
+    panX = (sProg - 0.5) * 12 * intNorm;
+    panY = (sProg - 0.5) * 15 * intNorm;
+  } else if (cameraMode === "impact_shake") {
+    const shakeFreq = animTime * 28.0;
+    const decay = Math.exp(-((t % 1.5) * 3.2));
+    zoom = baseZoom * (1.06 + 0.08 * decay * intNorm);
+    panX = (Math.sin(shakeFreq) + Math.cos(shakeFreq * 1.6)) * 6.0 * decay * intNorm;
+    panY = (Math.cos(shakeFreq * 1.2) + Math.sin(shakeFreq * 2.0)) * 6.0 * decay * intNorm;
+    rot = angle + Math.sin(shakeFreq * 0.8) * 2.0 * decay * intNorm;
+  }
+
+  return `scale(${zoom.toFixed(3)}) rotate(${rot.toFixed(2)}deg) translate(${panX.toFixed(1)}px, ${panY.toFixed(1)}px)`;
 }
 
 export function getPixelScale(size: number): number {
@@ -164,6 +256,23 @@ export default function VideoLoopPage() {
   const [visualStyles, setVisualStyles] = useState<VisualStyleOption[]>([]);
   const [visualStyle, setVisualStyle] = useState("anime_lofi");
   const [pixelSize, setPixelSize] = useState<number>(1);
+  const [cameraMode, setCameraMode] = useState<CameraMovement>("static");
+  const [cameraSpeed, setCameraSpeed] = useState<number>(1.0);
+  const [cameraIntensity, setCameraIntensity] = useState<number>(30);
+  const [cameraAngle, setCameraAngle] = useState<number>(0);
+  const [cameraZoom, setCameraZoom] = useState<number>(1.0);
+  const [animTime, setAnimTime] = useState<number>(0);
+
+  const handleSelectCameraMode = (mode: CameraMovement) => {
+    const defaults = CAMERA_MODE_DEFAULTS[mode];
+    setCameraMode(mode);
+    setCameraSpeed(defaults.cameraSpeed);
+    setCameraIntensity(defaults.cameraIntensity);
+    setCameraAngle(defaults.cameraAngle);
+    setCameraZoom(defaults.cameraBaseZoom);
+    setPlan(null);
+    setPreviewUrl(null);
+  };
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [videoDuration, setVideoDuration] = useState(0);
@@ -214,6 +323,19 @@ export default function VideoLoopPage() {
   const [renderStage, setRenderStage] = useState("");
 
   const companionUp = !!health?.ok;
+
+  useEffect(() => {
+    let animId: number;
+    let last = performance.now();
+    const loop = (now: number) => {
+      const dt = (now - last) / 1000;
+      last = now;
+      setAnimTime((prev) => prev + dt);
+      animId = requestAnimationFrame(loop);
+    };
+    animId = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(animId);
+  }, []);
 
   useEffect(() => {
     companionHealth().then(setHealth);
@@ -782,7 +904,7 @@ export default function VideoLoopPage() {
                           style={{
                             filter: getVisualStyleCss(visualStyle),
                             imageRendering: pixelSize > 1 ? "pixelated" : "auto",
-                            transform: pixelSize > 1 ? `scale(${getPixelScale(pixelSize)})` : "none",
+                            transform: `${getCameraTransformCss(cameraMode, animTime, videoDuration || 10, cameraSpeed, cameraIntensity, cameraAngle, cameraZoom)} ${pixelSize > 1 ? `scale(${getPixelScale(pixelSize)})` : ""}`,
                             width: pixelSize > 1 ? `${100 / getPixelScale(pixelSize)}%` : "100%",
                             height: pixelSize > 1 ? `${100 / getPixelScale(pixelSize)}%` : "100%",
                           }}
@@ -798,7 +920,7 @@ export default function VideoLoopPage() {
                           style={{
                             filter: getVisualStyleCss(visualStyle),
                             imageRendering: pixelSize > 1 ? "pixelated" : "auto",
-                            transform: pixelSize > 1 ? `scale(${getPixelScale(pixelSize)})` : "none",
+                            transform: `${getCameraTransformCss(cameraMode, animTime, videoDuration || 10, cameraSpeed, cameraIntensity, cameraAngle, cameraZoom)} ${pixelSize > 1 ? `scale(${getPixelScale(pixelSize)})` : ""}`,
                             width: pixelSize > 1 ? `${100 / getPixelScale(pixelSize)}%` : "100%",
                             height: pixelSize > 1 ? `${100 / getPixelScale(pixelSize)}%` : "100%",
                           }}
@@ -1092,19 +1214,25 @@ export default function VideoLoopPage() {
             </div>
           </div>
 
-          <div>
-            <div className="text-xs text-zinc-400 mb-1">Visual filter / Color grading (1080p)</div>
-            <div className="flex flex-wrap gap-2">
-              {(visualStyles.length
-                ? visualStyles
-                : [
-                    { id: "anime_lofi", label: "Anime Lo-Fi", hint: "Warm golden glow, soft contrast, subtle film grain" },
-                    { id: "golden_sunset", label: "Golden Sunset", hint: "Amber twilight, chivalric warm hour" },
-                    { id: "vintage_anime", label: "Vintage 90s Anime", hint: "Retro cel saturation, analog texture" },
-                    { id: "dark_fantasy", label: "Dark Fantasy (Doomer)", hint: "Moody steel tones, deep shadows" },
-                    { id: "clean", label: "Clean 1080p", hint: "Original colors + 1080p sharpening" },
-                  ]
-              ).map((s) => (
+          {/* Manga Visual Filters & Color Grading */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between text-xs text-zinc-400">
+              <span className="font-semibold uppercase tracking-wider text-zinc-300">🎨 Filtros Visuales Anime & Manga (1080p)</span>
+              <span className="text-fuchsia-400 font-mono">
+                {visualStyle.toUpperCase()}
+              </span>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              {[
+                { id: "clean", label: "🖼️ Original Limpio", hint: "Colores originales sin filtros + nitidez 1080p" },
+                { id: "seinen_bw", label: "🖋️ Seinen B&W", hint: "Tinta manga de alto contraste tradicional (Berserk/Vagabond)" },
+                { id: "retro_90s", label: "📼 Retro 90s Anime", hint: "Saturación analógica y textura cel (Evangelion / Bebop)" },
+                { id: "dark_fantasy", label: "🌑 Dark Fantasy", hint: "Sombras de acero frío y atmósfera sombría" },
+                { id: "cyberpunk_neon", label: "🌆 Cyberpunk Glow", hint: "Neón magenta, cyan y contraste anime" },
+                { id: "screentone", label: "📰 Screentone", hint: "Trama de imprenta manga halftone" },
+                { id: "vintage_sepia", label: "📜 Pergamino Sepia", hint: "Tono pergamino samurái antiguo" },
+                { id: "anime_lofi", label: "🌅 Lo-Fi Sunset", hint: "Resplandor dorado suave y atardecer pastel" },
+              ].map((s) => (
                 <button
                   key={s.id}
                   onClick={() => {
@@ -1113,28 +1241,118 @@ export default function VideoLoopPage() {
                     setPreviewUrl(null);
                   }}
                   title={s.hint}
-                  className={`px-3 py-1.5 rounded-lg text-sm border ${
+                  className={`p-2.5 rounded-xl border text-left transition-all ${
                     visualStyle === s.id
-                      ? "border-fuchsia-500 bg-fuchsia-500/15 text-fuchsia-300 font-medium"
-                      : "border-zinc-700 hover:border-zinc-500 text-zinc-300"
+                      ? "border-fuchsia-500 bg-fuchsia-950/60 text-white font-semibold ring-1 ring-fuchsia-400/40 shadow-sm"
+                      : "border-zinc-800 bg-zinc-950 hover:bg-zinc-900 text-zinc-300"
                   }`}
                 >
-                  {s.label}
+                  <div className="text-xs font-bold truncate">{s.label}</div>
+                  <div className="text-[10px] text-zinc-400 truncate mt-0.5">{s.hint}</div>
                 </button>
               ))}
             </div>
-            <p className="text-xs text-zinc-500 mt-1">
-              {(visualStyles.length
-                ? visualStyles
-                : [
-                    { id: "anime_lofi", label: "Anime Lo-Fi", hint: "Warm golden glow, soft contrast, subtle film grain" },
-                    { id: "golden_sunset", label: "Golden Sunset", hint: "Amber twilight, chivalric warm hour" },
-                    { id: "vintage_anime", label: "Vintage 90s Anime", hint: "Retro cel saturation, analog texture" },
-                    { id: "dark_fantasy", label: "Dark Fantasy (Doomer)", hint: "Moody steel tones, deep shadows" },
-                    { id: "clean", label: "Clean 1080p", hint: "Original colors + 1080p sharpening" },
-                  ]
-              ).find((s) => s.id === visualStyle)?.hint}
-            </p>
+          </div>
+
+          {/* Cinematic Manga Camera Modes */}
+          <div className="space-y-3 pt-3 border-t border-zinc-800">
+            <div className="flex items-center justify-between text-xs text-zinc-400">
+              <span className="font-semibold uppercase tracking-wider text-zinc-300">🎥 Efectos Cinemáticos Manga & Modos de Cámara</span>
+              <span className="text-cyan-400 font-mono">
+                {cameraMode.toUpperCase()}
+              </span>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              {[
+                { id: "static", label: "🛑 Estática Fija", desc: "100% nítida, sin movimiento" },
+                { id: "slow_push", label: "🔍 Zoom Lento", desc: "Acercamiento dramático suave" },
+                { id: "dutch_drift", label: "📐 Plano Holandés", desc: "Inclinación cinemática flotante" },
+                { id: "whip_pan", label: "⚡ Latigazo Anime", desc: "Whip Pan horizontal con inercia" },
+                { id: "vertigo_zoom", label: "🌀 Efecto Vértigo", desc: "Dolly Zoom / Despertar" },
+                { id: "spiral_vortex", label: "🌪️ Vórtice Espiral", desc: "Espiral de combate Shonen" },
+                { id: "cinematic_scan", label: "📜 Escaneo Diagonal", desc: "Lectura de viñeta completa" },
+                { id: "impact_shake", label: "🫨 Sacudida & Hitstop", desc: "Golpe e impacto de combate" },
+              ].map((c) => (
+                <button
+                  key={c.id}
+                  onClick={() => handleSelectCameraMode(c.id as CameraMovement)}
+                  className={`p-2.5 rounded-xl border text-left transition-all ${
+                    cameraMode === c.id
+                      ? "border-cyan-500 bg-cyan-950/60 text-white font-semibold ring-1 ring-cyan-400/40 shadow-sm"
+                      : "border-zinc-800 bg-zinc-950 hover:bg-zinc-900 text-zinc-300"
+                  }`}
+                >
+                  <div className="text-xs font-bold truncate">{c.label}</div>
+                  <div className="text-[10px] text-zinc-400 truncate mt-0.5">{c.desc}</div>
+                </button>
+              ))}
+            </div>
+
+            {/* Live Camera Sliders */}
+            {cameraMode !== "static" && (
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-3.5 rounded-xl bg-zinc-950/80 border border-zinc-800 text-xs">
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[11px] text-zinc-400">
+                    <span>Velocidad</span>
+                    <span className="font-mono text-cyan-400">{cameraSpeed.toFixed(1)}x</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0.2"
+                    max="3.0"
+                    step="0.1"
+                    value={cameraSpeed}
+                    onChange={(e) => setCameraSpeed(parseFloat(e.target.value))}
+                    className="w-full accent-cyan-500 h-1 bg-zinc-800 rounded"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[11px] text-zinc-400">
+                    <span>Intensidad</span>
+                    <span className="font-mono text-cyan-400">{cameraIntensity}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="5"
+                    max="100"
+                    step="5"
+                    value={cameraIntensity}
+                    onChange={(e) => setCameraIntensity(parseInt(e.target.value))}
+                    className="w-full accent-cyan-500 h-1 bg-zinc-800 rounded"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[11px] text-zinc-400">
+                    <span>Inclinación</span>
+                    <span className="font-mono text-cyan-400">{cameraAngle}°</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="-45"
+                    max="45"
+                    step="1"
+                    value={cameraAngle}
+                    onChange={(e) => setCameraAngle(parseInt(e.target.value))}
+                    className="w-full accent-cyan-500 h-1 bg-zinc-800 rounded"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[11px] text-zinc-400">
+                    <span>Zoom Base</span>
+                    <span className="font-mono text-cyan-400">{cameraZoom.toFixed(1)}x</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="1.0"
+                    max="2.0"
+                    step="0.05"
+                    value={cameraZoom}
+                    onChange={(e) => setCameraZoom(parseFloat(e.target.value))}
+                    className="w-full accent-cyan-500 h-1 bg-zinc-800 rounded"
+                  />
+                </div>
+              </div>
+            )}
           </div>
           <div>
             <div className="flex items-center justify-between text-xs text-zinc-400 mb-1">

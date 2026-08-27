@@ -121,13 +121,69 @@ def first_existing_overlay() -> str | None:
     return None
 
 VISUAL_STYLES: dict[str, dict] = {
+    "clean": {
+        "id": "clean",
+        "label": "🖼️ Original Limpio (1080p)",
+        "hint": "Colores originales sin filtros + nitidez 1080p",
+        "filter": "unsharp=5:5:0.6:3:3:0.0",
+    },
+    "seinen_bw": {
+        "id": "seinen_bw",
+        "label": "🖋️ Seinen B&W",
+        "hint": "Tinta manga de alto contraste tradicional (Berserk/Vagabond)",
+        "filter": "format=gray,eq=contrast=1.65:brightness=-0.04,unsharp=5:5:1.2:3:3:0.0",
+    },
+    "retro_90s": {
+        "id": "retro_90s",
+        "label": "📼 Retro 90s Anime",
+        "hint": "Saturación celuloid analógica (Evangelion / Cowboy Bebop)",
+        "filter": (
+            "eq=contrast=1.18:brightness=-0.02:saturation=1.35,"
+            "colorbalance=rs=0.08:gs=0.0:bs=-0.06:rm=0.1:gm=0.02:bm=-0.08,"
+            "noise=alls=14:allf=t+u,"
+            "vignette=PI/4.2"
+        ),
+    },
+    "dark_fantasy": {
+        "id": "dark_fantasy",
+        "label": "🌑 Dark Fantasy",
+        "hint": "Sombras de acero frío y atmósfera sombría (Dark Souls/Berserk)",
+        "filter": (
+            "eq=contrast=1.28:brightness=-0.05:saturation=0.82,"
+            "colorbalance=rs=-0.04:gs=-0.02:bs=0.08:rm=-0.02:gm=0.0:bm=0.06:rh=0.02:gh=0.02:bh=0.04,"
+            "vignette=PI/3.5,"
+            "noise=alls=12:allf=t+u"
+        ),
+    },
+    "cyberpunk_neon": {
+        "id": "cyberpunk_neon",
+        "label": "🌆 Cyberpunk Glow",
+        "hint": "Neón vibrante magenta, cyan y alto contraste anime",
+        "filter": (
+            "eq=contrast=1.35:brightness=-0.02:saturation=1.65,"
+            "colorbalance=rs=0.15:gs=-0.08:bs=0.22:rm=0.18:gm=-0.05:bm=0.25:rh=0.08:gh=-0.04:bh=0.15,"
+            "vignette=PI/4.0"
+        ),
+    },
+    "screentone": {
+        "id": "screentone",
+        "label": "📰 Screentone Halftone",
+        "hint": "Trama Shonen clásica de imprenta manga",
+        "filter": "format=gray,eq=contrast=1.85:brightness=-0.06,unsharp=7:7:1.5:3:3:0.0",
+    },
+    "vintage_sepia": {
+        "id": "vintage_sepia",
+        "label": "📜 Pergamino Sepia",
+        "hint": "Tono pergamino samurái antiguo y cálido",
+        "filter": "colorchannelmixer=.393:.769:.189:0:.349:.686:.168:0:.272:.534:.131,eq=contrast=1.18:brightness=-0.03,vignette=PI/3.8",
+    },
     "anime_lofi": {
         "id": "anime_lofi",
-        "label": "Anime Lo-Fi",
-        "hint": "Warm golden glow, soft contrast, subtle film grain",
+        "label": "🌅 Lo-Fi Sunset",
+        "hint": "Resplandor dorado suave, grano sutil y atardecer cálido",
         "filter": (
-            "eq=contrast=1.12:brightness=-0.02:saturation=1.18,"
-            "colorbalance=rs=0.06:gs=0.02:bs=-0.04:rm=0.08:gm=0.03:bm=-0.05:rh=0.04:gh=0.02:bh=-0.02,"
+            "eq=contrast=1.12:brightness=-0.02:saturation=1.28,"
+            "colorbalance=rs=0.08:gs=0.03:bs=-0.04:rm=0.1:gm=0.04:bm=-0.06:rh=0.05:gh=0.02:bh=-0.03,"
             "vignette=PI/4.5,"
             "noise=alls=10:allf=t+u,"
             "unsharp=5:5:0.6:3:3:0.0"
@@ -135,43 +191,15 @@ VISUAL_STYLES: dict[str, dict] = {
     },
     "golden_sunset": {
         "id": "golden_sunset",
-        "label": "Golden Sunset",
-        "hint": "Amber twilight, chivalric warm hour",
+        "label": "🌇 Golden Hour",
+        "hint": "Crepúsculo ambarino épico para momentos de clímax",
         "filter": (
-            "eq=contrast=1.14:brightness=-0.01:saturation=1.24,"
+            "eq=contrast=1.14:brightness=-0.01:saturation=1.34,"
             "colorbalance=rs=0.12:gs=0.04:bs=-0.08:rm=0.14:gm=0.05:bm=-0.1:rh=0.08:gh=0.03:bh=-0.06,"
             "vignette=PI/4.2,"
             "noise=alls=8:allf=t+u,"
             "unsharp=5:5:0.5:3:3:0.0"
         ),
-    },
-    "vintage_anime": {
-        "id": "vintage_anime",
-        "label": "Vintage 90s Anime",
-        "hint": "Retro cel saturation, analog texture",
-        "filter": (
-            "eq=contrast=1.15:brightness=-0.03:saturation=1.28,"
-            "colorbalance=rs=0.08:gs=-0.02:bs=-0.06:rm=0.1:gm=0.02:bm=-0.08:rh=0.06:gh=0.0:bh=-0.04,"
-            "noise=alls=16:allf=t+u,"
-            "vignette=PI/4"
-        ),
-    },
-    "dark_fantasy": {
-        "id": "dark_fantasy",
-        "label": "Dark Fantasy (Doomer)",
-        "hint": "Moody steel tones, deep shadows",
-        "filter": (
-            "eq=contrast=1.25:brightness=-0.05:saturation=0.82,"
-            "colorbalance=rs=-0.04:gs=-0.02:bs=0.08:rm=-0.02:gm=0.0:bm=0.06:rh=0.02:gh=0.02:bh=0.04,"
-            "vignette=PI/3.5,"
-            "noise=alls=12:allf=t+u"
-        ),
-    },
-    "clean": {
-        "id": "clean",
-        "label": "Clean 1080p",
-        "hint": "Original colors + 1080p sharpening",
-        "filter": "unsharp=5:5:0.6:3:3:0.0",
     },
 }
 
