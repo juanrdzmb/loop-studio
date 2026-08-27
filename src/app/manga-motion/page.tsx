@@ -524,12 +524,19 @@ export default function MangaMotionStudioPage() {
           }
         }
 
-        // Sync Video Element current time if video
+        // Sync Video Element current time with seamless loop mode (ping-pong / smooth)
         if (mediaElRef.current instanceof HTMLVideoElement) {
           const vid = mediaElRef.current;
           const vidDur = vid.duration || maxDur;
-          const targetVidT = currentTimeRef.current % vidDur;
-          if (Math.abs(vid.currentTime - targetVidT) > 0.2) {
+          let targetVidT = 0;
+          if (configRef.current.seamMode === "pingpong") {
+            const pingPhase = (currentTimeRef.current % (vidDur * 2)) / vidDur;
+            const normT = pingPhase <= 1.0 ? pingPhase : 2.0 - pingPhase;
+            targetVidT = normT * vidDur;
+          } else {
+            targetVidT = currentTimeRef.current % vidDur;
+          }
+          if (Math.abs(vid.currentTime - targetVidT) > 0.18) {
             vid.currentTime = targetVidT;
           }
           if (vid.paused && isPlayingRef.current) {
@@ -1969,22 +1976,81 @@ export default function MangaMotionStudioPage() {
                   <span>60s (1 Minuto Máx)</span>
                 </div>
 
-                {/* Seamless Loop Crossfade Toggle */}
-                <div className="pt-2 border-t border-zinc-900 flex items-center justify-between text-xs">
-                  <div>
+                {/* Transición de Bucle (Suavizado de Costura & Boomerang) */}
+                <div className="pt-3 border-t border-zinc-900 space-y-2 text-xs">
+                  <div className="flex items-center justify-between">
                     <label className="font-semibold text-zinc-200 block">
-                      🔄 Fusión de Loop Infinito (Seamless Crossfade)
+                      🌊 Transición de Bucle (Loop Seamless & Boomerang)
                     </label>
-                    <p className="text-[11px] text-zinc-400">
-                      Fundido suave entre el final y el principio para que el video y la imagen nunca tengan saltos.
-                    </p>
+                    <span className="text-fuchsia-400 font-mono text-[11px]">
+                      {config.seamMode === "smooth"
+                        ? `Fundido Suave (${config.loopCrossfadeDuration.toFixed(1)}s)`
+                        : config.seamMode === "pingpong"
+                        ? "Ida y Vuelta (Boomerang)"
+                        : "Corte Directo"}
+                    </span>
                   </div>
-                  <input
-                    type="checkbox"
-                    checked={config.enableSeamlessLoop}
-                    onChange={(e) => setConfig((prev) => ({ ...prev, enableSeamlessLoop: e.target.checked }))}
-                    className="accent-fuchsia-500 w-4 h-4 rounded cursor-pointer"
-                  />
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    {[
+                      {
+                        id: "smooth",
+                        label: "🌊 Fundido Suave",
+                        desc: "Transición continua imperceptible.",
+                      },
+                      {
+                        id: "pingpong",
+                        label: "🔄 Ida y Vuelta (Boomerang)",
+                        desc: "Movimiento continuo adelante y atrás.",
+                      },
+                      {
+                        id: "cut",
+                        label: "✂️ Corte Directo",
+                        desc: "Para loops fotograma a fotograma.",
+                      },
+                    ].map((m) => (
+                      <button
+                        key={m.id}
+                        type="button"
+                        onClick={() =>
+                          setConfig((prev) => ({
+                            ...prev,
+                            seamMode: m.id as "smooth" | "pingpong" | "cut",
+                            enableSeamlessLoop: m.id !== "cut",
+                          }))
+                        }
+                        className={`p-2 rounded-xl border text-left transition-all ${
+                          config.seamMode === m.id
+                            ? "border-fuchsia-500 bg-fuchsia-950/60 text-white font-semibold ring-1 ring-fuchsia-400/40"
+                            : "border-zinc-800 bg-zinc-950 hover:bg-zinc-900 text-zinc-300"
+                        }`}
+                      >
+                        <div className="text-xs font-bold truncate">{m.label}</div>
+                        <div className="text-[10px] text-zinc-400 truncate mt-0.5">{m.desc}</div>
+                      </button>
+                    ))}
+                  </div>
+                  {config.seamMode === "smooth" && (
+                    <div className="p-2.5 rounded-xl bg-zinc-950 border border-zinc-800 space-y-1 text-xs">
+                      <div className="flex justify-between text-[11px] text-zinc-400">
+                        <span>Duración del Fundido de Enlace</span>
+                        <span className="font-mono text-fuchsia-400">{config.loopCrossfadeDuration.toFixed(1)}s</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="0.5"
+                        max="3.0"
+                        step="0.1"
+                        value={config.loopCrossfadeDuration}
+                        onChange={(e) =>
+                          setConfig((prev) => ({
+                            ...prev,
+                            loopCrossfadeDuration: parseFloat(e.target.value),
+                          }))
+                        }
+                        className="w-full accent-fuchsia-500 h-1 bg-zinc-800 rounded"
+                      />
+                    </div>
+                  )}
                 </div>
               </div>
 

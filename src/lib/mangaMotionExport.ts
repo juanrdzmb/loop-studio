@@ -24,6 +24,27 @@ export interface MangaExportOptions {
   onProgress?: (ratio: number) => void;
 }
 
+async function seekVideoToTime(video: HTMLVideoElement, time: number): Promise<void> {
+  const bounded = Math.max(0, Math.min(video.duration || 9999, time));
+  if (Math.abs(video.currentTime - bounded) < 0.01) {
+    return;
+  }
+  return new Promise<void>((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (!done) {
+        done = true;
+        video.removeEventListener("seeked", onSeeked);
+        resolve();
+      }
+    };
+    const onSeeked = () => finish();
+    video.addEventListener("seeked", onSeeked);
+    setTimeout(finish, 15);
+    video.currentTime = bounded;
+  });
+}
+
 /**
  * Render and encode Manga Motion 2.5D animation directly to MP4 via WebCodecs (mediabunny).
  * Supports synchronized video + audio track multiplexing.
@@ -86,7 +107,8 @@ export async function exportMangaMotionVideo(
     throw new Error("No se pudo obtener el contexto 2D del Canvas");
   }
 
-  const fps = config.fps || 60;
+  const isVideo = typeof HTMLVideoElement !== "undefined" && image instanceof HTMLVideoElement;
+  const fps = isVideo ? Math.min(30, config.fps || 30) : (config.fps || 60);
   const videoSource = new CanvasSource(canvas, {
     codec: videoCodec,
     quality: QUALITY_HIGH,
@@ -109,12 +131,21 @@ export async function exportMangaMotionVideo(
   const duration = Math.max(3, Math.min(60, config.duration));
   const totalFrames = Math.max(1, Math.floor(duration * fps));
   const frameDur = 1 / fps;
-  const crossfadeDur = config.enableSeamlessLoop ? Math.min(2.5, config.loopCrossfadeDuration || 1.8) : 0;
+  const seamMode = config.seamMode || (config.enableSeamlessLoop ? "smooth" : "cut");
+  const crossfadeDur = config.enableSeamlessLoop && seamMode === "smooth" ? Math.min(2.5, config.loopCrossfadeDuration || 1.8) : 0;
   const crossfadeStart = duration - crossfadeDur;
+
+  const vidDur = isVideo
+    ? Math.max(0.5, (image as HTMLVideoElement).duration || duration)
+    : duration;
+
+  if (isVideo) {
+    (image as HTMLVideoElement).pause();
+  }
 
   let startCanvas: HTMLCanvasElement | null = null;
   let startCtx: CanvasRenderingContext2D | null = null;
-  if (config.enableSeamlessLoop && crossfadeDur > 0) {
+  if (config.enableSeamlessLoop && seamMode === "smooth" && crossfadeDur > 0) {
     startCanvas = document.createElement("canvas");
     startCanvas.width = width;
     startCanvas.height = height;
@@ -123,6 +154,20 @@ export async function exportMangaMotionVideo(
 
   for (let i = 0; i < totalFrames; i++) {
     const t = i * frameDur;
+
+    // Exact frame seeking for video source
+    if (isVideo) {
+      let targetVidT = 0;
+      if (seamMode === "pingpong") {
+        const pingPhase = (t % (vidDur * 2)) / vidDur;
+        const normT = pingPhase <= 1.0 ? pingPhase : 2.0 - pingPhase;
+        targetVidT = normT * vidDur;
+      } else {
+        targetVidT = t % vidDur;
+      }
+      await seekVideoToTime(image as HTMLVideoElement, targetVidT);
+    }
+
     renderMangaMotionFrame(
       ctx,
       image,
@@ -133,10 +178,16 @@ export async function exportMangaMotionVideo(
       null
     );
 
-    if (config.enableSeamlessLoop && crossfadeDur > 0 && t >= crossfadeStart && startCanvas && startCtx) {
+    if (config.enableSeamlessLoop && seamMode === "smooth" && crossfadeDur > 0 && t >= crossfadeStart && startCanvas && startCtx) {
       const progressInFade = (t - crossfadeStart) / crossfadeDur;
       const alpha = 0.5 - 0.5 * Math.cos(progressInFade * Math.PI);
       const tStart = progressInFade * crossfadeDur;
+
+      if (isVideo) {
+        const headVidT = tStart % vidDur;
+        await seekVideoToTime(image as HTMLVideoElement, headVidT);
+      }
+
       renderMangaMotionFrame(startCtx, image, config, width, height, tStart, null);
 
       ctx.save();

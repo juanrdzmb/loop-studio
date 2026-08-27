@@ -94,6 +94,7 @@ export interface MangaMotionConfig {
   fps: number;             // 30 or 60
   enableSeamlessLoop: boolean;
   loopCrossfadeDuration: number; // 1.0..3.0s
+  seamMode: "smooth" | "pingpong" | "cut";
 
   // Clean Camera Movement (Zero unwanted jitter)
   cameraMove: CameraMovement;
@@ -153,28 +154,28 @@ export const CAMERA_MODE_DEFAULTS: Record<
     cameraBaseZoom: 1.0,
   },
   dutch_drift: {
-    cameraSpeed: 1.0,
+    cameraSpeed: 0.8,
     cameraIntensity: 35,
-    cameraAngle: -8,
-    cameraBaseZoom: 1.05,
+    cameraAngle: 12,
+    cameraBaseZoom: 1.12,
   },
   whip_pan: {
-    cameraSpeed: 1.5,
+    cameraSpeed: 1.0,
     cameraIntensity: 45,
     cameraAngle: 0,
-    cameraBaseZoom: 1.1,
+    cameraBaseZoom: 1.15,
   },
   vertigo_zoom: {
-    cameraSpeed: 1.0,
-    cameraIntensity: 50,
+    cameraSpeed: 0.9,
+    cameraIntensity: 40,
     cameraAngle: 0,
     cameraBaseZoom: 1.0,
   },
   spiral_vortex: {
-    cameraSpeed: 1.2,
+    cameraSpeed: 1.1,
     cameraIntensity: 40,
     cameraAngle: 0,
-    cameraBaseZoom: 1.1,
+    cameraBaseZoom: 1.12,
   },
   cinematic_scan: {
     cameraSpeed: 0.8,
@@ -196,6 +197,7 @@ export const DEFAULT_MANGA_CONFIG: MangaMotionConfig = {
   fps: 60,
   enableSeamlessLoop: true,
   loopCrossfadeDuration: 1.8,
+  seamMode: "smooth",
 
   cameraMove: "static",    // Clean static by default
   cameraSpeed: 1.0,
