@@ -265,6 +265,8 @@ function VideoSong16x9Player({
   particleIntensity,
   particleSpeed,
   videoDuration,
+  vStart = 0,
+  vEnd = 0,
   seamMode = "smooth",
   seamFade = 0.5,
 }: {
@@ -281,14 +283,22 @@ function VideoSong16x9Player({
   particleIntensity: number;
   particleSpeed: number;
   videoDuration: number;
+  vStart?: number;
+  vEnd?: number;
   seamMode?: "smooth" | "pingpong" | "cut";
   seamFade?: number;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const headVideoRef = useRef<HTMLVideoElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
   const particlesRef = useRef<PhysicsParticleSystem>(new PhysicsParticleSystem());
   const [isPlaying, setIsPlaying] = useState(true);
+  const [currentLoopTime, setCurrentLoopTime] = useState<number>(0);
+
+  const effStart = Math.max(0, vStart);
+  const effEnd = vEnd > effStart + 0.1 ? vEnd : effStart + (videoDuration || 10);
+  const loopDur = Math.max(0.5, effEnd - effStart);
 
   useEffect(() => {
     let animId: number;
@@ -321,6 +331,8 @@ function VideoSong16x9Player({
       ctx.clearRect(0, 0, W, H);
 
       let sourceEl: CanvasImageSource | null = null;
+      let headEl: CanvasImageSource | null = null;
+      let blendAlpha = 0;
       let sw = 0;
       let sh = 0;
 
@@ -333,15 +345,49 @@ function VideoSong16x9Player({
         }
       } else {
         const vid = videoRef.current;
+        const headVid = headVideoRef.current;
         if (vid && vid.videoWidth) {
           sourceEl = vid;
           sw = vid.videoWidth;
           sh = vid.videoHeight;
+
+          if (seamMode === "pingpong") {
+            const pingPhase = (elapsed % (loopDur * 2)) / loopDur;
+            const normPhase = pingPhase <= 1.0 ? pingPhase : 2.0 - pingPhase;
+            const targetTime = effStart + normPhase * loopDur;
+            if (Math.abs(vid.currentTime - targetTime) > 0.08) {
+              vid.currentTime = targetTime;
+            }
+          } else if (seamMode === "smooth") {
+            const localT = elapsed % loopDur;
+            const targetTime = effStart + localT;
+            if (Math.abs(vid.currentTime - targetTime) > 0.08) {
+              vid.currentTime = targetTime;
+            }
+
+            const fadeDuration = Math.min(seamFade, loopDur * 0.45);
+            const fadeStart = loopDur - fadeDuration;
+            if (localT >= fadeStart && fadeDuration > 0) {
+              const headT = effStart + (localT - fadeStart);
+              if (headVid && headVid.videoWidth) {
+                headEl = headVid;
+                if (Math.abs(headVid.currentTime - headT) > 0.08) {
+                  headVid.currentTime = headT;
+                }
+                const progress = (localT - fadeStart) / fadeDuration;
+                blendAlpha = 0.5 - 0.5 * Math.cos(progress * Math.PI);
+              }
+            }
+          } else {
+            const localT = elapsed % loopDur;
+            const targetTime = effStart + localT;
+            if (Math.abs(vid.currentTime - targetTime) > 0.08) {
+              vid.currentTime = targetTime;
+            }
+          }
         }
       }
 
-      // Calculate camera transformations with smooth turnaround
-      const loopDur = Math.max(1, videoDuration || 10);
       let cycleProgress = 0;
       if (seamMode === "pingpong") {
         const pingPhase = (elapsed % (loopDur * 2)) / loopDur;
@@ -349,6 +395,9 @@ function VideoSong16x9Player({
       } else {
         cycleProgress = (elapsed % loopDur) / loopDur;
       }
+
+      setCurrentLoopTime(cycleProgress * loopDur);
+
       const intNorm = cameraIntensity / 100;
       const cAnim = elapsed * cameraSpeed;
       let zoom = Math.max(1.0, cameraZoom);
@@ -407,7 +456,6 @@ function VideoSong16x9Player({
       }
 
       if (sourceEl && sw > 0 && sh > 0) {
-        // Draw 16:9 Cover
         const targetRatio = W / H;
         const srcRatio = sw / sh;
         let drawW = W;
@@ -423,6 +471,13 @@ function VideoSong16x9Player({
           offY = (H - drawH) / 2;
         }
         ctx.drawImage(sourceEl, offX, offY, drawW, drawH);
+
+        if (headEl && blendAlpha > 0.01) {
+          ctx.save();
+          ctx.globalAlpha = blendAlpha;
+          ctx.drawImage(headEl, offX, offY, drawW, drawH);
+          ctx.restore();
+        }
       } else {
         ctx.fillStyle = "#09090b";
         ctx.fillRect(0, 0, W, H);
@@ -430,7 +485,6 @@ function VideoSong16x9Player({
 
       ctx.restore();
 
-      // Pixelation
       if (pixelSize > 1) {
         const block = pixelSize * 2;
         const smallW = Math.max(16, Math.round(W / block));
@@ -449,7 +503,6 @@ function VideoSong16x9Player({
         }
       }
 
-      // Screentone overlay
       if (visualStyle === "screentone") {
         ctx.save();
         ctx.globalAlpha = 0.22;
@@ -464,13 +517,11 @@ function VideoSong16x9Player({
         ctx.restore();
       }
 
-      // Atmospheric Particles simulation
       if (particles && particles !== "none") {
         particlesRef.current.update(particles, particleIntensity, W, H, elapsed, particleSpeed);
         particlesRef.current.draw(ctx, particles);
       }
 
-      // Vignette
       if (visualStyle !== "clean") {
         ctx.save();
         const vig = ctx.createRadialGradient(W / 2, H / 2, W * 0.35, W / 2, H / 2, W * 0.68);
@@ -499,28 +550,73 @@ function VideoSong16x9Player({
     particles,
     particleIntensity,
     particleSpeed,
-    videoDuration,
+    effStart,
+    effEnd,
+    loopDur,
+    seamMode,
+    seamFade,
   ]);
 
   return (
-    <div className="relative rounded-2xl overflow-hidden border border-zinc-800 bg-black aspect-video max-h-80 w-full shadow-2xl flex items-center justify-center">
+    <div className="relative rounded-2xl overflow-hidden border border-zinc-800 bg-black aspect-video max-h-80 w-full shadow-2xl flex flex-col items-center justify-center">
       {isGif ? (
         // eslint-disable-next-line @next/next/no-img-element
         <img ref={imgRef} src={videoUrl} alt="source gif" className="hidden" />
       ) : (
-        <video ref={videoRef} src={videoUrl} muted loop autoPlay playsInline className="hidden" />
+        <>
+          <video ref={videoRef} src={videoUrl} muted playsInline className="hidden" />
+          <video ref={headVideoRef} src={videoUrl} muted playsInline className="hidden" />
+        </>
       )}
       <canvas ref={canvasRef} width={960} height={540} className="w-full h-full object-contain" />
+      
+      {/* Top status badges */}
       <div className="absolute top-2.5 right-2.5 flex items-center gap-2 bg-black/60 backdrop-blur-md px-2.5 py-1 rounded-lg border border-white/10 text-[11px] text-zinc-300">
         <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
         <span>16:9 HD · 60 FPS</span>
       </div>
-      <button
-        onClick={() => setIsPlaying(!isPlaying)}
-        className="absolute bottom-2.5 right-2.5 px-3 py-1.5 rounded-lg bg-zinc-900/80 hover:bg-zinc-800 text-xs text-zinc-300 border border-zinc-700/60 flex items-center gap-1.5 backdrop-blur-sm shadow-md"
-      >
-        {isPlaying ? "⏸️ Pausar" : "▶️ Reproducir"}
-      </button>
+
+      {/* Live Playhead and Seam Indicator */}
+      <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/95 via-black/60 to-transparent p-3 pt-6 flex flex-col gap-1.5 pointer-events-auto">
+        <div className="flex items-center justify-between text-[11px] text-zinc-300">
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setIsPlaying(!isPlaying)}
+              className="px-2.5 py-1 rounded bg-zinc-800/90 hover:bg-zinc-700 text-xs text-zinc-200 border border-white/10 flex items-center gap-1 shadow"
+            >
+              {isPlaying ? "⏸️" : "▶️"}
+            </button>
+            <span className="font-mono text-cyan-400 font-bold">
+              {currentLoopTime.toFixed(1)}s / {loopDur.toFixed(1)}s
+            </span>
+            <span className="text-[10px] text-zinc-300 bg-zinc-900/90 px-2 py-0.5 rounded border border-zinc-700">
+              {seamMode === "smooth"
+                ? `🌊 Fundido (${seamFade.toFixed(2)}s)`
+                : seamMode === "pingpong"
+                ? "🔄 Boomerang"
+                : "✂️ Corte Directo"}
+            </span>
+          </div>
+          <span className="text-[10px] text-zinc-400 hidden sm:inline">
+            {seamMode === "smooth" ? "✨ Costura suave activa" : "Bucle continuo en tiempo real"}
+          </span>
+        </div>
+
+        {/* Timeline progress track with highlighted seam blend zone */}
+        <div className="relative w-full h-1.5 bg-zinc-800/90 rounded-full overflow-hidden border border-white/10">
+          {seamMode === "smooth" && loopDur > seamFade && (
+            <div
+              className="absolute right-0 top-0 bottom-0 bg-cyan-500/40 border-l border-cyan-400/80"
+              style={{ width: `${(seamFade / loopDur) * 100}%` }}
+              title={`Zona de Suavizado (${seamFade.toFixed(2)}s)`}
+            />
+          )}
+          <div
+            className="h-full bg-gradient-to-r from-cyan-500 via-indigo-500 to-fuchsia-500 transition-[width] duration-75"
+            style={{ width: `${(currentLoopTime / loopDur) * 100}%` }}
+          />
+        </div>
+      </div>
     </div>
   );
 }
@@ -1879,6 +1975,8 @@ export default function VideoLoopPage() {
                 particleIntensity={particleIntensity}
                 particleSpeed={particleSpeed}
                 videoDuration={videoDuration}
+                vStart={vStart}
+                vEnd={vEnd}
                 seamMode={seamMode}
                 seamFade={seamFade}
               />
