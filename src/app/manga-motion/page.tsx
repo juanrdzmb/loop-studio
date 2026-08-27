@@ -36,6 +36,7 @@ import {
   analyzeAudioHighlights,
   AudioHighlightAnalysis,
 } from "@/lib/mangaAudioEngine";
+import { audioBufferToWav } from "@/lib/audioEngine";
 
 export default function MangaMotionStudioPage() {
   // Project Settings
@@ -785,35 +786,39 @@ export default function MangaMotionStudioPage() {
     try {
       const targetDuration = Math.max(3, Math.min(60, config.duration));
 
-      if (isVideo && rawMediaFile) {
-        setExportStatus("Renderizando video con aceleración FFmpeg (partículas + filtros + loop continuo)...");
-        setExportProgress(20);
-        try {
-          const blob = await renderMangaMotionVideoBackend(rawMediaFile, rawAudioFile, {
-            ...config,
-            duration: targetDuration,
-          });
-          setExportProgress(100);
-          if (exportedVideoUrl) {
-            URL.revokeObjectURL(exportedVideoUrl);
-          }
-          const videoUrl = URL.createObjectURL(blob);
-          setExportedVideoUrl(videoUrl);
-          setExportedBlob(blob);
-          setExportStatus(`¡Video HD (${targetDuration}s) generado con éxito! Puedes reproducirlo abajo o descargarlo.`);
-          return;
-        } catch (backendErr) {
-          console.warn("Backend render fallback to client:", backendErr);
-        }
-      }
-
       let finalAudio: AudioBuffer | null = null;
+      let audioBlob: Blob | null = null;
       if (audioBuffer) {
+        setExportStatus("Sintetizando pista de audio maestra con efectos y recorte...");
         finalAudio = await renderMangaMasterAudio(
           audioBuffer,
           audioConfig,
           targetDuration
         );
+        if (finalAudio) {
+          audioBlob = audioBufferToWav(finalAudio);
+        }
+      }
+
+      if (isVideo && rawMediaFile) {
+        setExportStatus("Renderizando video con aceleración FFmpeg (partículas + filtros + loop continuo)...");
+        setExportProgress(20);
+        const audioFileToSend = audioBlob
+          ? new File([audioBlob], "master_audio.wav", { type: "audio/wav" })
+          : null;
+        const blob = await renderMangaMotionVideoBackend(rawMediaFile, audioFileToSend, {
+          ...config,
+          duration: targetDuration,
+        });
+        setExportProgress(100);
+        if (exportedVideoUrl) {
+          URL.revokeObjectURL(exportedVideoUrl);
+        }
+        const videoUrl = URL.createObjectURL(blob);
+        setExportedVideoUrl(videoUrl);
+        setExportedBlob(blob);
+        setExportStatus(`¡Video HD (${targetDuration}s) generado con éxito! Puedes reproducirlo abajo o descargarlo.`);
+        return;
       }
 
       const res = await exportMangaMotionVideo({

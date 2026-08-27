@@ -138,6 +138,12 @@ def first_existing_overlay() -> str | None:
     return None
 
 VISUAL_STYLES: dict[str, dict] = {
+    "original": {
+        "id": "original",
+        "label": "🖼️ Original Limpio (1080p)",
+        "hint": "Colores originales sin filtros + nitidez 1080p",
+        "filter": "unsharp=5:5:0.6:3:3:0.0",
+    },
     "clean": {
         "id": "clean",
         "label": "🖼️ Original Limpio (1080p)",

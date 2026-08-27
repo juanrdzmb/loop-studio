@@ -467,7 +467,7 @@ def render_composed(
             vf = [
                 "[0:v]split=2[bg_src][fg_src];"
                 f"[bg_src]scale={w}:{h}:force_original_aspect_ratio=increase:flags=bicubic,"
-                f"crop={w}:{h},setsar=1,boxblur=28:3,eq=brightness=-0.12:contrast=1.06,setpts=PTS-STARTPTS[bg];"
+                f"crop={w}:{h},setsar=1,boxblur=28:3,{sfilter},eq=brightness=-0.12:contrast=1.06,setpts=PTS-STARTPTS[bg];"
                 f"[fg_src]scale={w}:-2:flags=lanczos:force_original_aspect_ratio=decrease,setsar=1,{fg_pix}{sfilter},setpts=PTS-STARTPTS[fg];"
                 f"[bg][fg]overlay=x=(W-w)/2:y=(H-h)/2:format=auto[base]"
             ]

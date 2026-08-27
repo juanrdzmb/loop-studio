@@ -656,80 +656,53 @@ def _execute_manga_motion_render(v_path: str, a_path: str | None, p: dict) -> st
     particles = str(p.get("particles") or "none")
     visual_style = str(p.get("aestheticStyle") or "original")
     seam_mode = str(p.get("seamMode") or "smooth")
+    seam_fade = float(p.get("loopCrossfadeDuration") or 1.5)
     intensity = float(p.get("particleIntensity") or 50) / 100.0
 
-    if aspect == "16:9":
-        w, h = 1280, 720
-    elif aspect == "1:1":
-        w, h = 1080, 1080
-    else:
-        w, h = 720, 1280
-
-    from catalog import PARTICLE_TO_OVERLAY, overlay_path, visual_style_filter
-    sfilter = visual_style_filter(visual_style)
+    from catalog import PARTICLE_TO_OVERLAY, overlay_path
     ov_key = PARTICLE_TO_OVERLAY.get(particles, particles)
     ov_path = overlay_path(ov_key) if ov_key not in ("none", "off") else None
 
+    probe = _ffprobe_info(v_path)
+    v_dur = float(probe.get("duration") or 10.0)
+
     out_fd, out_path = tempfile.mkstemp(suffix=".mp4")
     os.close(out_fd)
+    seg_fd, seg_path = tempfile.mkstemp(suffix=".mp4")
+    os.close(seg_fd)
 
-    inputs = []
-    vf_parts = []
+    try:
+        _loop_segment(v_path, 0.0, v_dur, seg_path, seam_mode=seam_mode, seam_fade=seam_fade)
 
-    if seam_mode == "pingpong":
-        inputs += ["-stream_loop", "-1", "-i", v_path]
-        vf_parts.append(
-            "[0:v]split=2[fwd][rev_src];"
-            "[rev_src]reverse[rev];"
-            f"[fwd][rev]concat=n=2:v=1:a=0,scale={w}:{h}:force_original_aspect_ratio=increase,"
-            f"crop={w}:{h},setsar=1,{sfilter},format=gbrp,setpts=PTS-STARTPTS[base]"
+        plan = {
+            "visualStyle": visual_style,
+            "overlay": ov_key if ov_path else None,
+            "opacity": max(0.40, min(0.95, 0.55 * (0.6 + intensity))) if ov_path else None,
+            "ambience": None,
+            "sfx": [],
+            "watermark": False,
+            "intensity": intensity,
+        }
+
+        from layers import render_composed
+        render_composed(
+            video_seg=seg_path,
+            audio_path=a_path,
+            audio_start=0.0,
+            audio_end=target_dur,
+            target=target_dur,
+            plan=plan,
+            out_path=out_path,
+            preview=False,
+            timeout=300,
+            aspect=aspect,
         )
-    else:
-        inputs += ["-stream_loop", "-1", "-i", v_path]
-        vf_parts.append(
-            f"[0:v]scale={w}:{h}:force_original_aspect_ratio=increase,"
-            f"crop={w}:{h},setsar=1,{sfilter},format=gbrp,setpts=PTS-STARTPTS[base]"
-        )
-
-    last_v = "base"
-    if ov_path:
-        inputs += ["-stream_loop", "-1", "-i", ov_path]
-        opacity = max(0.40, min(0.95, 0.55 * (0.6 + intensity)))
-        vf_parts.append(
-            f"[1:v]scale={w}:{h}:force_original_aspect_ratio=increase,"
-            f"crop={w}:{h},setsar=1,format=gbrp,setpts=PTS-STARTPTS[ov];"
-            f"[base][ov]blend=all_mode=screen:all_opacity={opacity:.3f},format=yuv420p[outv]"
-        )
-        last_v = "outv"
-    else:
-        vf_parts.append(f"[base]format=yuv420p[outv]")
-        last_v = "outv"
-
-    cmd = ["ffmpeg", "-y", "-v", "error"] + inputs
-    if a_path and os.path.exists(a_path):
-        cmd += ["-stream_loop", "-1", "-i", a_path]
-        audio_idx = 2 if ov_path else 1
-        vf_parts.append(f"[{audio_idx}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[outa]")
-        cmd += [
-            "-filter_complex", ";".join(vf_parts),
-            "-map", f"[{last_v}]",
-            "-map", "[outa]",
-            "-t", str(target_dur),
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "17",
-            "-c:a", "aac", "-b:a", "192k",
-            out_path
-        ]
-    else:
-        cmd += [
-            "-filter_complex", ";".join(vf_parts),
-            "-map", f"[{last_v}]",
-            "-t", str(target_dur),
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "17",
-            out_path
-        ]
-
-    _run(cmd, timeout=300)
-    return out_path
+        return out_path
+    finally:
+        try:
+            os.unlink(seg_path)
+        except OSError:
+            pass
 
 
 @app.post("/manga-motion/render")
