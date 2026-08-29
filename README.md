@@ -26,7 +26,6 @@ Solo necesitas tener instalado **Node.js (v18+)** y **npm**.
 ```bash
 ./iniciar.sh
 ```
-*(O `./start.sh`)*
 
 Este comando comprobará dependencias, iniciará el servidor en `http://localhost:3000` y abrirá tu navegador automáticamente.
 

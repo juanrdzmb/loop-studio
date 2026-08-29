@@ -1325,8 +1325,8 @@ export async function exportMangaMotionVideo(params: {
 /**
  * Constant-speed boomerang (one continuous take).
  * The old cosine ease parked the camera at each turn — it looked lagged, then sped up.
- * Linear reverse keeps 1× speed; the organic variant only eases near each turn so
- * it does not look like a mechanical camera reversal.
+ * The organic variant only eases near each turn and keeps its velocity and acceleration
+ * continuous when it rejoins the 1× central section.
  */
 export function calculateOrganicPingPongTime(
   t: number,
@@ -1340,18 +1340,26 @@ export function calculateOrganicPingPongTime(
 
   if (easeType !== "organic") return along;
 
-  // Un "colchón" de desaceleración/aceleración en cada extremo. Más generoso
-  // que antes (0.4-0.8s vs 0.2-0.6) para que el giro del boomerang sea suave
-  // y no maree. Escala con la duración del clip.
+  // Un "colchón" de desaceleración/aceleración en cada extremo. Escala con la
+  // duración del clip. La curva C² llega a velocidad 1× en el borde con la parte
+  // lineal y a 0 en el giro; así no hay ni pausa perceptible ni salto de velocidad.
   const pad = Math.min(0.8, Math.max(0.4, duration * 0.12), duration * 0.25);
   if (pad < 0.04) return along;
+
+  // Hermite quintic: h(0)=0, h'(0)=h''(0)=0 y h(1)=h'(1)=1, h''(1)=0.
+  // La variante inversa conserva esas mismas condiciones antes de la vuelta.
+  const easeIntoLinear = (x: number) => {
+    const clamped = Math.max(0, Math.min(1, x));
+    return clamped * clamped * clamped * (6 - 8 * clamped + 3 * clamped * clamped);
+  };
+  const easeOutOfLinear = (x: number) => 1 - easeIntoLinear(1 - x);
+
   if (along < pad) {
-    const x = along / pad;
-    return pad * (x * x * (3 - 2 * x));
+    return pad * easeIntoLinear(along / pad);
   }
   if (along > duration - pad) {
     const x = (along - (duration - pad)) / pad;
-    return duration - pad + pad * (x * x * (3 - 2 * x));
+    return duration - pad + pad * easeOutOfLinear(x);
   }
   return along;
 }
