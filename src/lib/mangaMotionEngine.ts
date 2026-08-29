@@ -96,8 +96,9 @@ export interface MangaMotionConfig {
   fps: number;             // 30 or 60
   enableSeamlessLoop: boolean;
   loopCrossfadeDuration: number; // 1.0..3.0s
-  seamMode: "smooth" | "pingpong" | "cut" | "calm";
-  /** Velocidad de la fuente en Continuo calmado (0.25..0.75; default 0.4). */
+  seamMode: "smooth" | "pingpong" | "cut" | "calm" | "extend";
+  /** Velocidad de la fuente en Continuo calmado (0.25..0.75; default 0.4).
+   *  En modo "extend" la velocidad se deriva sola de duration (target) y la duración del clip. */
   calmPlaybackRate?: number;
 
   // Clean Camera Movement (Zero unwanted jitter)
@@ -499,7 +500,9 @@ interface Particle {
 class PhysicsParticleSystem {
   private particles: Particle[] = [];
   private currentType: ParticleType = "none";
-  private maxParticles = 90;
+  // El preview corre a 60 FPS sobre canvas 1080p: limitar la densidad evita que
+  // partículas decorativas compitan con la reproducción del vídeo.
+  private maxParticles = 120;
 
   init(type: ParticleType, targetW: number, targetH: number, intensity = 50) {
     this.currentType = type;
@@ -513,8 +516,8 @@ class PhysicsParticleSystem {
     else if (type === "cinematic_rain") {
       // La lluvia responde a la intensidad con DENSIDAD (no solo velocidad):
       // 50 → ~120 gotas, 10 → ~48, 100 → ~240 (tope por rendimiento).
-      count = Math.round(120 * Math.min(2, Math.max(0.4, intensity / 50)));
-    } else count = 75;
+      count = Math.min(this.maxParticles, Math.round(120 * Math.min(2, Math.max(0.4, intensity / 50))));
+    } else count = Math.min(this.maxParticles, 75);
 
     for (let i = 0; i < count; i++) {
       this.particles.push(this.createParticle(type, targetW, targetH, true));
@@ -567,7 +570,7 @@ class PhysicsParticleSystem {
 
     // Densidad de lluvia en vivo: el slider de intensidad añade/quita gotas gradualmente
     if (type === "cinematic_rain") {
-      const targetRain = Math.round(120 * Math.min(2, Math.max(0.4, intensity / 50)));
+      const targetRain = Math.min(this.maxParticles, Math.round(120 * Math.min(2, Math.max(0.4, intensity / 50))));
       if (this.particles.length < targetRain) {
         const add = Math.min(6, targetRain - this.particles.length);
         for (let k = 0; k < add; k++) {
@@ -978,17 +981,17 @@ export function renderMangaMotionFrame(
     camPanX = 0;
     camPanY = 0;
   } else if (config.cameraMove === "slow_push") {
-    // 🔍 Smooth dolly forward push-in & slight breathe
+    // Empuje suave sin rotación: la oscilación angular anterior se percibía como
+    // temblor incluso con intensidades bajas.
     const pushFactor = 0.5 - 0.5 * Math.cos(cycleProgress * Math.PI * 2);
-    camZoom = baseZoom * (1.0 + 0.14 * pushFactor * intensity);
-    camRot = userAngle + Math.sin(cycleProgress * Math.PI * 2) * 0.02 * intensity;
+    camZoom = baseZoom * (1.0 + 0.075 * pushFactor * intensity);
+    camRot = userAngle;
   } else if (config.cameraMove === "dutch_drift") {
-    // 📐 Cinematic Dutch Angle with continuous floating drift
-    const driftAngle = userAngle + Math.sin(cycleProgress * Math.PI * 2) * 0.07 * intensity;
-    camRot = driftAngle;
-    camZoom = baseZoom * (1.12 + 0.08 * intensity);
-    camPanX = Math.sin(cycleProgress * Math.PI * 2) * targetW * 0.07 * intensity;
-    camPanY = Math.cos(cycleProgress * Math.PI * 2) * targetH * 0.05 * intensity;
+    // Deriva estable, sin ángulo holandés animado ni cambios de escala.
+    camRot = userAngle;
+    camZoom = baseZoom * (1.04 + 0.035 * intensity);
+    camPanX = Math.sin(cycleProgress * Math.PI * 2) * targetW * 0.025 * intensity;
+    camPanY = Math.cos(cycleProgress * Math.PI * 2) * targetH * 0.018 * intensity;
   } else if (config.cameraMove === "whip_pan") {
     // ⚡ Anime Whip Pan: Rapid horizontal snap with inertial easing
     const snap = Math.sin(cycleProgress * Math.PI * 4);
@@ -1343,7 +1346,7 @@ export function calculateOrganicPingPongTime(
   // Un "colchón" de desaceleración/aceleración en cada extremo. Escala con la
   // duración del clip. La curva C² llega a velocidad 1× en el borde con la parte
   // lineal y a 0 en el giro; así no hay ni pausa perceptible ni salto de velocidad.
-  const pad = Math.min(0.8, Math.max(0.4, duration * 0.12), duration * 0.25);
+  const pad = Math.min(0.32, Math.max(0.18, duration * 0.035), duration * 0.12);
   if (pad < 0.04) return along;
 
   // Hermite quintic: h(0)=0, h'(0)=h''(0)=0 y h(1)=h'(1)=1, h''(1)=0.

@@ -58,16 +58,17 @@ page.on("pageerror", (error) => pageErrors.push(error.message));
 await page.goto(`${BASE}/dual-studio`, { waitUntil: "networkidle" });
 await page.locator('input[type="file"]').nth(0).setInputFiles(SOURCE);
 const loopCard = page.getByTestId("visual-loop-16x9");
+await loopCard.getByRole("button", { name: /✨ Natural/ }).click();
 await page.waitForFunction(
   () => {
     const card = document.querySelector('[data-testid="visual-loop-16x9"]');
-    return Boolean(card?.textContent?.includes("por ciclo") && !card.textContent.includes("Analizando…"));
+    return Boolean(card?.textContent?.includes("seleccionados") && !card.textContent.includes("Analizando…"));
   },
   null,
   { timeout: 30000 }
 );
 const cardText = await loopCard.innerText();
-const durationMatch = cardText.match(/([\d.]+)s por ciclo/);
+const durationMatch = cardText.match(/([\d.]+)s seleccionados/);
 const selectedDuration = Number(durationMatch?.[1] || 0);
 ok("LoopyCut elige el ciclo detectado, no el clip completo", selectedDuration > 3.5 && selectedDuration < 5.5, `(${selectedDuration}s de 9s)`);
 
@@ -75,7 +76,8 @@ const selects = page.locator("select");
 await selects.nth(0).selectOption("original");
 await selects.nth(1).selectOption("static");
 await selects.nth(2).selectOption("none");
-ok("El modo automático nunca activa boomerang", await selects.nth(3).inputValue() === "smooth");
+await page.getByText("Opciones avanzadas de continuidad").first().click();
+ok("El modo automático nunca activa boomerang", await page.getByLabel("Modo de continuidad 16:9").inputValue() === "smooth");
 await page.locator('input[type="checkbox"]').first().uncheck({ force: true });
 await page.getByRole("button", { name: "30s", exact: true }).first().click();
 

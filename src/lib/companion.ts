@@ -4,6 +4,14 @@
 
 export const COMPANION_URL = "http://localhost:8787";
 
+export interface VisualAlignment {
+  dx: number;
+  dy: number;
+  scale: number;
+  rotation: number;
+  confidence: number;
+}
+
 export interface LoopCandidate {
   start: number;
   end: number;
@@ -16,6 +24,8 @@ export interface LoopCandidate {
   fadeSec?: number;
   /** Explicación breve para la UI. */
   reason?: string;
+  /** Alineación global opcional IN->OUT para crossfade compensado. */
+  alignment?: VisualAlignment | null;
 }
 
 export interface CompanionHealth {
@@ -169,16 +179,29 @@ export async function analyzeVideoLook(
   const res = await fetch(`${COMPANION_URL}/analyze/video`, { method: "POST", body: fd });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || "Error analizando el video");
-  const candidates = (data.candidates || []).map((candidate: Record<string, unknown>) => ({
-    start: Number(candidate.start) || 0,
-    end: Number(candidate.end) || 0,
-    duration: Number(candidate.duration) || 0,
-    score: Number(candidate.score) || 0,
-    label: typeof candidate.label === "string" ? candidate.label : undefined,
-    kind: candidate.kind === "detected" ? "detected" : candidate.kind === "full" ? "full" : undefined,
-    fadeSec: Number(candidate.fade_sec ?? candidate.fadeSec) || undefined,
-    reason: typeof candidate.reason === "string" ? candidate.reason : undefined,
-  })) as LoopCandidate[];
+  const candidates = (data.candidates || []).map((candidate: Record<string, unknown>) => {
+    const rawAlign = candidate.alignment as Record<string, unknown> | undefined;
+    let alignment: VisualAlignment | undefined;
+    if (rawAlign && typeof rawAlign.dx === "number") {
+      const dx = Number(rawAlign.dx), dy = Number(rawAlign.dy);
+      const scale = Number(rawAlign.scale), rotation = Number(rawAlign.rotation);
+      const confidence = Number(rawAlign.confidence);
+      if ([dx, dy, scale, rotation, confidence].every(Number.isFinite)) {
+        alignment = { dx, dy, scale, rotation, confidence };
+      }
+    }
+    return {
+      start: Number(candidate.start) || 0,
+      end: Number(candidate.end) || 0,
+      duration: Number(candidate.duration) || 0,
+      score: Number(candidate.score) || 0,
+      label: typeof candidate.label === "string" ? candidate.label : undefined,
+      kind: candidate.kind === "detected" ? "detected" : candidate.kind === "full" ? "full" : undefined,
+      fadeSec: Number(candidate.fade_sec ?? candidate.fadeSec) || undefined,
+      reason: typeof candidate.reason === "string" ? candidate.reason : undefined,
+      alignment,
+    };
+  }) as LoopCandidate[];
   return {
     candidates,
     duration: Number(data.duration) || 0,

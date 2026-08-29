@@ -1,7 +1,7 @@
-import type { LoopCandidate } from "@/lib/companion";
+import type { LoopCandidate, VisualAlignment } from "@/lib/companion";
 import { analyzeVideoLook } from "@/lib/companion";
 
-export type SeamMode = "smooth" | "pingpong" | "cut" | "calm";
+export type SeamMode = "smooth" | "pingpong" | "cut" | "calm" | "extend";
 
 export interface SeamAdvice {
   seam: SeamMode;
@@ -18,6 +18,7 @@ export interface VisualLoopSelection {
   label: string;
   reason: string;
   source: "loopycut" | "browser-fallback";
+  alignment?: VisualAlignment | null;
 }
 
 export interface VisualLoopRecommendation {
@@ -26,8 +27,13 @@ export interface VisualLoopRecommendation {
 }
 
 function fadeForScore(score: number, duration: number, suggested?: number): number {
-  const base = suggested && suggested > 0 ? suggested : score >= 85 ? 0.2 : score >= 70 ? 0.4 : 0.7;
-  return Math.round(Math.max(0.12, Math.min(base, duration * 0.1)) * 100) / 100;
+  // Crossfade cinemático: 0.25-1.0 s, curva cosine. Natural seam corto, seam aceptable + alignment medio.
+  // suggested viene del companion (ya dentro de 0.25-1.0) y se respeta clampado.
+  if (suggested && suggested > 0) {
+    return Math.round(Math.max(0.25, Math.min(suggested, 1.0, duration * 0.15)) * 100) / 100;
+  }
+  const base = score >= 85 ? 0.30 : score >= 70 ? 0.55 : 0.70;
+  return Math.round(Math.max(0.25, Math.min(base, duration * 0.15, 1.0)) * 100) / 100;
 }
 
 function toVisualSelection(candidate: LoopCandidate): VisualLoopSelection {
@@ -41,23 +47,185 @@ function toVisualSelection(candidate: LoopCandidate): VisualLoopSelection {
     label: candidate.label || "Loop visual detectado",
     reason: candidate.reason || "LoopyCut alineó imagen y movimiento en la costura.",
     source: "loopycut",
+    alignment: candidate.alignment ?? null,
   };
+}
+
+// ── Smart Forward Loop — ranking equilibrado SEAM + COBERTURA + DURACIÓN ───────
+
+/** Bonus por cobertura (relativa a sourceDuration). Filosofía §5 */
+function coverageBonus(coverage: number): number {
+  if (coverage >= 0.90) return 12; // 90-100% excelente
+  if (coverage >= 0.80) return 8; // 80-90 muy buena
+  if (coverage >= 0.70) return 4; // 70-80 buena
+  if (coverage >= 0.60) return 0; // 60-70 aceptable solo si seam mejora
+  if (coverage >= 0.50) return -10; // 50-60 fuerte penalización
+  if (coverage >= 0.40) return -8; // 40-50 penalizado pero permite cola roja (4/9=44% con seam 97)
+  return -32; // <40% normalmente rechazar
+}
+
+/** Penalización por duración absoluta, modulada por sourceDuration (§6). */
+function durationPenalty(duration: number, sourceDuration: number): number {
+  // Nunca <3 s (invariante existente)
+  if (duration < 3) return -100;
+  if (duration < 5) {
+    // <5 s: rechazo prácticamente automático salvo fuente muy corta (≤9s → 4s es 44-50% y puede ser válido)
+    if (sourceDuration <= 9) return -2;
+    if (sourceDuration <= 13) return -22;
+    return -38;
+  }
+  if (duration < 7) {
+    // 5-7 s penalización enorme
+    if (sourceDuration <= 9) return 0;
+    if (sourceDuration <= 13) return -14;
+    return -22;
+  }
+  if (duration < 9) {
+    // 7-9 s penalización importante
+    if (sourceDuration <= 9) return 0;
+    return -8;
+  }
+  if (duration < 12) {
+    // 9-12 s aceptable, leve
+    if (sourceDuration <= 12) return 0;
+    return -3;
+  }
+  // >12 s preferible cuando el material lo permite
+  return 0;
+}
+
+export interface VisualLoopScoreBreakdown {
+  start: number;
+  end: number;
+  duration: number;
+  coverage: number;
+  seam: number;
+  fadeSec: number;
+  covBonus: number;
+  durPenalty: number;
+  alignBonus: number;
+  finalScore: number;
+  kind: "detected" | "full";
+  reason: string;
+}
+
+export function scoreVisualCandidate(
+  sel: VisualLoopSelection | LoopCandidate,
+  sourceDuration: number,
+  kind: "detected" | "full" = "detected"
+): VisualLoopScoreBreakdown {
+  const duration = Math.max(0.25, (sel as VisualLoopSelection).duration ?? (sel as LoopCandidate).duration);
+  const score = (sel as VisualLoopSelection).score ?? (sel as LoopCandidate).score;
+  const coverage = Math.min(1, duration / Math.max(0.1, sourceDuration));
+  const covBonus = coverageBonus(coverage);
+  const durPenalty = durationPenalty(duration, sourceDuration);
+  const align = (sel as VisualLoopSelection).alignment ?? (sel as LoopCandidate).alignment;
+  const alignBonus = align && typeof align.confidence === "number" && align.confidence >= 0.30 ? Math.min(2, align.confidence * 1.5) : 0;
+  // Seam pesa menos que antes (0.62 vs 0.75) para que cobertura/duración sean primer nivel
+  const finalScore = score * 0.62 + coverage * 26 + covBonus + durPenalty + alignBonus;
+  return {
+    start: (sel as VisualLoopSelection).start ?? (sel as LoopCandidate).start,
+    end: (sel as VisualLoopSelection).end ?? (sel as LoopCandidate).end,
+    duration,
+    coverage,
+    seam: score,
+    fadeSec: (sel as VisualLoopSelection).fadeSec ?? (sel as LoopCandidate).fadeSec ?? 0,
+    covBonus,
+    durPenalty,
+    alignBonus,
+    finalScore,
+    kind,
+    reason: (sel as VisualLoopSelection).reason ?? (sel as LoopCandidate).reason ?? "",
+  };
+}
+
+function diagnoseSelection(
+  breakdowns: VisualLoopScoreBreakdown[],
+  selected: VisualLoopScoreBreakdown | null,
+  sourceDuration: number
+): void {
+  if (typeof process !== "undefined" && process.env?.NODE_ENV === "production") return;
+  // Solo log en dev; evita ruido en prod. También respeta que el navegador no tenga process.
+  try {
+    const hasWindow = typeof window !== "undefined";
+    const isDev = hasWindow
+      ? window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"
+      : true;
+    if (!isDev) return;
+    console.groupCollapsed(`[SmartLoop] source ${sourceDuration.toFixed(2)}s · ${breakdowns.length} candidatos`);
+    for (const b of breakdowns) {
+      const selMark = selected && Math.abs(b.start - selected.start) < 0.02 && Math.abs(b.end - selected.end) < 0.02 ? "→ SELECTED" : "  ";
+      console.log(
+        `${selMark} ${b.kind} ${b.start.toFixed(2)}→${b.end.toFixed(2)} dur ${b.duration.toFixed(2)}s cov ${(b.coverage * 100).toFixed(0)}% seam ${b.seam} fade ${b.fadeSec} covB ${b.covBonus} durP ${b.durPenalty} alignB ${b.alignBonus.toFixed(1)} final ${b.finalScore.toFixed(1)} :: ${b.reason}`
+      );
+    }
+    console.groupEnd();
+  } catch {
+    // nunca romper por logging
+  }
 }
 
 export function pickVisualLoop(
   candidates: LoopCandidate[],
   sourceDuration: number
 ): VisualLoopSelection | null {
-  const minPreferred = Math.max(3, sourceDuration * 0.5);
-  const detected = candidates
-    .filter((candidate) => candidate.kind !== "full" && candidate.score >= 70 && candidate.duration >= minPreferred)
-    .map(toVisualSelection)
-    .sort((a, b) => {
-      const aRank = a.score * 0.75 + Math.min(1, a.duration / Math.max(0.1, sourceDuration)) * 25;
-      const bRank = b.score * 0.75 + Math.min(1, b.duration / Math.max(0.1, sourceDuration)) * 25;
-      return bRank - aRank;
-    });
-  return detected[0] ?? null;
+  const srcDur = Math.max(0.5, sourceDuration);
+  // Filtro duro mínimo: nunca <3 s y seam ≥40 para no evaluar ruido; full compite aparte
+  const viable = candidates.filter((c) => c.duration >= 3 && c.score >= 40);
+  if (viable.length === 0) return null;
+
+  // Construir selecciones con breakdown
+  const detectedSels = viable
+    .filter((c) => c.kind !== "full")
+    .map(toVisualSelection);
+  const fullCands = viable.filter((c) => c.kind === "full").map(toVisualSelection);
+  // Si no hay detected con seam≥70, igual evaluamos los que pasaron filtro ≥40
+  // pero con penalización fuerte ya aplicada; eso evita elegir micro-loop 0.5 s con 77
+
+  const allSels: { sel: VisualLoopSelection; kind: "detected" | "full" }[] = [
+    ...detectedSels.map((s) => ({ sel: s, kind: "detected" as const })),
+    ...fullCands.map((s) => ({ sel: s, kind: "full" as const })),
+  ];
+
+  const breakdowns = allSels.map(({ sel, kind }) => scoreVisualCandidate(sel, srcDur, kind));
+  // Ordenar por finalScore descendente
+  breakdowns.sort((a, b) => b.finalScore - a.finalScore);
+
+  // Hard reject para duraciones absurdamente cortas (<5 s con cobertura <0.45) salvo que sea la única opción
+  // y fuente muy corta. Si el mejor es un micro-loop rechazable, saltar al siguiente que no lo sea.
+  let best: VisualLoopScoreBreakdown | null = null;
+  for (const b of breakdowns) {
+    const isMicroShort = b.duration < 5 && b.coverage < 0.45;
+    const isExtremelyShort = b.duration < 3.5;
+    if (b.kind === "detected" && (isExtremelyShort || isMicroShort)) {
+      // Solo permitir micro si su seam es excepcional (≥90) y no hay alternativa ≥50% con seam ≥60
+      const hasAlternative = breakdowns.some(
+        (other) => other !== b && other.coverage >= 0.50 && other.seam >= 60 && other.finalScore > -50
+      );
+      if (hasAlternative) continue;
+      if (b.seam < 90) continue;
+    }
+    best = b;
+    break;
+  }
+  if (!best) best = breakdowns[0] ?? null;
+  diagnoseSelection(breakdowns, best, srcDur);
+  if (!best) return null;
+  // Si el ganador es full, devolverlo como selección con motivo mejorado
+  if (best.kind === "full") {
+    const fullSel = fullCands.find((s) => Math.abs(s.start - best!.start) < 0.02 && Math.abs(s.end - best!.end) < 0.02);
+    if (fullSel) {
+      return {
+        ...fullSel,
+        reason: "Clip completo conserva variedad temporal; ningún recorte ofrecía cobertura/duración suficiente para compensar su seam.",
+      };
+    }
+  }
+  // Buscar selección detected correspondiente al best
+  const winner = detectedSels.find(
+    (s) => Math.abs(s.start - best!.start) < 0.02 && Math.abs(s.end - best!.end) < 0.02
+  );
+  return winner ?? (best.kind === "full" ? fullCands[0] ?? null : null);
 }
 
 /**

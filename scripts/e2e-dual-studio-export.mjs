@@ -49,7 +49,7 @@ const hasStudio = await page.isVisible("text=Canción Master Común");
 ok("Dual Studio carga", hasStudio);
 
 // Upload the clip into the 16:9 slot (first file input on the page)
-await page.setInputFiles('input[type=file]', SRC);
+await page.locator('input[type="file"]').nth(0).setInputFiles(SRC);
 await page.waitForSelector("canvas", { timeout: 15000 });
 // Wait for the clip frame cache to build (draft badge stops saying "cargando clip…")
 await page.waitForFunction(

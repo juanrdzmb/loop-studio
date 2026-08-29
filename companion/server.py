@@ -338,6 +338,8 @@ async def analyze_video(
         # A escala reducida el SSIM global da el mismo ranking ~100× más rápido.
         stride = max(1, max(int(downsample), -(-limit_frames // 320)))
         smalls = []
+        orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 1920)
+        orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 1080)
         idx = 0
         while idx < limit_frames:
             ret, frame = cap.read()
@@ -345,6 +347,8 @@ async def analyze_video(
                 break
             if idx % stride == 0:
                 h, w = frame.shape[:2]
+                if orig_w <= 0:
+                    orig_w, orig_h = int(w), int(h)
                 nh = max(2, int(round(h * 192 / w / 2)) * 2)
                 smalls.append(
                     cv2.cvtColor(cv2.resize(frame, (192, nh)), cv2.COLOR_BGR2RGB)
@@ -381,7 +385,14 @@ async def analyze_video(
             start = float(l["start_time"])
             end = float(l["end_time"])
             score, label = evaluate_motion_loop(start, end, smalls, flows, fps, stride, motion_period)
-            fade_sec = min(max(0.2 if score >= 85 else 0.4, 0.12), max(0.12, (end - start) * 0.1))
+            # Crossfade cinemático: 0.25-1.0, recomendado 0.45-0.70; natural seam corto
+            if score >= 85:
+                base_fade = 0.30
+            elif score >= 70:
+                base_fade = 0.55
+            else:
+                base_fade = 0.70
+            fade_sec = max(0.25, min(base_fade, (end - start) * 0.12, 1.0))
             cands.append({
                 "start": round(start, 3),
                 "end": round(end, 3),
@@ -395,7 +406,9 @@ async def analyze_video(
         full_score, full_label = evaluate_motion_loop(
             0.0, duration, smalls, flows, fps, stride, motion_period
         )
-        full_fade = min(0.7, max(0.2, duration * 0.1))
+        # Fallback full-clip: fundido conservador forward-only 0.45-0.70
+        full_fade = max(0.35, min(0.70, max(0.45, duration * 0.08)))
+        full_fade = max(0.25, min(1.0, full_fade))
         full_cand = {
             "start": 0.0,
             "end": round(duration, 3),
@@ -406,20 +419,162 @@ async def analyze_video(
             "fade_sec": round(full_fade, 3),
             "reason": "Fallback que conserva el clip completo; la unión puede necesitar fundido.",
         }
-        min_preferred_duration = max(3.0, duration * 0.5)
-        preferred = [
-            c for c in cands
-            if c["score"] >= 70.0 and c["duration"] >= min_preferred_duration
-        ]
-        if not preferred:
-            preferred = [c for c in cands if c["score"] >= 70.0 and c["duration"] >= 3.0]
-        ranked = _dedup_loops(preferred or cands)
-        ranked.sort(
-            key=lambda c: 0.75 * float(c["score"])
-            + 25.0 * min(1.0, float(c["duration"]) / max(0.1, duration)),
-            reverse=True,
-        )
+        # ── Smart Forward Loop — ranking equilibrado SEAM + COBERTURA + DURACIÓN ──
+        # Filosofía §5-6: cobertura y duración son primer nivel, no pequeño bonus.
+        # Full compite realmente; <5 s con baja cobertura se penaliza fuerte.
+        def _coverage_bonus(cov: float) -> float:
+            if cov >= 0.90:
+                return 12.0  # 90-100% excelente
+            if cov >= 0.80:
+                return 8.0   # 80-90 muy buena
+            if cov >= 0.70:
+                return 4.0   # 70-80 buena
+            if cov >= 0.60:
+                return 0.0   # 60-70 aceptable solo si seam mejora
+            if cov >= 0.50:
+                return -10.0 # 50-60 fuerte penalización
+            if cov >= 0.40:
+                return -8.0 # 40-50 penalizado pero permite cola roja (4/9=44% con seam 97)
+            return -32.0     # <40% normalmente rechazar
+
+        def _duration_penalty(dur: float, src_dur: float) -> float:
+            if dur < 3.0:
+                return -100.0
+            if dur < 5.0:
+                if src_dur <= 9.0:
+                    return -2.0
+                if src_dur <= 13.0:
+                    return -22.0
+                return -38.0
+            if dur < 7.0:
+                if src_dur <= 9.0:
+                    return 0.0
+                if src_dur <= 13.0:
+                    return -14.0
+                return -22.0
+            if dur < 9.0:
+                if src_dur <= 9.0:
+                    return 0.0
+                return -8.0
+            if dur < 12.0:
+                if src_dur <= 12.0:
+                    return 0.0
+                return -3.0
+            return 0.0
+
+        def _score_breakdown(cand: dict, src_dur: float) -> dict:
+            dur = float(cand["duration"])
+            cov = min(1.0, dur / max(0.1, src_dur))
+            seam = float(cand["score"])
+            cov_b = _coverage_bonus(cov)
+            dur_p = _duration_penalty(dur, src_dur)
+            ali = cand.get("alignment") or {}
+            align_b = 0.0
+            if isinstance(ali, dict) and ali.get("confidence") is not None:
+                try:
+                    conf = float(ali["confidence"])
+                    if conf >= 0.30:
+                        align_b = min(2.0, conf * 1.5)
+                except Exception:
+                    pass
+            final = seam * 0.62 + cov * 26.0 + cov_b + dur_p + align_b
+            return {
+                "cand": cand,
+                "coverage": cov,
+                "cov_bonus": cov_b,
+                "dur_penalty": dur_p,
+                "align_bonus": align_b,
+                "final": final,
+            }
+
+        # Filtrar solo candidatos viables (≥3 s y score ≥40) para no evaluar ruido
+        viable = [c for c in cands if float(c["duration"]) >= 3.0 and float(c["score"]) >= 40.0]
+        # Mantener full siempre viable si pasa score≥40 (ya está filtrado después)
+        if full_cand and float(full_cand["duration"]) >= 3.0 and float(full_cand["score"]) >= 40.0:
+            viable_full = [full_cand]
+        else:
+            # Si full tiene score bajo (<40) igualmente compite pero con score real
+            viable_full = [full_cand] if full_cand else []
+
+        # Ranking entre detected viables
+        detected_viable = [c for c in viable if c.get("kind") != "full"]
+        # Si no hay detected viables, usar todos los cands (incluidos <40) para no quedar vacío
+        if not detected_viable:
+            detected_viable = [c for c in cands if c.get("kind") != "full" and float(c["duration"]) >= 3.0]
+
+        ranked_detected = _dedup_loops(detected_viable or cands)
+
+        # Calcular breakdowns para diagnosticar y ordenar
+        breakdowns = []
+        for c in ranked_detected:
+            bd = _score_breakdown(c, duration)
+            breakdowns.append((bd["final"], c, bd))
+        breakdowns.sort(key=lambda x: x[0], reverse=True)
+
+        # Ordenar detected por finalScore
+        ranked = [c for _, c, _ in breakdowns]
+
+        # Evaluar full contra el mejor detected para decidir si full merece ganar
+        # Full compite con su propio breakdown
+        best_full_bd = _score_breakdown(full_cand, duration) if full_cand else None
+        best_det_bd = breakdowns[0][2] if breakdowns else None
+
+        # Log diagnóstico útil (solo si LOOP_STUDIO_DEBUG=1) — no rompe contrato, ayuda a entender selección
+        try:
+            import os as _os
+            if _os.environ.get("LOOP_STUDIO_DEBUG") == "1":
+                print(f"[SmartLoop] source {duration:.2f}s · {len(ranked_detected)} detected + full")
+                for _, c, bd in breakdowns[:5]:
+                    print(f"  detected {c['start']:.2f}→{c['end']:.2f} dur {c['duration']:.2f} cov {bd['coverage']*100:.0f}% seam {c['score']} covB {bd['cov_bonus']} durP {bd['dur_penalty']} alignB {bd['align_bonus']:.1f} final {bd['final']:.1f}")
+                if best_full_bd:
+                    print(f"  full 0→{full_cand['end']:.2f} dur {full_cand['duration']:.2f} cov {best_full_bd['coverage']*100:.0f}% seam {full_cand['score']} covB {best_full_bd['cov_bonus']} durP {best_full_bd['dur_penalty']} final {best_full_bd['final']:.1f}")
+                    if best_det_bd and best_full_bd["final"] > best_det_bd["final"]:
+                        print(f"  → FULL gana (final {best_full_bd['final']:.1f} > {best_det_bd['final']:.1f})")
+        except Exception:
+            pass
+
+        # Si full gana claramente, promoverlo al frente del ranking (pero mantener lista detected para UI)
+        # La UI (pickVisualLoop) hará la comparación final con misma fórmula, aquí solo ordenamos detected
+        # No filtrar micro-shorts extremadamente cortos (<3.5 s) si hay alternativa ≥50%
+        filtered_ranked = []
+        for _, c, bd in breakdowns:
+            is_micro = float(c["duration"]) < 5.0 and bd["coverage"] < 0.45
+            is_extreme = float(c["duration"]) < 3.5
+            if is_micro or is_extreme:
+                has_alt = any(
+                    other_bd["coverage"] >= 0.50 and float(other_c["score"]) >= 60
+                    for _, other_c, other_bd in breakdowns if other_c is not c
+                )
+                if has_alt and float(c["score"]) < 90:
+                    continue
+            filtered_ranked.append(c)
+            if len(filtered_ranked) >= 7:
+                break
+        if filtered_ranked:
+            ranked = filtered_ranked
+        else:
+            ranked = [c for _, c, _ in breakdowns[:7]]
+
         cands = ranked[:7] + [full_cand]
+        # ── Motion-compensated alignment (opcional, no rompe contrato) ──
+        try:
+            from alignment import estimate_global_alignment  # type: ignore
+            for cand in cands:
+                try:
+                    # Solo candidatos con algún potencial: evita computar para scores muy bajos
+                    if cand["score"] < 30:
+                        continue
+                    i = max(0, min(len(smalls) - 1, int(round(float(cand["start"]) * fps / stride))))
+                    j = max(0, min(len(smalls) - 1, int(round(float(cand["end"]) * fps / stride))))
+                    if i == j or i >= len(smalls) or j >= len(smalls):
+                        continue
+                    ali = estimate_global_alignment(smalls[i], smalls[j], orig_w, orig_h)
+                    if ali is not None:
+                        cand["alignment"] = ali
+                except Exception:
+                    continue
+        except Exception:
+            pass
         return {
             "candidates": cands,
             "duration": round(duration, 3),

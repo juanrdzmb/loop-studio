@@ -38,10 +38,11 @@ function even(n: number): number {
  */
 export async function buildClipFrameCache(
   file: File | Blob,
-  opts?: { maxWidth?: number; fps?: number; onProgress?: (pct: number) => void }
+  opts?: { maxWidth?: number; fps?: number; maxMemoryMb?: number; onProgress?: (pct: number) => void }
 ): Promise<ClipFrameCache> {
   const maxWidth = opts?.maxWidth ?? 400;
   const fps = Math.max(8, Math.min(18, opts?.fps ?? 14));
+  const maxMemoryBytes = Math.max(48, opts?.maxMemoryMb ?? 150) * 1024 * 1024;
   const input = new Input({ formats: ALL_FORMATS, source: new BlobSource(file) });
   try {
     const track = await input.getPrimaryVideoTrack();
@@ -51,11 +52,15 @@ export async function buildClipFrameCache(
     if (!(duration > 0.2)) throw new Error("Duración inválida");
     const srcW = track.displayWidth || 1080;
     const srcH = track.displayHeight || 1920;
-    const scale = Math.min(1, maxWidth / Math.max(srcW, srcH));
+    const count = Math.max(2, Math.round(duration * fps));
+    // La caché es solo para el borrador. Acotarla evita que un clip largo reserve
+    // cientos de MB o fuerce al navegador a paginar, lo que se percibe como tirones.
+    const maxPixelsPerFrame = maxMemoryBytes / (count * 4);
+    const memoryScale = Math.sqrt(maxPixelsPerFrame / Math.max(1, srcW * srcH));
+    const scale = Math.min(1, maxWidth / Math.max(srcW, srcH), memoryScale);
     const width = even(srcW * scale);
     const height = even(srcH * scale);
 
-    const count = Math.max(2, Math.round(duration * fps));
     const timestamps: number[] = [];
     for (let i = 0; i < count; i++) {
       timestamps.push(Math.min(duration - 0.001, i / fps));

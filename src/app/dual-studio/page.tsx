@@ -5,6 +5,7 @@ import Link from "next/link";
 import FileDropzone from "@/components/FileDropzone";
 import SfxLoopTimeline from "@/components/SfxLoopTimeline";
 import AudioLoopPanel from "@/components/AudioLoopPanel";
+import TrimTimeline from "@/components/TrimTimeline";
 import { LoopSfxCue, preloadCuratedSfx, stopActiveSfxPreview } from "@/lib/seinenSfxLibrary";
 import {
   ParticleType,
@@ -20,8 +21,10 @@ import {
   sourceTimeForExport,
   computeVisualCycleDuration,
   computeVisualCrossfadeDuration,
+  resolveExtendPlaybackRate,
   ExportCancelledError,
 } from "@/lib/mangaMotionExport";
+import { getForwardLoopFrameState } from "@/lib/forwardLoop";
 import {
   buildClipFrameCache,
   disposeClipFrameCache,
@@ -29,7 +32,7 @@ import {
   type ClipFrameCache,
 } from "@/lib/clipFrameCache";
 import { saveExportMediaResult, analyzeMusic, type LoopCandidate } from "@/lib/companion";
-import { ensureWatermarkFont } from "@/lib/watermark";
+import { drawThumbnailChannelMark, ensureWatermarkFont } from "@/lib/watermark";
 import {
   pickBestAudioLoop,
   recommendVisualLoopForClip,
@@ -73,14 +76,9 @@ const VISUAL_STYLES: { id: AestheticStyle; label: string; icon: string; desc: st
 ];
 
 const CAMERA_OPTIONS: { id: CameraMovement; label: string; icon: string; desc: string }[] = [
-  { id: "slow_push", label: "🔍 Dolly Zoom & Breathe (2.5D Boomerang)", icon: "🔍", desc: "Zoom dinámico suave que va y regresa en loop" },
-  { id: "dutch_drift", label: "📐 Paneo Angular Flotante", icon: "📐", desc: "Inclinación cinemática con deriva flotante" },
-  { id: "cinematic_scan", label: "📜 Escaneo Manga Cinemático", icon: "📜", desc: "Paneo diagonal del rostro al arte" },
-  { id: "vertigo_zoom", label: "🌀 Vértigo / Awakening", icon: "🌀", desc: "Efecto vértigo para momentos de clímax" },
-  { id: "spiral_vortex", label: "🌪️ Vórtice Espiral Berserk", icon: "🌪️", desc: "Rotación espiral hacia el centro" },
-  { id: "whip_pan", label: "⚡ Latigazo Shonen Rápido", icon: "⚡", desc: "Giro veloz con inercia" },
-  { id: "impact_shake", label: "🫨 Sacudida de Impacto", icon: "🫨", desc: "Impacto con retroceso" },
-  { id: "static", label: "🖼️ Cámara Fija", icon: "🖼️", desc: "Sin movimiento de cámara" },
+  { id: "static", label: "Fija", icon: "🖼️", desc: "Imagen estable, sin movimiento de cámara" },
+  { id: "slow_push", label: "Acercamiento suave", icon: "🔍", desc: "Zoom lento sin rotación ni vibración" },
+  { id: "dutch_drift", label: "Deriva suave", icon: "🎥", desc: "Desplazamiento leve y estable" },
 ];
 
 const PARTICLE_OPTIONS: { id: ParticleType; label: string; icon: string }[] = [
@@ -94,6 +92,14 @@ const PARTICLE_OPTIONS: { id: ParticleType; label: string; icon: string }[] = [
   { id: "cinematic_rain", label: "🌧️ Lluvia Cinemática (Melancolía)", icon: "🌧️" },
 ];
 
+const CREATIVE_PROFILES = [
+  { id: "guts", label: "Berserk", detail: "Guts · fantasía oscura", icon: "⚔️" },
+  { id: "thorfinn", label: "Vinland Saga", detail: "Thorfinn · norte y calma", icon: "🛶" },
+  { id: "buntaro", label: "The Climber", detail: "Mori · soledad y altura", icon: "🏔️" },
+  { id: "musashi", label: "Vagabond", detail: "Musashi · samurái", icon: "🌾" },
+  { id: "knight", label: "Caballero", detail: "amor medieval lento", icon: "🛡️" },
+] as const;
+
 const DURATION_16X9_PRESETS = [
   { label: "30s", seconds: 30 },
   { label: "1 min", seconds: 60 },
@@ -103,8 +109,9 @@ const DURATION_16X9_PRESETS = [
 ];
 
 const DURATION_9X16_PRESETS = [
-  { label: "25s", seconds: 25 },
+  { label: "15s", seconds: 15 },
   { label: "30s", seconds: 30 },
+  { label: "60s", seconds: 60 },
 ];
 
 function formatDuration(seconds: number): string {
@@ -121,13 +128,15 @@ function visualLoopSummary(mode: SeamMode, selection: VisualLoopSelection | null
       ? "Fundido continuo"
       : mode === "calm"
         ? "Continuo calmado"
-        : "Corte directo";
+        : mode === "extend"
+          ? "Extendido"
+          : "Corte directo";
   return selection ? `${seam} · ciclo ${selection.duration.toFixed(1)}s` : seam;
 }
 
 export default function DualStudioPage() {
   // View Layout
-  const [viewLayout, setViewLayout] = useState<"split" | "16x9" | "9x16">("split");
+  const [viewLayout, setViewLayout] = useState<"16x9" | "9x16">("16x9");
 
   // Media Inputs - 100% INDEPENDENT
   const [video16x9File, setVideo16x9File] = useState<File | null>(null);
@@ -135,7 +144,7 @@ export default function DualStudioPage() {
   const [video16x9Url, setVideo16x9Url] = useState<string | null>(null);
   const [video16x9Duration, setVideo16x9Duration] = useState<number>(0);
   const [visualLoop16, setVisualLoop16] = useState<VisualLoopSelection | null>(null);
-  const [visualCandidates16, setVisualCandidates16] = useState<VisualLoopSelection[]>([]);
+  const [, setVisualCandidates16] = useState<VisualLoopSelection[]>([]);
   const [analyzingVideo16, setAnalyzingVideo16] = useState(false);
 
   const [video9x16File, setVideo9x16File] = useState<File | null>(null);
@@ -143,15 +152,15 @@ export default function DualStudioPage() {
   const [video9x16Url, setVideo9x16Url] = useState<string | null>(null);
   const [video9x16Duration, setVideo9x16Duration] = useState<number>(0);
   const [visualLoop9, setVisualLoop9] = useState<VisualLoopSelection | null>(null);
-  const [visualCandidates9, setVisualCandidates9] = useState<VisualLoopSelection[]>([]);
+  const [, setVisualCandidates9] = useState<VisualLoopSelection[]>([]);
   const [analyzingVideo9, setAnalyzingVideo9] = useState(false);
 
   // 2.5D Manga Motion Camera States
   const [camera16x9, setCamera16x9] = useState<CameraMovement>("static");
-  const [cameraIntensity16x9, setCameraIntensity16x9] = useState<number>(20);
+  const [cameraIntensity16x9] = useState<number>(20);
 
   const [camera9x16, setCamera9x16] = useState<CameraMovement>("static");
-  const [cameraIntensity9x16, setCameraIntensity9x16] = useState<number>(20);
+  const [cameraIntensity9x16] = useState<number>(20);
 
   // Common Master Audio Track
   const [audioFile, setAudioFile] = useState<File | null>(null);
@@ -166,7 +175,7 @@ export default function DualStudioPage() {
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
   // Watermark Settings (Silent VM)
-  const [watermarkEnabled, setWatermarkEnabled] = useState<boolean>(true);
+  const [watermarkEnabled, setWatermarkEnabled] = useState<boolean>(false);
   const [watermarkText, setWatermarkText] = useState<string>("SILENT VIGIL");
   const [watermarkOpacity, setWatermarkOpacity] = useState<number>(0.28);
 
@@ -175,7 +184,7 @@ export default function DualStudioPage() {
   const [longFormAudioMode, setLongFormAudioMode] = useState<"once" | "repeat">("once");
   const [longFormRepeatCount, setLongFormRepeatCount] = useState<number>(2);
 
-  const [target9x16Duration, setTarget9x16Duration] = useState<number>(25);
+  const [target9x16Duration, setTarget9x16Duration] = useState<number>(30);
   const [audioCandidates, setAudioCandidates] = useState<LoopCandidate[]>([]);
   const [candidatesSource, setCandidatesSource] = useState<null | "companion" | "heuristic" | "local">(null);
   const [audioLoop16, setAudioLoop16] = useState<LoopCandidate | null>(null);
@@ -190,7 +199,7 @@ export default function DualStudioPage() {
   const [muted16x9, setMuted16x9] = useState<boolean>(false);
   const [muted9x16, setMuted9x16] = useState<boolean>(false);
 
-  // Which format's audio is audible while previewing in split view
+  // Formato audible: coincide con la pestaña de trabajo visible.
   const [activePreviewFormat, setActivePreviewFormat] = useState<"16x9" | "9x16">("16x9");
 
   // Errores de audio (carga/reverb) visibles en el Estudio de canción
@@ -220,19 +229,19 @@ export default function DualStudioPage() {
   const [particles16x9, setParticles16x9] = useState<ParticleType>("none");
   const [particleIntensity16x9, setParticleIntensity16x9] = useState<number>(50);
   const [particleSpeed16x9, setParticleSpeed16x9] = useState<number>(1.0);
-  const [seamMode16x9, setSeamMode16x9] = useState<SeamMode>("smooth");
-  const [calmPlaybackRate16x9, setCalmPlaybackRate16x9] = useState<number>(0.4);
+  const [seamMode16x9, setSeamMode16x9] = useState<SeamMode>("cut");
+  const [calmPlaybackRate16x9] = useState<number>(0.4);
 
   // Style & Effect Settings for 9:16 — inicial limpio, el usuario decide qué añadir
   const [style9x16, setStyle9x16] = useState<AestheticStyle>("original");
   const [particles9x16, setParticles9x16] = useState<ParticleType>("none");
   const [particleIntensity9x16, setParticleIntensity9x16] = useState<number>(50);
   const [particleSpeed9x16, setParticleSpeed9x16] = useState<number>(1.0);
-  const [seamMode9x16, setSeamMode9x16] = useState<SeamMode>("smooth");
-  const [calmPlaybackRate9x16, setCalmPlaybackRate9x16] = useState<number>(0.4);
+  const [seamMode9x16, setSeamMode9x16] = useState<SeamMode>("cut");
+  const [calmPlaybackRate9x16] = useState<number>(0.4);
 
   // Slowed + Reverb Audio Studio State
-  const [enableSlowedReverb, setEnableSlowedReverb] = useState<boolean>(true);
+  const [enableSlowedReverb, setEnableSlowedReverb] = useState<boolean>(false);
   const [reverbSettings, setReverbSettings] = useState<ReverbSettings>(DEFAULT_SETTINGS);
   const [activeReverbPreset, setActiveReverbPreset] = useState<string>("clasico");
 
@@ -241,7 +250,7 @@ export default function DualStudioPage() {
     enableSlowedReverb,
     reverbSettings
   );
-  const shortMinDuration = Math.max(5, Math.ceil(video9x16Duration || 0));
+  const shortMinDuration = Math.max(5, Math.ceil(visualLoop9?.duration || video9x16Duration || 0));
   const setShortDuration = (seconds: number) => {
     const next = Math.min(60, Math.max(shortMinDuration, Math.round(seconds)));
     setTarget9x16Duration(next);
@@ -278,10 +287,10 @@ export default function DualStudioPage() {
   const [sfx9x16Cues, setSfx9x16Cues] = useState<LoopSfxCue[]>([]);
 
   // Independent Playback States
-  const [isPlaying16x9, setIsPlaying16x9] = useState<boolean>(true);
+  const [isPlaying16x9, setIsPlaying16x9] = useState<boolean>(false);
   const [playbackTime16x9, setPlaybackTime16x9] = useState<number>(0);
 
-  const [isPlaying9x16, setIsPlaying9x16] = useState<boolean>(true);
+  const [isPlaying9x16, setIsPlaying9x16] = useState<boolean>(false);
   const [playbackTime9x16, setPlaybackTime9x16] = useState<number>(0);
 
   // Canvas & Particle Engine Refs
@@ -337,8 +346,8 @@ export default function DualStudioPage() {
   const draftKick9Ref = useRef(0);
   const elapsed16Ref = useRef(0);
   const elapsed9Ref = useRef(0);
-  const [draftReady16, setDraftReady16] = useState(false);
-  const [draftReady9, setDraftReady9] = useState(false);
+  const [, setDraftReady16] = useState(false);
+  const [, setDraftReady9] = useState(false);
 
   // Sequential Safe Export Queue State
   const [isExporting, setIsExporting] = useState<boolean>(false);
@@ -346,7 +355,7 @@ export default function DualStudioPage() {
   useEffect(() => { isExportingRef.current = isExporting; }, [isExporting]);
   const exportAbortRef = useRef<AbortController | null>(null);
 
-  const [exportStage, setExportStage] = useState<"idle" | "rendering_16x9" | "rendering_9x16" | "completed">("idle");
+  const [, setExportStage] = useState<"idle" | "rendering_16x9" | "rendering_9x16" | "completed">("idle");
   const [exportProgress16x9, setExportProgress16x9] = useState<number>(0);
   const [exportProgress9x16, setExportProgress9x16] = useState<number>(0);
   const [exportStatusText, setExportStatusText] = useState<string>("");
@@ -418,10 +427,14 @@ export default function DualStudioPage() {
   // sonando, se pausa y el nuevo arranca en SU propia posición (cada formato conserva
   // recorte, volumen y posición independientes). Si estaba en pausa, se respeta.
   const switchAudibleFormat = (next: "16x9" | "9x16") => {
-    if (next === activePreviewFormat) return;
-    const prevAudible: "16x9" | "9x16" = viewLayout === "split" ? activePreviewFormat : viewLayout;
+    if (next === activePreviewFormat) {
+      setViewLayout(next);
+      return;
+    }
+    const prevAudible: "16x9" | "9x16" = viewLayout;
     const wasPlaying = prevAudible === "16x9" ? isPlaying16x9Ref.current : isPlaying9x16Ref.current;
     setActivePreviewFormat(next);
+    setViewLayout(next);
     if (wasPlaying) {
       if (prevAudible === "16x9") {
         isPlaying16x9Ref.current = false;
@@ -439,8 +452,8 @@ export default function DualStudioPage() {
 
   // Botones de layout: en vista de un solo formato, ese formato es el audible
   // (antes quedaban desincronizados y el transporte gobernaba el formato equivocado).
-  const handleSetLayout = (layout: "split" | "16x9" | "9x16") => {
-    if (layout !== "split") switchAudibleFormat(layout);
+  const handleSetLayout = (layout: "16x9" | "9x16") => {
+    switchAudibleFormat(layout);
     setViewLayout(layout);
   };
 
@@ -499,21 +512,29 @@ export default function DualStudioPage() {
       clipCache9Ref.current = null;
       setDraftReady9(false);
     }
-    void buildClipFrameCache(file, { maxWidth: 400, fps: 14 }).then((cache) => {
-      if (is16) {
-        disposeClipFrameCache(clipCache16Ref.current);
-        clipCache16Ref.current = cache;
-        setDraftReady16(true);
-        draftKick16Ref.current += 1;
-        setIsPlaying16x9(true);
-      } else {
-        disposeClipFrameCache(clipCache9Ref.current);
-        clipCache9Ref.current = cache;
-        setDraftReady9(true);
-        draftKick9Ref.current += 1;
-        setIsPlaying9x16(true);
-      }
-    });
+    void buildClipFrameCache(file, { maxWidth: 640, fps: 18 })
+      .then((cache) => {
+        if (is16) {
+          disposeClipFrameCache(clipCache16Ref.current);
+          clipCache16Ref.current = cache;
+          setDraftReady16(true);
+          draftKick16Ref.current += 1;
+          setIsPlaying16x9(false);
+        } else {
+          disposeClipFrameCache(clipCache9Ref.current);
+          clipCache9Ref.current = cache;
+          setDraftReady9(true);
+          draftKick9Ref.current += 1;
+          setIsPlaying9x16(false);
+        }
+      })
+      .catch((err: unknown) => {
+        console.error("No se pudo preparar el borrador del clip:", err);
+        const message = "No se pudo preparar el borrador del vídeo. Prueba un MP4 H.264; la exportación no se iniciará a ciegas.";
+        setError(message);
+        if (is16) setSeamHint16(message);
+        else setSeamHint9(message);
+      });
   };
 
   const analyzeVisualLoop = (file: File, which: "16x9" | "9x16", duration: number) => {
@@ -564,6 +585,74 @@ export default function DualStudioPage() {
       .finally(() => setAnalyzing(false));
   };
 
+  const updateVideoTrim = (which: "16x9" | "9x16", start: number, end: number) => {
+    const duration = Math.max(0.2, end - start);
+    const selection: VisualLoopSelection = {
+      start,
+      end,
+      duration,
+      score: 100,
+      fadeSec: Math.max(0.25, Math.min(0.7, duration * 0.08)),
+      label: "Recorte manual",
+      reason: "Este tramo lo elegiste tú y no será acortado automáticamente.",
+      source: "browser-fallback",
+    };
+    if (which === "16x9") {
+      setVisualLoop16(selection);
+      setVisualCandidates16([]);
+      setSeamHint16(selection.reason);
+      setIsPlaying16x9(false);
+      draftKick16Ref.current += 1;
+    } else {
+      setVisualLoop9(selection);
+      setVisualCandidates9([]);
+      setSeamHint9(selection.reason);
+      setIsPlaying9x16(false);
+      draftKick9Ref.current += 1;
+    }
+  };
+
+  const enableNaturalLoop = (which: "16x9" | "9x16") => {
+    const is16 = which === "16x9";
+    const selection = is16 ? visualLoop16 : visualLoop9;
+    const sourceDuration = is16 ? video16x9Duration : video9x16Duration;
+    const file = is16 ? video16x9File : video9x16File;
+    if (is16) {
+      seamLocked16Ref.current = true;
+      setSeamMode16x9("smooth");
+    } else {
+      seamLocked9Ref.current = true;
+      setSeamMode9x16("smooth");
+    }
+    const isFullClip = selection
+      && selection.start <= 0.02
+      && Math.abs(selection.end - sourceDuration) <= 0.05
+      && selection.label !== "Recorte manual";
+    if (is16 && file && isFullClip && file.type.startsWith("video/")) {
+      analyzeVisualLoop(file, which, sourceDuration);
+    } else {
+      const message = "Loop natural aplicado al recorte exacto, sin modificar sus puntos de inicio y fin.";
+      if (is16) setSeamHint16(message);
+      else setSeamHint9(message);
+    }
+  };
+
+  const setManualLoopMode = (which: "16x9" | "9x16", mode: SeamMode) => {
+    if (which === "16x9") {
+      seamLocked16Ref.current = true;
+      setSeamMode16x9(mode);
+      if (mode === "pingpong") setCamera16x9("static");
+      setIsPlaying16x9(false);
+      draftKick16Ref.current += 1;
+    } else {
+      seamLocked9Ref.current = true;
+      setSeamMode9x16(mode);
+      if (mode === "pingpong") setCamera9x16("static");
+      setIsPlaying9x16(false);
+      draftKick9Ref.current += 1;
+    }
+  };
+
   const showUnsupportedVideoError = (file: File) => {
     const isHevc = /hevc|hvc1|hev1/i.test(file.name) || file.name.toLowerCase().endsWith(".mov");
     setError(
@@ -588,14 +677,21 @@ export default function DualStudioPage() {
     // Resetear efectos a limpio: el usuario decide qué añadir
     setStyle16x9("original");
     setParticles16x9("none");
-    setSeamMode16x9("smooth");
+    setSeamMode16x9("cut");
     setCamera16x9("static");
+    setWatermarkEnabled(false);
+    setIsPlaying16x9(false);
+    draftKick16Ref.current += 1;
 
     if (file.type.startsWith("image/") && !file.type.includes("gif")) {
       const img = new Image();
       img.onload = () => {
         setVideo16x9El(img);
         setVideo16x9Duration(10);
+        setVisualLoop16({
+          start: 0, end: 10, duration: 10, score: 100, fadeSec: 0.4,
+          label: "Clip completo", reason: "Recorte manual sin automatismos.", source: "browser-fallback",
+        });
         setSeamHint16("Imagen fija: no necesita análisis de costura.");
       };
       img.src = url;
@@ -603,15 +699,25 @@ export default function DualStudioPage() {
       const vid = document.createElement("video");
       vid.src = url;
       vid.muted = true;
-      vid.loop = true;
+      vid.loop = false;
       vid.playsInline = true;
-      vid.autoplay = true;
+      vid.autoplay = false;
       vid.onerror = () => showUnsupportedVideoError(file);
       vid.onloadedmetadata = () => {
         setVideo16x9El(vid);
-        setVideo16x9Duration(vid.duration || 5);
-        void vid.play().catch(() => {});
-        analyzeVisualLoop(file, "16x9", vid.duration || 5);
+        const duration = Math.max(0.25, vid.duration || 5);
+        setVideo16x9Duration(duration);
+        setVisualLoop16({
+          start: 0,
+          end: duration,
+          duration,
+          score: 100,
+          fadeSec: Math.max(0.25, Math.min(0.7, duration * 0.08)),
+          label: "Clip completo",
+          reason: "Recorte manual sin automatismos.",
+          source: "browser-fallback",
+        });
+        setSeamHint16("Vídeo limpio: elige el recorte y activa un loop solo si lo necesitas.");
         loadClipCache(file, "16x9");
       };
     }
@@ -633,8 +739,11 @@ export default function DualStudioPage() {
     // Resetear efectos a limpio: el usuario decide qué añadir
     setStyle9x16("original");
     setParticles9x16("none");
-    setSeamMode9x16("smooth");
+    setSeamMode9x16("cut");
     setCamera9x16("static");
+    setWatermarkEnabled(false);
+    setIsPlaying9x16(false);
+    draftKick9Ref.current += 1;
 
     if (file.type.startsWith("image/") && !file.type.includes("gif")) {
       const img = new Image();
@@ -652,9 +761,9 @@ export default function DualStudioPage() {
       const vid = document.createElement("video");
       vid.src = url;
       vid.muted = true;
-      vid.loop = true;
+      vid.loop = false;
       vid.playsInline = true;
-      vid.autoplay = true;
+      vid.autoplay = false;
       vid.onerror = () => showUnsupportedVideoError(file);
       vid.onloadedmetadata = () => {
         const duration = Math.max(0.25, vid.duration || 5);
@@ -662,12 +771,14 @@ export default function DualStudioPage() {
         setVideo9x16Duration(duration);
         // En Short nunca se recorta el clip automáticamente: así no aparece un
         // micro-loop aunque el companion estime mal FPS o duración.
+        // Smart Forward: full-clip conserva todo con crossfade conservador 0.45-0.70
+        const fullFade9 = Math.max(0.35, Math.min(0.70, Math.max(0.45, duration * 0.08)));
         setVisualLoop9({
           start: 0,
           end: duration,
           duration,
           score: 100,
-          fadeSec: Math.min(0.7, Math.max(0.2, duration * 0.1)),
+          fadeSec: Math.max(0.25, Math.min(1.0, fullFade9)),
           label: "Clip completo",
           reason: "El Short conserva todos los fotogramas del vídeo subido.",
           source: "browser-fallback",
@@ -676,7 +787,6 @@ export default function DualStudioPage() {
         if (duration <= 60) {
           setTarget9x16Duration((current) => Math.max(current, Math.ceil(duration)));
         }
-        void vid.play().catch(() => {});
         loadClipCache(file, "9x16");
       };
     }
@@ -892,7 +1002,7 @@ export default function DualStudioPage() {
     const player = audioPlayer16x9Ref.current;
 
     // In split view only the active format is audible; in single-format views only that format
-    const audible = viewLayout === "16x9" || (viewLayout === "split" && activePreviewFormat === "16x9");
+    const audible = viewLayout === "16x9";
     const effVolume = muted16x9 ? 0 : previewVolume16x9;
 
     if (isPlaying16x9 && effVolume > 0 && audible && processedLoop16) {
@@ -919,7 +1029,7 @@ export default function DualStudioPage() {
     }
     const player = audioPlayer9x16Ref.current;
 
-    const audible = viewLayout === "9x16" || (viewLayout === "split" && activePreviewFormat === "9x16");
+    const audible = viewLayout === "9x16";
     const effVolume = muted9x16 ? 0 : previewVolume9x16;
 
     if (isPlaying9x16 && effVolume > 0 && audible && processedLoop9) {
@@ -964,7 +1074,8 @@ export default function DualStudioPage() {
             vidDur,
             seamMode16x9Ref.current,
             selection?.start ?? 0,
-            calmPlaybackRate16x9Ref.current
+            calmPlaybackRate16x9Ref.current,
+            target16x9DurationRef.current
           )
         : exportT;
       media.currentTime = vidT;
@@ -993,7 +1104,8 @@ export default function DualStudioPage() {
             vidDur,
             seamMode9x16Ref.current,
             selection?.start ?? 0,
-            calmPlaybackRate9x16Ref.current
+            calmPlaybackRate9x16Ref.current,
+            target9x16DurationRef.current
           )
         : exportT;
       media.currentTime = vidT;
@@ -1116,9 +1228,45 @@ export default function DualStudioPage() {
   const musicDraftTime = musicIs16 ? playbackTime16x9 : playbackTime9x16;
   const musicLoopPos = musicDraftTime % activeLoopDur;
 
-  const handleDownloadThumbnail = (format: "16x9" | "9x16") => {
+  const handleDownloadThumbnail = async (format: "16x9" | "9x16") => {
     const media = format === "16x9" ? video16x9El : video9x16El;
     if (!media) return;
+    if (media instanceof HTMLVideoElement) {
+      try {
+        await new Promise<void>((resolve, reject) => {
+          let timeout = 0;
+          const cleanup = () => {
+            window.clearTimeout(timeout);
+            media.removeEventListener("seeked", done);
+            media.removeEventListener("loadeddata", done);
+            media.removeEventListener("canplay", done);
+            media.removeEventListener("error", failed);
+          };
+          const done = () => {
+            cleanup();
+            resolve();
+          };
+          const failed = () => {
+            cleanup();
+            reject(new Error("No se pudo decodificar el vídeo"));
+          };
+          timeout = window.setTimeout(() => {
+            cleanup();
+            reject(new Error("El vídeo no entregó un fotograma a tiempo"));
+          }, 4_000);
+          media.addEventListener("seeked", done, { once: true });
+          media.addEventListener("loadeddata", done, { once: true });
+          media.addEventListener("canplay", done, { once: true });
+          media.addEventListener("error", failed, { once: true });
+          const duration = Number.isFinite(media.duration) ? media.duration : 0;
+          const minimumFrameTime = Math.min(0.04, Math.max(0.001, duration / 2));
+          media.currentTime = Math.min(Math.max(minimumFrameTime, media.currentTime || 0), Math.max(minimumFrameTime, duration - 0.001));
+        });
+      } catch {
+        setError("La portada espera un fotograma real del vídeo. Espera un instante y vuelve a intentarlo.");
+        return;
+      }
+    }
     const out = document.createElement("canvas");
     if (format === "16x9") {
       out.width = 1280;
@@ -1156,9 +1304,9 @@ export default function DualStudioPage() {
       particleSpeed: is16 ? particleSpeed16x9 : particleSpeed9x16,
       seamMode: is16 ? seamMode16x9 : seamMode9x16,
       calmPlaybackRate: is16 ? calmPlaybackRate16x9 : calmPlaybackRate9x16,
-      watermarkEnabled,
-      watermarkText,
-      watermarkOpacity,
+      // La portada siempre lleva la firma mínima de canal en esquina. No replica
+      // la marca de agua central opcional del vídeo.
+      watermarkEnabled: false,
     };
     renderMangaMotionFrame(
       ctx,
@@ -1171,6 +1319,7 @@ export default function DualStudioPage() {
       new PhysicsParticleSystem(),
       0
     );
+    drawThumbnailChannelMark(ctx, { width: out.width, height: out.height, text: watermarkText });
     out.toBlob((blob) => {
       if (!blob) return;
       const songClean = cleanSongName(audioFileName || "silent_vigil");
@@ -1264,6 +1413,8 @@ export default function DualStudioPage() {
 
           const seam16 = seamMode16x9Ref.current;
           const calmRate16 = calmPlaybackRate16x9Ref.current;
+          // Extender: velocidad derivada (clip/target), la misma que usa el export.
+          const rate16 = seam16 === "extend" ? resolveExtendPlaybackRate(vidDur16, targetDur16) : calmRate16;
           const cycle16 = computeVisualCycleDuration(
             {
               seamMode: seam16,
@@ -1298,7 +1449,8 @@ export default function DualStudioPage() {
             vidDur16,
             seam16,
             sourceStart16,
-            calmRate16
+            calmRate16,
+            targetDur16
           );
           const frame16 = cache16 ? clipFrameAt(cache16, srcT16) : null;
           const previewSource16 = frame16
@@ -1312,36 +1464,60 @@ export default function DualStudioPage() {
           }
 
           const fade16 = computeVisualCrossfadeDuration(config16Live, cycle16);
-          const cyclePos16 = elapsed16x9 % cycle16;
-          if (cache16 && fade16 > 0 && cyclePos16 >= cycle16 - fade16) {
-            const progress = (cyclePos16 - (cycle16 - fade16)) / fade16;
-            // El fundido acaba exactamente en el frame 0 del ciclo, igual que el
-            // export; avanzar la cabeza aquí dejaba un salto al reiniciar.
-            const headFrame = clipFrameAt(cache16, sourceStart16);
-            if (headFrame) {
-              const blend = blendCanvas16Ref.current ?? document.createElement("canvas");
-              blendCanvas16Ref.current = blend;
-              if (blend.width !== W || blend.height !== H) {
-                blend.width = W;
-                blend.height = H;
-              }
-              const blendCtx = blend.getContext("2d");
-              if (blendCtx) {
-                renderMangaMotionFrame(
-                  blendCtx,
-                  headFrame,
-                  { ...config16Live, particles: "none" },
-                  W,
-                  H,
-                  0,
-                  null,
-                  blendParticles16Ref.current,
-                  0
-                );
-                ctx.save();
-                ctx.globalAlpha = 0.5 - 0.5 * Math.cos(progress * Math.PI);
-                ctx.drawImage(blend, 0, 0);
-                ctx.restore();
+          if (cache16 && fade16 > 0) {
+            const isForward16 = seam16 === "smooth" || seam16 === "calm" || seam16 === "extend";
+            const fwd16 = isForward16
+              ? getForwardLoopFrameState(
+                  elapsed16x9,
+                  cycle16,
+                  vidDur16,
+                  sourceStart16,
+                  fade16,
+                  visual16?.alignment ?? null,
+                  seam16 === "calm" ? calmRate16 : seam16 === "extend" ? rate16 : 1
+                )
+              : null;
+            const inTrans16 = fwd16 ? fwd16.inTransition : elapsed16x9 % cycle16 >= cycle16 - fade16;
+            if (inTrans16) {
+              const headFrame = clipFrameAt(cache16, sourceStart16);
+              if (headFrame) {
+                const blend = blendCanvas16Ref.current ?? document.createElement("canvas");
+                blendCanvas16Ref.current = blend;
+                if (blend.width !== W || blend.height !== H) {
+                  blend.width = W;
+                  blend.height = H;
+                }
+                const blendCtx = blend.getContext("2d");
+                if (blendCtx) {
+                  renderMangaMotionFrame(
+                    blendCtx,
+                    headFrame,
+                    { ...config16Live, particles: "none" },
+                    W,
+                    H,
+                    0,
+                    null,
+                    blendParticles16Ref.current,
+                    0
+                  );
+                  const alpha = fwd16 ? fwd16.mix : 0.5 - 0.5 * Math.cos(((elapsed16x9 % cycle16) - (cycle16 - fade16)) / fade16 * Math.PI);
+                  const ali = fwd16?.alignment;
+                  if (ali) {
+                    const rot = (ali.rotation * Math.PI) / 180;
+                    ctx.save();
+                    ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
+                    ctx.translate(W / 2 + ali.dx, H / 2 + ali.dy);
+                    ctx.rotate(rot);
+                    ctx.scale(ali.scale, ali.scale);
+                    ctx.drawImage(blend, -W / 2, -H / 2, W, H);
+                    ctx.restore();
+                  } else {
+                    ctx.save();
+                    ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
+                    ctx.drawImage(blend, 0, 0);
+                    ctx.restore();
+                  }
+                }
               }
             }
           }
@@ -1407,6 +1583,8 @@ export default function DualStudioPage() {
 
           const seam9 = seamMode9x16Ref.current;
           const calmRate9 = calmPlaybackRate9x16Ref.current;
+          // Extender: velocidad derivada (clip/target), la misma que usa el export.
+          const rate9 = seam9 === "extend" ? resolveExtendPlaybackRate(vidDur9, targetDur9) : calmRate9;
           const cycle9 = computeVisualCycleDuration(
             {
               seamMode: seam9,
@@ -1441,7 +1619,8 @@ export default function DualStudioPage() {
             vidDur9,
             seam9,
             sourceStart9,
-            calmRate9
+            calmRate9,
+            targetDur9
           );
           const frame9 = cache9 ? clipFrameAt(cache9, srcT9) : null;
           const previewSource9 = frame9
@@ -1453,34 +1632,60 @@ export default function DualStudioPage() {
           }
 
           const fade9 = computeVisualCrossfadeDuration(config9Live, cycle9);
-          const cyclePos9 = elapsed9x16 % cycle9;
-          if (cache9 && fade9 > 0 && cyclePos9 >= cycle9 - fade9) {
-            const progress = (cyclePos9 - (cycle9 - fade9)) / fade9;
-            const headFrame = clipFrameAt(cache9, sourceStart9);
-            if (headFrame) {
-              const blend = blendCanvas9Ref.current ?? document.createElement("canvas");
-              blendCanvas9Ref.current = blend;
-              if (blend.width !== W || blend.height !== H) {
-                blend.width = W;
-                blend.height = H;
-              }
-              const blendCtx = blend.getContext("2d");
-              if (blendCtx) {
-                renderMangaMotionFrame(
-                  blendCtx,
-                  headFrame,
-                  { ...config9Live, particles: "none" },
-                  W,
-                  H,
-                  0,
-                  null,
-                  blendParticles9Ref.current,
-                  0
-                );
-                ctx.save();
-                ctx.globalAlpha = 0.5 - 0.5 * Math.cos(progress * Math.PI);
-                ctx.drawImage(blend, 0, 0);
-                ctx.restore();
+          if (cache9 && fade9 > 0) {
+            const isForward9 = seam9 === "smooth" || seam9 === "calm" || seam9 === "extend";
+            const fwd9 = isForward9
+              ? getForwardLoopFrameState(
+                  elapsed9x16,
+                  cycle9,
+                  vidDur9,
+                  sourceStart9,
+                  fade9,
+                  visual9?.alignment ?? null,
+                  seam9 === "calm" ? calmRate9 : seam9 === "extend" ? rate9 : 1
+                )
+              : null;
+            const inTrans9 = fwd9 ? fwd9.inTransition : elapsed9x16 % cycle9 >= cycle9 - fade9;
+            if (inTrans9) {
+              const headFrame = clipFrameAt(cache9, sourceStart9);
+              if (headFrame) {
+                const blend = blendCanvas9Ref.current ?? document.createElement("canvas");
+                blendCanvas9Ref.current = blend;
+                if (blend.width !== W || blend.height !== H) {
+                  blend.width = W;
+                  blend.height = H;
+                }
+                const blendCtx = blend.getContext("2d");
+                if (blendCtx) {
+                  renderMangaMotionFrame(
+                    blendCtx,
+                    headFrame,
+                    { ...config9Live, particles: "none" },
+                    W,
+                    H,
+                    0,
+                    null,
+                    blendParticles9Ref.current,
+                    0
+                  );
+                  const alpha = fwd9 ? fwd9.mix : 0.5 - 0.5 * Math.cos(((elapsed9x16 % cycle9) - (cycle9 - fade9)) / fade9 * Math.PI);
+                  const ali = fwd9?.alignment;
+                  if (ali) {
+                    const rot = (ali.rotation * Math.PI) / 180;
+                    ctx.save();
+                    ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
+                    ctx.translate(W / 2 + ali.dx, H / 2 + ali.dy);
+                    ctx.rotate(rot);
+                    ctx.scale(ali.scale, ali.scale);
+                    ctx.drawImage(blend, -W / 2, -H / 2, W, H);
+                    ctx.restore();
+                  } else {
+                    ctx.save();
+                    ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
+                    ctx.drawImage(blend, 0, 0);
+                    ctx.restore();
+                  }
+                }
               }
             }
           }
@@ -1650,6 +1855,7 @@ export default function DualStudioPage() {
         sourceFile: video16x9File,
         sourceStart: visualLoop16?.start,
         sourceEnd: visualLoop16?.end,
+        sourceAlignment: visualLoop16?.alignment ?? null,
         config: config16,
         audioBuffer: audio16x9Buffer,
         sfxCues: sfx16x9Cues,
@@ -1726,6 +1932,7 @@ export default function DualStudioPage() {
       const res9 = await exportMangaMotionVideo({
         image: video9x16El,
         sourceFile: video9x16File,
+        sourceAlignment: visualLoop9?.alignment ?? null,
         config: config9,
         audioBuffer: audio9x16Buffer,
         sfxCues: sfx9x16Cues,
@@ -1809,6 +2016,7 @@ export default function DualStudioPage() {
           sourceFile: video16x9File,
           sourceStart: visualLoop16?.start,
           sourceEnd: visualLoop16?.end,
+          sourceAlignment: visualLoop16?.alignment ?? null,
           config: config16,
           audioBuffer: audio16x9Buffer,
           sfxCues: sfx16x9Cues,
@@ -1846,6 +2054,7 @@ export default function DualStudioPage() {
         const res9 = await exportMangaMotionVideo({
           image: video9x16El,
           sourceFile: video9x16File,
+          sourceAlignment: visualLoop9?.alignment ?? null,
           config: config9,
           audioBuffer: audio9x16Buffer,
           sfxCues: sfx9x16Cues,
@@ -1923,17 +2132,6 @@ export default function DualStudioPage() {
         <div className="flex items-center gap-1.5 p-1 rounded-xl bg-zinc-950 border border-zinc-800 self-stretch sm:self-auto justify-center">
           <button
             type="button"
-            onClick={() => handleSetLayout("split")}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
-              viewLayout === "split"
-                ? "bg-zinc-800 text-white shadow"
-                : "text-zinc-400 hover:text-white"
-            }`}
-          >
-            ⚖️ Lado a Lado
-          </button>
-          <button
-            type="button"
             onClick={() => handleSetLayout("16x9")}
             className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
               viewLayout === "16x9"
@@ -1941,7 +2139,7 @@ export default function DualStudioPage() {
                 : "text-zinc-400 hover:text-white"
             }`}
           >
-            🖥️ Solo 16:9
+            🖥️ Video 16:9
           </button>
           <button
             type="button"
@@ -1952,7 +2150,7 @@ export default function DualStudioPage() {
                 : "text-zinc-400 hover:text-white"
             }`}
           >
-            📱 Solo 9:16
+            📱 Short 9:16
           </button>
         </div>
       </div>
@@ -1988,9 +2186,9 @@ export default function DualStudioPage() {
       )}
 
       {/* SECTION 1: Independent Media Upload Slots */}
-      <div id="paso-1" className="grid scroll-mt-24 grid-cols-1 md:grid-cols-3 gap-4">
+      <div id="paso-1" className="grid scroll-mt-24 grid-cols-1 md:grid-cols-2 gap-4">
         {/* Slot 1: Media 16:9 (Video or Image) */}
-        <div className="p-4 rounded-2xl bg-zinc-900/70 border border-zinc-800 flex flex-col gap-2.5 shadow-md">
+        {viewLayout === "16x9" && <div className="p-4 rounded-2xl bg-zinc-900/70 border border-zinc-800 flex flex-col gap-2.5 shadow-md">
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-fuchsia-400 flex items-center gap-1.5">
               <span>🖥️</span> Video / Imagen 16:9 (Landscape)
@@ -2007,10 +2205,10 @@ export default function DualStudioPage() {
             label={video16x9File ? `✅ ${video16x9File.name}` : "Arrastra video o imagen 16:9 aquí"}
             compact
           />
-        </div>
+        </div>}
 
         {/* Slot 2: Media 9:16 (Video or Image) */}
-        <div className="p-4 rounded-2xl bg-zinc-900/70 border border-zinc-800 flex flex-col gap-2.5 shadow-md">
+        {viewLayout === "9x16" && <div className="p-4 rounded-2xl bg-zinc-900/70 border border-zinc-800 flex flex-col gap-2.5 shadow-md">
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-amber-400 flex items-center gap-1.5">
               <span>📱</span> Video / Imagen 9:16 (Vertical Shorts)
@@ -2027,7 +2225,7 @@ export default function DualStudioPage() {
             label={video9x16File ? `✅ ${video9x16File.name}` : "Arrastra video o imagen 9:16 aquí"}
             compact
           />
-        </div>
+        </div>}
 
         {/* Slot 3: Master Song */}
         <div className="p-4 rounded-2xl bg-zinc-900/70 border border-zinc-800 flex flex-col gap-2.5 shadow-md">
@@ -2065,43 +2263,56 @@ export default function DualStudioPage() {
                 16:9 reproduce el tema completo; 9:16 reproduce solo el fragmento fijo elegido.
               </span>
               <div className="flex items-center gap-1.5">
-                {viewLayout === "split" && (
-                  <div className="flex items-center gap-1">
-                    <span className="text-zinc-500">Escuchar:</span>
-                    <button
-                      type="button"
-                      onClick={() => switchAudibleFormat("16x9")}
-                      className={`px-2 py-1 rounded-lg font-bold cursor-pointer ${
-                        activePreviewFormat === "16x9"
-                          ? "bg-fuchsia-600 text-white"
-                          : "bg-zinc-800 text-zinc-400 hover:text-white"
-                      }`}
-                      title="Cambia el formato audible: si el otro estaba sonando, transfiere la reproducción"
-                    >
-                      🖥️ 16:9
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => switchAudibleFormat("9x16")}
-                      className={`px-2 py-1 rounded-lg font-bold cursor-pointer ${
-                        activePreviewFormat === "9x16"
-                          ? "bg-amber-500 text-zinc-950"
-                          : "bg-zinc-800 text-zinc-400 hover:text-white"
-                      }`}
-                      title="Cambia el formato audible: si el otro estaba sonando, transfiere la reproducción"
-                    >
-                      📱 9:16
-                    </button>
-                  </div>
-                )}
+                <span className="font-bold text-zinc-300">
+                  Editando {viewLayout === "16x9" ? "🖥️ 16:9" : "📱 Short"}
+                </span>
               </div>
             </div>
           )}
         </div>
       </div>
 
+      {(viewLayout === "16x9" ? video16x9File : video9x16File) && (
+        <section
+          aria-label="Universo creativo del vídeo"
+          className="rounded-2xl border border-fuchsia-900/40 bg-gradient-to-r from-zinc-900 to-fuchsia-950/20 p-4 shadow-md"
+        >
+          <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+            <div>
+              <h2 className="text-sm font-black text-white">Elige el universo del clip</h2>
+              <p className="text-[11px] text-zinc-400">Define el tono de títulos, descripción, etiquetas y textos de publicación.</p>
+            </div>
+            <span className="rounded-full border border-fuchsia-500/30 bg-zinc-950 px-2 py-1 text-[10px] font-mono text-fuchsia-200">
+              {CHARACTER_DATABASE[character]?.series}
+            </span>
+          </div>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-5">
+            {CREATIVE_PROFILES.map((profile) => (
+              <button
+                key={profile.id}
+                type="button"
+                onClick={() => setCharacter(profile.id)}
+                aria-pressed={character === profile.id}
+                className={`rounded-xl border px-3 py-2.5 text-left transition-colors ${
+                  character === profile.id
+                    ? "border-fuchsia-400 bg-fuchsia-600 text-white shadow-lg shadow-fuchsia-950/40"
+                    : "border-zinc-700 bg-zinc-950 text-zinc-300 hover:border-fuchsia-500/60 hover:bg-zinc-800"
+                }`}
+              >
+                <span className="block text-xs font-black">{profile.icon} {profile.label}</span>
+                <span className="mt-0.5 block text-[10px] opacity-75">{profile.detail}</span>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+
       {/* SECTION 2: Control Panel: Personaje & Watermark */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <details className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-3">
+        <summary className="cursor-pointer select-none text-sm font-bold text-zinc-300">
+          🧰 Extras · personaje y marca de agua
+        </summary>
+      <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-4">
         {/* Character & Atmosphere Selector */}
         <div className="p-4 rounded-2xl bg-zinc-900/80 border border-zinc-800 flex flex-col gap-2.5 shadow-md">
           <div className="flex items-center justify-between">
@@ -2186,6 +2397,7 @@ export default function DualStudioPage() {
           </p>
         </div>
       </div>
+      </details>
 
       {/* SECTION 3: Estudio de canción (slowed + reverb) — funciona con o sin video */}
       <div id="paso-2" className="scroll-mt-24" />
@@ -2204,15 +2416,15 @@ export default function DualStudioPage() {
               </label>
               <div>
                 <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                  <span>📻</span> Motor Slowed + Reverb en Tiempo Real
+                  <span>🎵</span> Sonido de la canción
                   <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono border ${enableSlowedReverb ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40' : 'bg-zinc-800 text-zinc-400 border-zinc-700'}`}>
-                    {enableSlowedReverb ? "ACTIVADO" : "NORMAL / ORIGINAL"}
+                    {enableSlowedReverb ? REVERB_PRESETS[activeReverbPreset]?.label.toUpperCase() : "ORIGINAL"}
                   </span>
                 </h3>
                 <p className="text-[11px] text-zinc-400">
                   {enableSlowedReverb
-                    ? "Ralentización de pitch, reverb espacial, textura analógica y graves aplicados a la música."
-                    : "Canción original limpia sin efecto reverb/slowed (el título del video se ajustará automáticamente)."}
+                    ? "Preset estable de slowed + reverb. Cambiar de preset hace un fundido corto sin clicks."
+                    : "Canción original, sin slowed, reverb ni textura añadida."}
                 </p>
               </div>
             </div>
@@ -2278,7 +2490,7 @@ export default function DualStudioPage() {
               </div>
 
               {/* Transporte de música: A/B de presets en vivo mientras escuchas el recorte */}
-              <div className="p-3 rounded-xl bg-zinc-950 border border-cyan-900/50 flex items-center gap-2 flex-wrap">
+              <div className="hidden" aria-hidden="true">
                 <button
                   type="button"
                   onClick={musicTogglePlay}
@@ -2347,7 +2559,7 @@ export default function DualStudioPage() {
               </div>
 
               {/* Sliders avanzados: plegados por defecto (presets cubren el 90% de los casos) */}
-              <details className="group">
+              <details className="hidden" aria-hidden="true">
                 <summary className="cursor-pointer select-none text-xs font-semibold text-zinc-400 hover:text-zinc-200">
                   ⚙️ Ajustes avanzados de slowed+reverb
                 </summary>
@@ -2461,9 +2673,9 @@ export default function DualStudioPage() {
       )}
 
       {/* SECTION 4: Dual Format Workspaces with Dedicated SFX Timelines & Cover Capture */}
-      <div id="paso-3" className="grid scroll-mt-24 grid-cols-1 lg:grid-cols-2 gap-6">
+      <div id="paso-3" className="grid scroll-mt-24 grid-cols-1 gap-6">
         {/* ==================== 16:9 DEDICATED WORKSPACE ==================== */}
-        {(viewLayout === "split" || viewLayout === "16x9") && (
+        {viewLayout === "16x9" && (
           <div className="flex flex-col gap-4 p-5 rounded-2xl bg-zinc-900/50 border border-fuchsia-900/30 shadow-xl">
             <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
               <div className="flex items-center gap-2">
@@ -2488,7 +2700,7 @@ export default function DualStudioPage() {
 
             {/* 16:9 Canvas Screen */}
             <div className="relative aspect-video w-full rounded-xl overflow-hidden bg-black border border-zinc-800 flex items-center justify-center shadow-2xl">
-              <canvas ref={canvas16x9Ref} width={1920} height={1080} className="w-full h-full object-contain" />
+              <canvas ref={canvas16x9Ref} data-testid="preview-canvas-16x9" width={1920} height={1080} className="w-full h-full object-contain" />
             </div>
 
             {/* 16:9 Interactive Transport Controls & Audio Volume */}
@@ -2583,6 +2795,7 @@ export default function DualStudioPage() {
 
               <input
                 type="range"
+                aria-label="Posición del preview 16:9"
                 min="0"
                 max={target16x9Duration}
                 step="0.02"
@@ -2594,32 +2807,41 @@ export default function DualStudioPage() {
 
             <div data-testid="visual-loop-16x9" className="rounded-xl border border-fuchsia-500/25 bg-fuchsia-950/15 p-3 text-xs">
               <div className="flex items-center justify-between gap-3">
-                <p className="font-bold text-fuchsia-200">Continuidad automática · LoopyCut</p>
+                <p className="font-bold text-fuchsia-200">✂️ Recorte y loop</p>
                 <span className="rounded-full bg-zinc-950 px-2 py-1 font-mono text-[10px] text-zinc-400">
-                  {analyzingVideo16 ? "Analizando…" : visualLoop16 ? `${visualLoop16.duration.toFixed(1)}s por ciclo` : "Sin vídeo"}
+                  {visualLoop16 ? `${visualLoop16.duration.toFixed(1)}s seleccionados` : "Sin vídeo"}
                 </span>
               </div>
-              <p className="mt-1 text-[11px] leading-relaxed text-zinc-400">
-                {analyzingVideo16 ? "Buscando una repetición natural sin invertir el movimiento…" : seamHint16 || "Sube un clip para analizar su mejor ciclo."}
-              </p>
-              {visualCandidates16.length > 1 && (
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                  {visualCandidates16.slice(0, 4).map((candidate, index) => (
-                    <button
-                      key={`${candidate.start}-${candidate.end}-${index}`}
-                      type="button"
-                      onClick={() => setVisualLoop16(candidate)}
-                      className={`rounded-lg px-2 py-1 text-[10px] font-bold ${
-                        visualLoop16?.start === candidate.start && visualLoop16?.end === candidate.end
-                          ? "bg-fuchsia-600 text-white"
-                          : "bg-zinc-800 text-zinc-300 hover:bg-zinc-700"
-                      }`}
-                    >
-                      {candidate.label} · {candidate.duration.toFixed(1)}s
-                    </button>
-                  ))}
+              {visualLoop16 && video16x9Duration > 0 && (
+                <div className="mt-3">
+                  <TrimTimeline
+                    duration={video16x9Duration}
+                    start={visualLoop16.start}
+                    end={visualLoop16.end}
+                    currentTime={visualLoop16.start + (playbackTime16x9 % visualLoop16.duration)}
+                    onChange={({ start, end }) => updateVideoTrim("16x9", start, end)}
+                  />
                 </div>
               )}
+              <div className="mt-3 grid grid-cols-3 gap-2" aria-label="Tipo de loop 16:9">
+                {[
+                  { mode: "cut" as const, label: "Corte directo", icon: "■" },
+                  { mode: "smooth" as const, label: "Natural", icon: "✨" },
+                  { mode: "pingpong" as const, label: "Boomerang", icon: "↔" },
+                ].map((option) => (
+                  <button
+                    key={option.mode}
+                    type="button"
+                    onClick={() => option.mode === "smooth" ? enableNaturalLoop("16x9") : setManualLoopMode("16x9", option.mode)}
+                    className={`rounded-lg px-2 py-2 font-bold ${seamMode16x9 === option.mode ? "bg-fuchsia-600 text-white" : "bg-zinc-800 text-zinc-300 hover:bg-zinc-700"}`}
+                  >
+                    {option.icon} {option.label}
+                  </button>
+                ))}
+              </div>
+              <p className="mt-2 text-[11px] leading-relaxed text-zinc-400">
+                {analyzingVideo16 ? "Buscando una unión natural…" : seamHint16 || "El vídeo empieza limpio. Recorta y activa un loop cuando quieras."}
+              </p>
             </div>
 
             {/* 16:9 Visual Controls */}
@@ -2704,20 +2926,38 @@ export default function DualStudioPage() {
               <details className="rounded-lg border border-zinc-800 bg-zinc-950 p-2">
                 <summary className="cursor-pointer text-[11px] font-semibold text-zinc-400">Opciones avanzadas de continuidad</summary>
                 <div className="mt-2 flex flex-col gap-1">
-                <label className="text-[11px] text-zinc-400 font-semibold">Modo manual:</label>
+                <label className="text-[11px] text-zinc-400 font-semibold">Continuidad:</label>
                 <select
+                  aria-label="Modo de continuidad 16:9"
                   value={seamMode16x9}
-                  onChange={(e) => {
-                    seamLocked16Ref.current = true;
-                    setSeamMode16x9(e.target.value as "smooth" | "pingpong" | "cut");
-                  }}
+                  onChange={(e) => setManualLoopMode("16x9", e.target.value as SeamMode)}
                   className="px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-700 text-white text-xs cursor-pointer"
                 >
-                  <option value="pingpong">🔄 Boomerang orgánico (giro suave)</option>
-                  <option value="smooth">🌊 Fundido continuo</option>
+                  <option value="smooth">✨ Automático — Busca unión natural, siempre hacia delante</option>
+                  <option value="extend">⏳ Extender — Estira el clip a cámara lenta, siempre hacia delante</option>
+                  <option value="pingpong">↔ Boomerang — Ida y vuelta (puede marear)</option>
                   <option value="cut">✂️ Corte directo</option>
                 </select>
-                <p className="text-[10px] text-zinc-500 leading-snug pt-1">Avanzado: el modo automático recomendado es Fundido continuo.</p>
+                {seamMode16x9 === "extend" && video16x9Duration > 0 && (() => {
+                  const clipDur = visualLoop16?.duration ?? video16x9Duration;
+                  const rate = resolveExtendPlaybackRate(clipDur, target16x9Duration);
+                  const cycle = clipDur / rate;
+                  const copies = Math.max(1, Math.ceil(target16x9Duration / cycle - 0.01));
+                  return (
+                    <div className="rounded-md border border-cyan-900/70 bg-cyan-950/20 px-2 py-1 text-[10px] text-cyan-200 leading-snug">
+                      ⏳ {rate.toFixed(2)}× velocidad · ciclo de {cycle.toFixed(1)}s · {copies === 1 ? "el ciclo cubre el video completo" : <>{copies} repetic&oacute;n{copies !== 1 ? "es" : ""} con {copies} fundido{copies !== 1 ? "s" : ""} oculto{copies !== 1 ? "s" : ""}</>}
+                    </div>
+                  );
+                })()}
+                <p className="text-[10px] text-zinc-500 leading-snug pt-1">
+                  {seamMode16x9 === "smooth"
+                    ? "Busca una unión natural y mantiene el movimiento hacia delante (forward crossfade 0.25-1.0 s, con alineación si hay companion)."
+                    : seamMode16x9 === "extend"
+                      ? "Ralentiza el clip (mínimo 0.15×) para que el ciclo cubra la duración final sin rebobinar: se percibe como una toma lenta continua."
+                      : seamMode16x9 === "pingpong"
+                        ? "Reproduce ida y vuelta. Puede resultar más perceptible."
+                        : "Corte directo sin fundido."}
+                </p>
                 </div>
               </details>
             </div>
@@ -2794,7 +3034,9 @@ export default function DualStudioPage() {
 
 
             {/* 16:9 DEDICATED SFX TIMELINE */}
-            <div className="pt-1">
+            <details className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-3">
+              <summary className="cursor-pointer text-xs font-bold text-zinc-400">🧰 Extras · efectos de sonido</summary>
+            <div className="pt-3">
               <SfxLoopTimeline
                 loopDuration={target16x9Duration}
                 currentTime={playbackTime16x9}
@@ -2809,6 +3051,7 @@ export default function DualStudioPage() {
                 hasMedia={Boolean(video16x9El)}
               />
             </div>
+            </details>
 
             {/* 16:9 Fast Export Action */}
             <button
@@ -2828,7 +3071,7 @@ export default function DualStudioPage() {
         )}
 
         {/* ==================== 9:16 DEDICATED WORKSPACE ==================== */}
-        {(viewLayout === "split" || viewLayout === "9x16") && (
+        {viewLayout === "9x16" && (
           <div className="flex flex-col gap-4 p-5 rounded-2xl bg-zinc-900/50 border border-amber-900/30 shadow-xl">
             <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
               <div className="flex items-center gap-2">
@@ -2854,7 +3097,7 @@ export default function DualStudioPage() {
             {/* 9:16 Canvas Screen */}
             <div className="relative aspect-video w-full rounded-xl overflow-hidden bg-black border border-zinc-800 flex items-center justify-center shadow-2xl">
               <div className="h-full aspect-[9/16] bg-zinc-950 border-x border-zinc-800 shadow-2xl">
-                <canvas ref={canvas9x16Ref} width={1080} height={1920} className="w-full h-full object-contain" />
+                <canvas ref={canvas9x16Ref} data-testid="preview-canvas-9x16" width={1080} height={1920} className="w-full h-full object-contain" />
               </div>
             </div>
 
@@ -2950,6 +3193,7 @@ export default function DualStudioPage() {
 
               <input
                 type="range"
+                aria-label="Posición del preview 9:16"
                 min="0"
                 max={target9x16Duration}
                 step="0.02"
@@ -2961,32 +3205,41 @@ export default function DualStudioPage() {
 
             <div data-testid="visual-loop-9x16" className="rounded-xl border border-amber-500/25 bg-amber-950/15 p-3 text-xs">
               <div className="flex items-center justify-between gap-3">
-                <p className="font-bold text-amber-200">Continuidad automática · LoopyCut</p>
+                <p className="font-bold text-amber-200">✂️ Recorte y loop</p>
                 <span className="rounded-full bg-zinc-950 px-2 py-1 font-mono text-[10px] text-zinc-400">
-                  {analyzingVideo9 ? "Analizando…" : visualLoop9 ? `${visualLoop9.duration.toFixed(1)}s por ciclo` : "Sin vídeo"}
+                  {visualLoop9 ? `${visualLoop9.duration.toFixed(1)}s seleccionados` : "Sin vídeo"}
                 </span>
               </div>
-              <p className="mt-1 text-[11px] leading-relaxed text-zinc-400">
-                {analyzingVideo9 ? "Buscando una repetición natural sin invertir el movimiento…" : seamHint9 || "Sube un clip para analizar su mejor ciclo."}
-              </p>
-              {visualCandidates9.length > 1 && (
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                  {visualCandidates9.slice(0, 4).map((candidate, index) => (
-                    <button
-                      key={`${candidate.start}-${candidate.end}-${index}`}
-                      type="button"
-                      onClick={() => setVisualLoop9(candidate)}
-                      className={`rounded-lg px-2 py-1 text-[10px] font-bold ${
-                        visualLoop9?.start === candidate.start && visualLoop9?.end === candidate.end
-                          ? "bg-amber-500 text-zinc-950"
-                          : "bg-zinc-800 text-zinc-300 hover:bg-zinc-700"
-                      }`}
-                    >
-                      {candidate.label} · {candidate.duration.toFixed(1)}s
-                    </button>
-                  ))}
+              {visualLoop9 && video9x16Duration > 0 && (
+                <div className="mt-3">
+                  <TrimTimeline
+                    duration={video9x16Duration}
+                    start={visualLoop9.start}
+                    end={visualLoop9.end}
+                    currentTime={visualLoop9.start + (playbackTime9x16 % visualLoop9.duration)}
+                    onChange={({ start, end }) => updateVideoTrim("9x16", start, end)}
+                  />
                 </div>
               )}
+              <div className="mt-3 grid grid-cols-3 gap-2" aria-label="Tipo de loop 9:16">
+                {[
+                  { mode: "cut" as const, label: "Corte directo", icon: "■" },
+                  { mode: "smooth" as const, label: "Natural", icon: "✨" },
+                  { mode: "pingpong" as const, label: "Boomerang", icon: "↔" },
+                ].map((option) => (
+                  <button
+                    key={option.mode}
+                    type="button"
+                    onClick={() => option.mode === "smooth" ? enableNaturalLoop("9x16") : setManualLoopMode("9x16", option.mode)}
+                    className={`rounded-lg px-2 py-2 font-bold ${seamMode9x16 === option.mode ? "bg-amber-500 text-zinc-950" : "bg-zinc-800 text-zinc-300 hover:bg-zinc-700"}`}
+                  >
+                    {option.icon} {option.label}
+                  </button>
+                ))}
+              </div>
+              <p className="mt-2 text-[11px] leading-relaxed text-zinc-400">
+                {analyzingVideo9 ? "Buscando una unión natural…" : seamHint9 || "El vídeo empieza limpio. Recorta y activa un loop cuando quieras."}
+              </p>
             </div>
 
             {/* 9:16 Visual Controls */}
@@ -3071,20 +3324,38 @@ export default function DualStudioPage() {
               <details className="rounded-lg border border-zinc-800 bg-zinc-950 p-2">
                 <summary className="cursor-pointer text-[11px] font-semibold text-zinc-400">Opciones avanzadas de continuidad</summary>
                 <div className="mt-2 flex flex-col gap-1">
-                <label className="text-[11px] text-zinc-400 font-semibold">Modo manual:</label>
+                <label className="text-[11px] text-zinc-400 font-semibold">Continuidad:</label>
                 <select
+                  aria-label="Modo de continuidad 9:16"
                   value={seamMode9x16}
-                  onChange={(e) => {
-                    seamLocked9Ref.current = true;
-                    setSeamMode9x16(e.target.value as "smooth" | "pingpong" | "cut");
-                  }}
+                  onChange={(e) => setManualLoopMode("9x16", e.target.value as SeamMode)}
                   className="px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-700 text-white text-xs cursor-pointer"
                 >
-                  <option value="pingpong">🔄 Boomerang orgánico (giro suave)</option>
-                  <option value="smooth">🌊 Fundido continuo</option>
+                  <option value="smooth">✨ Automático — Busca unión natural, siempre hacia delante</option>
+                  <option value="extend">⏳ Extender — Estira el clip a cámara lenta, siempre hacia delante</option>
+                  <option value="pingpong">↔ Boomerang — Ida y vuelta (puede marear)</option>
                   <option value="cut">✂️ Corte directo</option>
                 </select>
-                <p className="text-[10px] text-zinc-500 leading-snug pt-1">Avanzado: el modo automático recomendado es Fundido continuo.</p>
+                {seamMode9x16 === "extend" && video9x16Duration > 0 && (() => {
+                  const clipDur = visualLoop9?.duration ?? video9x16Duration;
+                  const rate = resolveExtendPlaybackRate(clipDur, target9x16Duration);
+                  const cycle = clipDur / rate;
+                  const copies = Math.max(1, Math.ceil(target9x16Duration / cycle - 0.01));
+                  return (
+                    <div className="rounded-md border border-cyan-900/70 bg-cyan-950/20 px-2 py-1 text-[10px] text-cyan-200 leading-snug">
+                      ⏳ {rate.toFixed(2)}× velocidad · ciclo de {cycle.toFixed(1)}s · {copies === 1 ? "el ciclo cubre el Short completo" : <>{copies} repetic&oacute;n{copies !== 1 ? "es" : ""} con {copies} fundido{copies !== 1 ? "s" : ""} oculto{copies !== 1 ? "s" : ""}</>}
+                    </div>
+                  );
+                })()}
+                <p className="text-[10px] text-zinc-500 leading-snug pt-1">
+                  {seamMode9x16 === "smooth"
+                    ? "Short mantiene el clip completo con fundido hacia delante (mejora con alineación si hay companion)."
+                    : seamMode9x16 === "extend"
+                      ? "Ralentiza el clip (mínimo 0.15×) para que el ciclo cubra el Short sin rebobinar: toma lenta continua."
+                      : seamMode9x16 === "pingpong"
+                        ? "Reproduce ida y vuelta. Puede resultar más perceptible."
+                        : "Corte directo sin fundido."}
+                </p>
                 </div>
               </details>
             </div>
@@ -3134,7 +3405,9 @@ export default function DualStudioPage() {
 
 
             {/* 9:16 DEDICATED SFX TIMELINE */}
-            <div className="pt-1">
+            <details className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-3">
+              <summary className="cursor-pointer text-xs font-bold text-zinc-400">🧰 Extras · efectos de sonido</summary>
+            <div className="pt-3">
               <SfxLoopTimeline
                 loopDuration={target9x16Duration}
                 currentTime={playbackTime9x16}
@@ -3149,6 +3422,7 @@ export default function DualStudioPage() {
                 hasMedia={Boolean(video9x16El)}
               />
             </div>
+            </details>
 
             {/* 9:16 Fast Export Action */}
             <button
@@ -3332,6 +3606,10 @@ export default function DualStudioPage() {
       </div>
 
       {/* SECTION 6: Organic YouTube & Shorts Metadata Pack (SEO & Algoritmo) */}
+      <details className="rounded-2xl border border-zinc-800 bg-zinc-900/50 p-3">
+        <summary className="cursor-pointer select-none text-sm font-bold text-zinc-300">
+          🧰 Extras · portadas y textos de publicación
+        </summary>
       <div data-testid="publishing-pack" className="p-6 rounded-2xl bg-zinc-900/90 border border-zinc-800 shadow-2xl flex flex-col gap-5">
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-zinc-800 pb-4">
           <div className="flex items-center gap-3">
@@ -3398,6 +3676,7 @@ export default function DualStudioPage() {
                 </button>
               </div>
               <textarea
+                data-testid="youtube-description"
                 readOnly
                 rows={7}
                 value={ytPack.description}
@@ -3551,6 +3830,7 @@ export default function DualStudioPage() {
           </div>
         </div>
       </div>
+      </details>
 
       {/* ==================== PRE-EXPORT CONFIRMATION MODAL ==================== */}
       {confirmExport && (

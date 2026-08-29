@@ -356,49 +356,43 @@ export function generateOrganicYoutubePack(opts: {
   const minutes = Math.max(0.5, opts.targetDurationMinutes || 1);
   const seed = (opts.seedOffset || 0) * 17 + songName.length * 13 + cid.length * 5;
 
-  // El nombre de la canción va primero: es la información más útil para la persona
-  // y para la búsqueda. El perfil aporta contexto, no sustituye el título real.
+  // La canción y el universo se mantienen reconocibles; lo que rota es el ángulo
+  // emocional. Así cada subida conserva relevancia de búsqueda sin sonar a plantilla.
   const title = capTitle(
-    `${songName}${isSlowed ? " (Slowed + Reverb)" : ""} | ${meta.series} Edit`,
+    `${fill(pick(meta.titles, seed), songName, meta)}${isSlowed ? " | Slowed + Reverb" : ""}`,
     96
   );
-  const note = fill(pick(meta.notes, seed + 3), songName, meta);
+  const note = fill(pick(meta.notes, seed + 3), songName, meta)
+    .split("\n")
+    .find((line) => line.trim().length > 0) ?? "A quiet edit for the long night.";
   const pinned = pick(meta.pinnedComments, seed + 11);
   const shortHook = pick(meta.shortsHooks, seed + 7);
 
-  const slowedLine = isSlowed ? "slowed until it sits in the room." : "left at tempo. still a loop.";
-  const durHint =
-    minutes >= 1
-      ? `It runs about ${minutes.toFixed(0)} minute${minutes >= 1.5 ? "s" : ""}. I looped the picture so you don't have to.`
-      : "Short on purpose. The long version is on the channel.";
+  const keywordLine = `${songName}${isSlowed ? " slowed + reverb" : ""} · ${meta.series} ${meta.name} edit.`;
+  const slowedLine = isSlowed ? "Slowed + reverb, built for a quiet replay." : "Original tempo, built for a quiet replay.";
+  const durationLine = minutes >= 1 ? "Full version — let the scene breathe." : "Short version — full edit on the channel.";
+  const description = `${keywordLine}
+${note}
+${slowedLine} ${durationLine}
 
-  const description = `${note}
-
-${slowedLine}
-${durHint}
-
-— Silent Vigil
-${meta.playlist}
-
-${meta.hashtags.join(" ")}`;
+${meta.hashtags.slice(0, 4).join(" ")}`;
 
   const shortsTitle = capTitle(`${songName} | ${meta.name} Edit #Shorts`, 96);
 
   const shortsHashtags = ["#Shorts", ...meta.hashtags.slice(0, 4)];
-  const shortsDescription = `${shortHook}
-${songName} · ${meta.name}, ${meta.series}
-
-full version on the channel.
+  const shortsDescription = `${songName} · ${meta.series} ${meta.name} edit.
+${shortHook}
+Full version on the channel.
 
 ${shortsHashtags.join(" ")}`;
 
-  const tags = [
+  const tags = [...new Set([
     songName.toLowerCase(),
     meta.name.toLowerCase(),
     meta.series.toLowerCase(),
     ...(isSlowed ? [`${songName.toLowerCase()} slowed`, "slowed and reverb"] : [`${songName.toLowerCase()} loop`]),
     ...meta.tags,
-  ];
+  ])].slice(0, 12);
   const instagramHashtags = [...meta.hashtags.slice(0, 5), "#Reels"];
   const tiktokHashtags = [...meta.hashtags.slice(0, 4), "#AnimeEdit", "#TikTokEdits"];
   const instagramCaption = `${shortHook}\n\n${songName} · ${meta.series}\n\n${instagramHashtags.join(" ")}`;
@@ -413,7 +407,7 @@ ${shortsHashtags.join(" ")}`;
     description,
     hashtags: meta.hashtags,
     tags,
-    tagsLine: [...new Set(tags)].slice(0, 20).join(", "),
+    tagsLine: tags.join(", "),
     playlist: meta.playlist,
     pinnedComment: pinned,
     shortsTitle,

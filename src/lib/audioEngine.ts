@@ -34,30 +34,25 @@ export interface ReverbSettings {
 }
 
 export const REVERB_PRESETS: Record<string, { label: string; settings: ReverbSettings }> = {
-  clasico: {
-    label: "Clásico slowed",
-    settings: { speed: 0.8, reverbMix: 0.35, decay: 2.4, lowpassHz: 11000, volume: 1 },
-  },
-  deep: {
-    label: "Deep / nocturno",
-    settings: { speed: 0.65, reverbMix: 0.45, decay: 3.5, lowpassHz: 7000, volume: 1 },
-  },
-  nightcore: {
-    label: "Nightcore",
-    settings: { speed: 1.25, reverbMix: 0.08, decay: 0.7, lowpassHz: 16000, volume: 1 },
-  },
-  vaporwave: {
-    label: "Vaporwave",
+  suave: {
+    label: "Suave",
     settings: {
-      speed: 0.7, reverbMix: 0.5, decay: 3.2, lowpassHz: 8500, volume: 1,
-      width: 1.4, bassDb: 2,
+      speed: 0.9, reverbMix: 0.18, decay: 1.6, lowpassHz: 14000, volume: 1,
+      width: 1, bassDb: 1.5, crackle: 0,
     },
   },
-  lofi: {
-    label: "Lo-Fi cálido",
+  clasico: {
+    label: "Clásico",
     settings: {
-      speed: 0.85, reverbMix: 0.28, decay: 1.6, lowpassHz: 6000, volume: 1,
-      width: 0.9, bassDb: 3,
+      speed: 0.85, reverbMix: 0.25, decay: 2.1, lowpassHz: 12000, volume: 1,
+      width: 1.05, bassDb: 2, crackle: 0,
+    },
+  },
+  profundo: {
+    label: "Profundo",
+    settings: {
+      speed: 0.8, reverbMix: 0.32, decay: 2.7, lowpassHz: 10000, volume: 1,
+      width: 1.08, bassDb: 2.5, crackle: 0,
     },
   },
 };
@@ -553,6 +548,7 @@ export class LoopBufferPlayer {
   private ctx: AudioContext | null = null;
   private buffer: AudioBuffer | null = null;
   private source: AudioBufferSourceNode | null = null;
+  private sourceGain: GainNode | null = null;
   private gain: GainNode | null = null;
   /** Posición de lectura dentro del buffer (s) al anclar el reloj */
   private anchorOffset = 0;
@@ -611,34 +607,42 @@ export class LoopBufferPlayer {
   /** Detiene el source actual y arranca uno nuevo en `from` (usado por play y seek). */
   private rebuildSource(from: number) {
     if (!this.ctx || !this.buffer || !this.gain) return;
-    if (this.source) {
-      try {
-        this.source.onended = null;
-        this.source.stop();
-      } catch {
-        /* ya parado */
-      }
-      try {
-        this.source.disconnect();
-      } catch {
-        /* ignore */
-      }
-      this.source = null;
-    }
+    const oldSource = this.source;
+    const oldSourceGain = this.sourceGain;
     const src = this.ctx.createBufferSource();
+    const sourceGain = this.ctx.createGain();
     src.buffer = this.buffer;
     src.loop = true;
     src.loopStart = 0;
     src.loopEnd = this.buffer.duration;
-    src.connect(this.gain);
+    src.connect(sourceGain);
+    sourceGain.connect(this.gain);
     const start = Math.min(Math.max(0, from), Math.max(0, this.buffer.duration - 0.01));
-    // Rampa corta para evitar clics al arrancar o tras un seek
+    // Cada fuente tiene su propio gain: el master nunca cae a cero al cambiar de
+    // preset. El cruce evita clicks, huecos y picos causados por cortar el buffer.
     const t0 = this.ctx.currentTime;
-    this.gain.gain.cancelScheduledValues(t0);
-    this.gain.gain.setValueAtTime(0.0001, t0);
-    this.gain.gain.exponentialRampToValueAtTime(Math.max(0.0002, this.volume), t0 + 0.03);
+    const fadeSec = oldSource ? 0.08 : 0.035;
+    sourceGain.gain.setValueAtTime(0, t0);
+    sourceGain.gain.linearRampToValueAtTime(1, t0 + fadeSec);
     src.start(t0, start);
+
+    if (oldSource && oldSourceGain) {
+      oldSourceGain.gain.cancelScheduledValues(t0);
+      oldSourceGain.gain.setValueAtTime(oldSourceGain.gain.value, t0);
+      oldSourceGain.gain.linearRampToValueAtTime(0, t0 + fadeSec);
+      try {
+        oldSource.stop(t0 + fadeSec + 0.01);
+      } catch {
+        /* ya parado */
+      }
+      oldSource.onended = () => {
+        try { oldSource.disconnect(); } catch {}
+        try { oldSourceGain.disconnect(); } catch {}
+      };
+    }
+
     this.source = src;
+    this.sourceGain = sourceGain;
     this.anchorOffset = start;
     this.anchorTime = t0;
   }
@@ -672,6 +676,14 @@ export class LoopBufferPlayer {
         /* ignore */
       }
       this.source = null;
+    }
+    if (this.sourceGain) {
+      try {
+        this.sourceGain.disconnect();
+      } catch {
+        /* ignore */
+      }
+      this.sourceGain = null;
     }
     this.playing = false;
   }

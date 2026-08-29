@@ -29,6 +29,10 @@ import {
   renderSfxCuesToOffline,
 } from "./seinenSfxLibrary";
 import { ensureWatermarkFont } from "./watermark";
+import {
+  getForwardLoopFrameState,
+  type VisualAlignment,
+} from "./forwardLoop";
 
 export interface MangaExportOptions {
   image: HTMLImageElement | HTMLVideoElement | HTMLCanvasElement;
@@ -49,6 +53,8 @@ export interface MangaExportOptions {
   signal?: AbortSignal;
   /** Sistema de partículas propio del slot (evita compartir estado entre 16:9 y 9:16). */
   particleSystem?: PhysicsParticleSystem;
+  /** Alineación global opcional IN->OUT para crossfade motion-compensated. */
+  sourceAlignment?: VisualAlignment | null;
 }
 
 export class ExportCancelledError extends Error {
@@ -154,6 +160,29 @@ export function clampCalmPlaybackRate(rate?: number): number {
   return Math.min(0.75, Math.max(0.25, value));
 }
 
+/** Piso del modo Extender: cámara lenta profunda sin congelar el movimiento. */
+export const MIN_EXTEND_PLAYBACK_RATE = 0.15;
+
+export function clampExtendPlaybackRate(rate: number): number {
+  const value = Number.isFinite(rate) ? Number(rate) : 1;
+  return Math.min(1, Math.max(MIN_EXTEND_PLAYBACK_RATE, value));
+}
+
+/**
+ * Velocidad del modo Extender: el ciclo cubre la duración objetivo (canción
+ * completa o N vueltas) reproduciendo el clip SIEMPRE hacia delante, como una
+ * toma continua ralentizada. Si el clip ya cubre el target, queda a 1× y el
+ * comportamiento es idéntico al fundido smooth.
+ */
+export function resolveExtendPlaybackRate(sourceDuration: number, targetDuration: number): number {
+  const clip = Math.max(0.25, sourceDuration);
+  const target = Math.max(
+    clip,
+    Number.isFinite(targetDuration) && targetDuration > 0 ? targetDuration : clip
+  );
+  return clampExtendPlaybackRate(clip / target);
+}
+
 export function computeVisualCycleDuration(
   config: Pick<MangaMotionConfig, "seamMode" | "enableSeamlessLoop" | "duration" | "calmPlaybackRate">,
   sourceDuration: number,
@@ -166,6 +195,11 @@ export function computeVisualCycleDuration(
   const clip = Math.max(0.25, sourceDuration);
   const seam = config.seamMode || (config.enableSeamlessLoop ? "smooth" : "cut");
   if (seam === "pingpong") return clip * 2;
+  if (seam === "extend") {
+    // config.duration es la duración objetivo del video final (en preview RAF y
+    // export llega igual): el ciclo se estira para cubrirla a cámara lenta.
+    return clip / resolveExtendPlaybackRate(clip, config.duration);
+  }
   if (seam === "calm") return clip / clampCalmPlaybackRate(config.calmPlaybackRate);
   return clip;
 }
@@ -175,13 +209,23 @@ export function sourceTimeForExport(
   sourceDuration: number,
   seamMode: MangaMotionConfig["seamMode"],
   sourceStart: number = 0,
-  calmPlaybackRate: number = DEFAULT_CALM_PLAYBACK_RATE
+  calmPlaybackRate: number = DEFAULT_CALM_PLAYBACK_RATE,
+  targetDuration?: number
 ): number {
   if (sourceDuration <= 0.05) return sourceStart;
   if (seamMode === "pingpong") {
     return sourceStart + calculateOrganicPingPongTime(t, sourceDuration, "organic");
   }
-  const sourceClock = seamMode === "calm" ? t * clampCalmPlaybackRate(calmPlaybackRate) : t;
+  let sourceClock: number;
+  if (seamMode === "calm") {
+    sourceClock = t * clampCalmPlaybackRate(calmPlaybackRate);
+  } else if (seamMode === "extend") {
+    // Sin target conocido, rate 1× (equivale a smooth). Preview/export siempre
+    // pasan la duración objetivo para compartir la misma rate derivada.
+    sourceClock = t * resolveExtendPlaybackRate(sourceDuration, targetDuration ?? sourceDuration);
+  } else {
+    sourceClock = t;
+  }
   const m = sourceClock % sourceDuration;
   return sourceStart + (m < 0 ? m + sourceDuration : m);
 }
@@ -199,15 +243,21 @@ export function computeVisualCrossfadeDuration(
   if (config.seamMode === "pingpong") {
     return Math.min(0.35, Math.max(0.12, cycleDuration * 0.04));
   }
-  if (!config.enableSeamlessLoop || (config.seamMode !== "smooth" && config.seamMode !== "calm")) {
+  if (
+    !config.enableSeamlessLoop ||
+    (config.seamMode !== "smooth" && config.seamMode !== "calm" && config.seamMode !== "extend")
+  ) {
     return 0;
   }
   const base = config.loopCrossfadeDuration || 0.4;
   if (config.seamMode === "calm") {
     const slowedFade = Math.max(0.8, base / clampCalmPlaybackRate(config.calmPlaybackRate));
-    return Math.max(1 / 60, Math.min(2.5, cycleDuration * 0.2, slowedFade));
+    // Calm escala pero dentro de 0.25-1.0 para smart forward
+    return Math.max(0.25, Math.min(1.0, cycleDuration * 0.15, slowedFade));
   }
-  return Math.min(1.55, Math.max(0.12, Math.min(base, cycleDuration * 0.15)));
+  // Smart Forward y Extender: crossfade cinemático 0.25-1.0 (recomendado 0.45-0.70),
+  // curva cosine que evita ghosting largo.
+  return Math.min(1.0, Math.max(0.25, Math.min(base, cycleDuration * 0.15)));
 }
 
 async function resolveSourceBlob(
@@ -808,7 +858,8 @@ export async function exportMangaMotionVideo(
         sourceDuration,
         seamMode,
         sourceStart,
-        config.calmPlaybackRate
+        config.calmPlaybackRate,
+        targetDuration
       );
       srcTimes.push(Math.min(sourceEnd - 0.001, Math.max(sourceStart, raw)));
     } else {
@@ -863,10 +914,16 @@ export async function exportMangaMotionVideo(
   particleSys.init(cycleConfig.particles, width, height, cycleConfig.particleIntensity);
   await ensureWatermarkFont();
 
-  // Smooth mantiene su fundido corto; calm escala el fundido con la ralentización
-  // (p. ej. 0,6s / 0,4x = 1,5s) para que la vuelta ocurra despacio y sin inversión.
+  // Smart Forward: crossfade cinemático 0.25-1.0 con curva cosine; calm escala proporcional.
   const crossfadeDur = computeVisualCrossfadeDuration(config, cycleDuration);
   const fadeFrames = crossfadeDur > 0 ? Math.max(1, Math.round(crossfadeDur * fps)) : 0;
+  const isForwardSeam = seamMode === "smooth" || seamMode === "calm" || seamMode === "extend";
+  const calmRateForState =
+    seamMode === "calm"
+      ? clampCalmPlaybackRate(config.calmPlaybackRate)
+      : seamMode === "extend"
+        ? resolveExtendPlaybackRate(sourceDuration, targetDuration)
+        : 1;
   // Seam crossfade: conservar únicamente el primer frame compuesto como JPEG.
   // El final del ciclo funde hacia ESE frame exacto, por lo que el siguiente tile
   // arranca sin volver atrás desde un frame de cabeza avanzado.
@@ -941,14 +998,46 @@ export async function exportMangaMotionVideo(
       headShots.push(await captureHeadShot());
     }
     if (fadeFrames > 0 && i >= cycleFrames - fadeFrames && headShots.length > 0) {
-      const fadeI = i - (cycleFrames - fadeFrames);
-      const alpha = 0.5 - 0.5 * Math.cos((fadeI / Math.max(1, fadeFrames - 1)) * Math.PI);
       const head = await headFrameFor();
       if (head) {
-        ctx.save();
-        ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
-        ctx.drawImage(head, 0, 0);
-        ctx.restore();
+        // Preview = Export: misma curva cosine y misma interpolación de alineación
+        let alpha: number;
+        let aliForDraw: VisualAlignment | undefined;
+        if (isForwardSeam) {
+          const st = getForwardLoopFrameState(
+            i * frameDur,
+            cycleDuration,
+            sourceDuration,
+            sourceStart,
+            crossfadeDur,
+            opts.sourceAlignment ?? null,
+            calmRateForState
+          );
+          alpha = st.mix;
+          aliForDraw = st.alignment ?? undefined;
+        } else {
+          alpha = 0.5 - 0.5 * Math.cos(((i - (cycleFrames - fadeFrames)) / Math.max(1, fadeFrames - 1)) * Math.PI);
+        }
+        if (aliForDraw) {
+          const scaleX = rawW > 0 ? width / rawW : 1;
+          const scaleY = rawH > 0 ? height / rawH : 1;
+          const dx = aliForDraw.dx * scaleX;
+          const dy = aliForDraw.dy * scaleY;
+          const sc = aliForDraw.scale;
+          const rot = (aliForDraw.rotation * Math.PI) / 180;
+          ctx.save();
+          ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
+          ctx.translate(width / 2 + dx, height / 2 + dy);
+          ctx.rotate(rot);
+          ctx.scale(sc, sc);
+          ctx.drawImage(head, -width / 2, -height / 2, width, height);
+          ctx.restore();
+        } else {
+          ctx.save();
+          ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
+          ctx.drawImage(head, 0, 0);
+          ctx.restore();
+        }
         try {
           head.close();
         } catch {
@@ -1175,6 +1264,46 @@ export async function exportMangaMotionVideo(
           throw err;
         }
       }
+    }
+
+    // No ofrecer ni guardar un MP4 truncado. Se vuelve a abrir el contenedor final
+    // y se comprueban sus pistas y duraciones antes de marcar el export como listo.
+    onProgress?.(0.99, "Verificando el archivo final…");
+    if (finalBlob.size < 1024) {
+      throw new Error("El archivo exportado está vacío o incompleto.");
+    }
+    const validationInput = new Input({ formats: ALL_FORMATS, source: new BlobSource(finalBlob) });
+    try {
+      const finalVideoTrack = await gate(validationInput.getPrimaryVideoTrack());
+      if (!finalVideoTrack || !(await gate(finalVideoTrack.getDecoderConfig()))) {
+        throw new Error("El MP4 final no contiene una pista de vídeo decodificable.");
+      }
+      const finalVideoDuration = await gate(finalVideoTrack.computeDuration());
+      const durationTolerance = Math.max(0.25, 3 / fps);
+      if (!Number.isFinite(finalVideoDuration) || Math.abs(finalVideoDuration - targetDuration) > durationTolerance) {
+        throw new Error(
+          `El MP4 final quedó truncado (${finalVideoDuration.toFixed(2)}s de ${targetDuration.toFixed(2)}s).`
+        );
+      }
+      if (finalVideoTrack.displayWidth !== width || finalVideoTrack.displayHeight !== height) {
+        throw new Error(
+          `La resolución final no coincide (${finalVideoTrack.displayWidth}×${finalVideoTrack.displayHeight}, esperada ${width}×${height}).`
+        );
+      }
+      if (masterAudioBuffer) {
+        const finalAudioTrack = await gate(validationInput.getPrimaryAudioTrack());
+        if (!finalAudioTrack) {
+          throw new Error("El MP4 final perdió la pista de audio.");
+        }
+        const finalAudioDuration = await gate(finalAudioTrack.computeDuration());
+        if (!Number.isFinite(finalAudioDuration) || Math.abs(finalAudioDuration - targetDuration) > 0.5) {
+          throw new Error(
+            `La pista de audio quedó incompleta (${finalAudioDuration.toFixed(2)}s de ${targetDuration.toFixed(2)}s).`
+          );
+        }
+      }
+    } finally {
+      validationInput.dispose();
     }
 
     onProgress?.(1, "Listo");

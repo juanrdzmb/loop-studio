@@ -53,11 +53,14 @@ page.on("console", (message) => {
 });
 
 await page.goto(`${BASE}/dual-studio`, { waitUntil: "networkidle" });
-await page.locator('input[type="file"]').nth(1).setInputFiles(VIDEO);
-await page.locator('input[type="file"]').nth(2).setInputFiles(AUDIO);
-await page.getByTestId("loop-editor").getByRole("button", { name: "📱 9:16" }).click();
+await page.getByRole("button", { name: /📱 Short 9:16/ }).click();
+await page.locator('input[type="file"]').nth(0).setInputFiles(VIDEO);
+await page.locator('input[type="file"]').nth(1).setInputFiles(AUDIO);
+await page.getByLabel("Duración personalizada del Short").fill("25");
+await page.getByLabel("Duración personalizada del Short").blur();
 await page.getByTestId("loop-editor").getByText("Fragmento de salida: 25s").waitFor();
 
+await page.getByText("🧰 Extras · efectos de sonido").click();
 const track = page.getByTestId("sfx-track-9x16");
 const box = await track.boundingBox();
 if (!box) throw new Error("No se pudo medir la timeline SFX 9:16");

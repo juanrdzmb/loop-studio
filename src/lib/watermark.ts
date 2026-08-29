@@ -111,3 +111,41 @@ export function drawProfessionalWatermark(
 
   ctx.restore();
 }
+
+/** Firma fija para portadas: conserva el lenguaje del watermark sin invadir el frame. */
+export function drawThumbnailChannelMark(
+  ctx: CanvasRenderingContext2D,
+  opts: { width: number; height: number; text?: string }
+) {
+  const line = (opts.text || WATERMARK_MARK).trim().toUpperCase() || WATERMARK_MARK;
+  const minSide = Math.min(opts.width, opts.height);
+  const fontSize = Math.max(12, Math.round(minSide * 0.018));
+  const tracking = fontSize * 0.24;
+  const subSize = Math.max(7, Math.round(fontSize * 0.42));
+  const margin = Math.max(24, Math.round(minSide * 0.035));
+
+  ctx.save();
+  ctx.textBaseline = "middle";
+  ctx.font = `300 ${fontSize}px "SilentVigil", Montserrat, "Segoe UI", sans-serif`;
+  const widths = Array.from(line).map((char) => ctx.measureText(char).width);
+  const markWidth = widths.reduce((sum, width) => sum + width, 0) + tracking * Math.max(0, line.length - 1);
+  const centerX = opts.width - margin - markWidth / 2;
+  const baseline = opts.height - margin;
+
+  ctx.strokeStyle = "rgba(255,255,255,0.42)";
+  ctx.lineWidth = Math.max(1, fontSize * 0.04);
+  ctx.beginPath();
+  ctx.moveTo(opts.width - margin - markWidth, baseline - fontSize * 0.95);
+  ctx.lineTo(opts.width - margin, baseline - fontSize * 0.95);
+  ctx.stroke();
+
+  ctx.shadowColor = "rgba(0,0,0,0.78)";
+  ctx.shadowBlur = Math.max(2, fontSize * 0.3);
+  ctx.shadowOffsetY = 1;
+  ctx.fillStyle = "rgba(255,255,255,0.78)";
+  drawTracked(ctx, line, centerX, baseline, tracking);
+  ctx.font = `500 ${subSize}px "SilentVigil", Montserrat, "Segoe UI", sans-serif`;
+  ctx.fillStyle = "rgba(255,255,255,0.58)";
+  drawTracked(ctx, WATERMARK_SUB, centerX, baseline + fontSize * 0.68, subSize * 0.5);
+  ctx.restore();
+}

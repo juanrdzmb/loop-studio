@@ -1,6 +1,9 @@
-/* E2E: Continuo calmado 9:16.
- * Comprueba el mapeo temporal 0,4x, que preview/export no produzcan negro en la
- * frontera y que los modos existentes sigan disponibles en la interfaz. */
+/* E2E: Modo "Extender" (forward-only ralentizado) 9:16.
+ * Clip de 6 s estirado a un Short de 15 s (rate 0.4×). Comprueba:
+ *  - la opción y el panel informativo de velocidad derivada en la UI;
+ *  - que preview no produzca destello negro en la frontera del ciclo;
+ *  - export MP4 1080x1920 con duración exacta, sin pantallazos negros
+ *    y con el mapeo temporal correcto (2,5s de salida = 1s de fuente). */
 import { chromium } from "playwright-core";
 import fs from "node:fs";
 import path from "node:path";
@@ -11,23 +14,20 @@ const BASE = process.env.LOOP_STUDIO_URL || "http://localhost:3210";
 const WORK = "/tmp/opencode/loopstudio-e2e";
 fs.mkdirSync(WORK, { recursive: true });
 
-const SRC = process.env.LOOP_STUDIO_SRC || path.join(WORK, "src_calm_9x16.mp4");
-const OUT = path.join(WORK, "export_calm_9x16.mp4");
+const SRC = process.env.LOOP_STUDIO_SRC || path.join(WORK, "src_extend_9x16.mp4");
+const OUT = path.join(WORK, "export_extend_9x16.mp4");
+const CLIP = 6;
+const TARGET = 15;
+const RATE = CLIP / TARGET; // 0.4
 
 if (!process.env.LOOP_STUDIO_SRC && !fs.existsSync(SRC)) {
   execFileSync("ffmpeg", [
     "-y", "-loglevel", "error",
-    "-f", "lavfi", "-i", "testsrc2=size=1080x1920:rate=24:duration=3",
+    "-f", "lavfi", "-i", `testsrc2=size=1080x1920:rate=24:duration=${CLIP}`,
     "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p",
     SRC,
   ]);
 }
-
-const probe = JSON.parse(execFileSync("ffprobe", [
-  "-v", "quiet", "-print_format", "json", "-show_streams", "-show_format", SRC,
-]));
-const sourceStream = probe.streams.find((stream) => stream.codec_type === "video");
-const sourceDuration = Number(sourceStream?.duration || probe.format?.duration || 0);
 
 const results = [];
 function ok(name, condition, extra = "") {
@@ -61,28 +61,36 @@ await page.waitForFunction(
 const details = page.getByText("Opciones avanzadas de continuidad").last();
 await details.click();
 const seamSelect = page.getByLabel("Modo de continuidad 9:16");
-ok("Continuo calmado es el modo automático del clip completo", await seamSelect.inputValue() === "calm");
 ok(
-  "Los modos anteriores siguen disponibles",
-  await seamSelect.locator('option[value="smooth"]').count() === 1
+  "La opción Extender está disponible junto a los modos anteriores",
+  await seamSelect.locator('option[value="extend"]').count() === 1
+    && await seamSelect.locator('option[value="smooth"]').count() === 1
     && await seamSelect.locator('option[value="pingpong"]').count() === 1
     && await seamSelect.locator('option[value="cut"]').count() === 1
 );
+await seamSelect.selectOption("extend");
 
-const rate = page.getByLabel("Velocidad de Continuo calmado 9:16");
-ok("Velocidad calmada por defecto 0,40x", await rate.inputValue() === "0.4", `(${await rate.inputValue()}x)`);
-
-await page.getByRole("button", { name: /Pausar/ }).last().click();
-const targetDuration = Math.max(8, Math.ceil(sourceDuration / 0.4) + 1);
 const durationInput = page.getByLabel("Duración personalizada del Short");
-await durationInput.fill(String(targetDuration));
+await durationInput.fill(String(TARGET));
 await durationInput.blur();
 
-const cycleDuration = sourceDuration / 0.4;
+const panel = page.getByText(/velocidad · ciclo de/).last();
+const panelText = (await panel.count()) > 0 ? await panel.innerText() : "";
+ok(
+  "Panel informativo muestra la velocidad derivada 0.40× y ciclo 15.0s",
+  panelText.includes("0.40×") && panelText.includes("ciclo de 15.0s"),
+  `(${panelText})`
+);
+
+const playBtn = page.getByRole("button", { name: /Reproducir|Pausar/ }).last();
+if ((await playBtn.count()) > 0) {
+  await playBtn.click({ timeout: 3000 }).catch(() => {});
+}
+const cycleDuration = CLIP / RATE;
 const previewSeek = page.getByLabel("Posición del preview 9:16");
 const previewStats = [];
 for (const time of [cycleDuration - 0.06, cycleDuration, cycleDuration + 0.06]) {
-  await previewSeek.fill(String(Math.min(targetDuration, Math.max(0, time))));
+  await previewSeek.fill(String(Math.min(TARGET, Math.max(0, time))));
   await page.waitForTimeout(120);
   previewStats.push(await page.getByTestId("preview-canvas-9x16").evaluate((canvas) => {
     const ctx = canvas.getContext("2d");
@@ -101,7 +109,7 @@ for (const time of [cycleDuration - 0.06, cycleDuration, cycleDuration + 0.06]) 
   }));
 }
 ok(
-  "Preview sin destello negro en la frontera",
+  "Preview sin destello negro en la frontera del ciclo",
   previewStats.every(({ meanLuma, nearBlackRatio }) => meanLuma > 12 && nearBlackRatio < 0.92),
   JSON.stringify(previewStats)
 );
@@ -127,7 +135,7 @@ const b64 = await page.evaluate(async () => {
   }
   return btoa(binary);
 });
-ok("Export calmado completado", Boolean(b64));
+ok("Export extendido completado", Boolean(b64));
 fs.writeFileSync(OUT, Buffer.from(b64 || "", "base64"));
 
 const outProbe = JSON.parse(execFileSync("ffprobe", [
@@ -137,7 +145,7 @@ const outStream = outProbe.streams.find((stream) => stream.codec_type === "video
 ok(
   "Duración y resolución del Short correctas",
   outStream.width === 1080 && outStream.height === 1920
-    && Math.abs(Number(outStream.duration || 0) - targetDuration) < 0.5,
+    && Math.abs(Number(outStream.duration || 0) - TARGET) < 0.5,
   `(${outStream.width}x${outStream.height}, ${Number(outStream.duration || 0).toFixed(2)}s)`
 );
 
@@ -149,8 +157,8 @@ const blackHits = blackLog.match(/black_start:/g) || [];
 ok("Export sin pantallazos negros", blackHits.length === 0, `(${blackHits.length} detecciones)`);
 
 if (!process.env.LOOP_STUDIO_SRC) {
-  const outFrame = path.join(WORK, "calm_out_frame.png");
-  const srcFrame = path.join(WORK, "calm_src_frame.png");
+  const outFrame = path.join(WORK, "extend_out_frame.png");
+  const srcFrame = path.join(WORK, "extend_src_frame.png");
   execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-ss", "2.5", "-i", OUT, "-frames:v", "1", outFrame]);
   execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-ss", "1.0", "-i", SRC, "-frames:v", "1", srcFrame]);
   const psnrLog = execFileSync("bash", ["-c",

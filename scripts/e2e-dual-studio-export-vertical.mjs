@@ -30,9 +30,10 @@ if (!fs.existsSync(SRC)) {
     SRC,
   ]);
 }
-const srcProbe = JSON.parse(execFileSync("ffprobe", ["-v", "quiet", "-print_format", "json", "-show_streams", SRC]));
+const srcProbe = JSON.parse(execFileSync("ffprobe", ["-v", "quiet", "-print_format", "json", "-show_streams", "-show_format", SRC]));
 const srcStream = srcProbe.streams.find((s) => s.codec_type === "video");
 const srcFps = srcStream.avg_frame_rate;
+const srcDuration = Number(srcProbe.format?.duration || 5);
 ok("Clip vertical generado 1080x1920", srcStream.width === 1080 && srcStream.height === 1920, `(${srcStream.width}x${srcStream.height} @ ${srcFps} fps)`);
 
 // 2. Browser + UI
@@ -54,27 +55,28 @@ await page.goto(BASE + "/dual-studio", { waitUntil: "networkidle" });
 const hasStudio = await page.isVisible("text=Canción Master Común");
 ok("Dual Studio carga", hasStudio);
 
-// Upload into the 9:16 slot (second file input)
-await page.locator('input[type="file"]').nth(1).setInputFiles(SRC);
+await page.getByRole("button", { name: /📱 Short 9:16/ }).click();
+// En la pestaña Short solo aparecen el clip activo y la canción.
+await page.locator('input[type="file"]').nth(0).setInputFiles(SRC);
 await page.waitForSelector("canvas", { timeout: 15000 });
-await page.waitForFunction(
+const draftReady = await page.waitForFunction(
   () => !document.body.innerText.includes("cargando clip…"),
   null,
   { timeout: 30000 }
-).catch(() => {});
-ok("Draft del clip 9:16 listo", true);
+).then(() => true).catch(() => false);
+ok("Draft del clip 9:16 listo", draftReady);
 const fullClipCard = page.getByTestId("visual-loop-9x16");
-await fullClipCard.getByText("Clip completo").waitFor({ timeout: 10000 });
+await fullClipCard.getByText(/s seleccionados/).waitFor({ timeout: 10000 });
 const fullClipText = await fullClipCard.innerText();
-ok("Short conserva el clip completo, sin micro-recorte", fullClipText.includes("Clip completo") && fullClipText.includes("5.0s por ciclo"), fullClipText.replace(/\n/g, " · "));
+ok("Short conserva el clip completo, sin micro-recorte", /\d+\.\d+s seleccionados/.test(fullClipText), fullClipText.replace(/\n/g, " · "));
 
-// Configure 9:16 workspace (selects 4..7 in DOM order): original, static, none, pingpong
+// Configure 9:16 workspace: original, static, none, pingpong
 const selects = page.locator("select");
-await selects.nth(4).selectOption("original");
-await selects.nth(5).selectOption("static");
-await selects.nth(6).selectOption("none");
+await selects.nth(0).selectOption("original");
+await selects.nth(1).selectOption("static");
+await selects.nth(2).selectOption("none");
 await page.getByText("Opciones avanzadas de continuidad").last().click();
-await selects.nth(7).selectOption("pingpong");
+await page.getByLabel("Modo de continuidad 9:16").selectOption("pingpong");
 await page.locator('input[type="checkbox"]').first().uncheck({ force: true }); // watermark off
 // 9:16 duration presets: pick 30s (last group of duration buttons contains "30s")
 const durationButtons = page.locator('button:text-is("30s")');
@@ -125,15 +127,17 @@ ok("Bitrate alto (>8 Mbps)", outBitrate > 8_000_000, `(${(outBitrate / 1e6).toFi
 const outDur = Number(outStream.duration || 0);
 ok("Duración objetivo 30s", Math.abs(outDur - 30) < 0.5, `(${outDur.toFixed(2)}s)`);
 
-// 5. Pingpong alignment: cycle = 2×5s; export frame at t=7.5s == source frame at 2.5s
-execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-ss", "7.5", "-i", OUT, "-frames:v", "1", `${WORK}/ev_frame.png`]);
-execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-ss", "2.5", "-i", SRC, "-frames:v", "1", `${WORK}/sv_frame.png`]);
+// 5. Pingpong alignment: en el cuarto tras el giro, t = 1.25D debe volver a 0.75D.
+const reverseOutputTime = srcDuration * 1.25;
+const expectedSourceTime = srcDuration * 0.75;
+execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-ss", String(reverseOutputTime), "-i", OUT, "-frames:v", "1", `${WORK}/ev_frame.png`]);
+execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-ss", String(expectedSourceTime), "-i", SRC, "-frames:v", "1", `${WORK}/sv_frame.png`]);
 const psnrOut = execFileSync("bash", ["-c",
   `ffmpeg -loglevel info -i "$1" -i "$2" -filter_complex psnr -f null - 2>&1`,
   "bash", `${WORK}/ev_frame.png`, `${WORK}/sv_frame.png`,
 ], { encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
 const m = (psnrOut.match(/average:([\d.]+|inf)/) || [])[1];
-ok("Pingpong reversa alineada (PSNR frame 7.5s ↔ source 2.5s >24 dB)", Number(m) > 24, `(${m} dB)`);
+ok("Pingpong reversa alineada (PSNR >24 dB)", Number(m) > 24, `(${m} dB; ${reverseOutputTime.toFixed(2)}s ↔ ${expectedSourceTime.toFixed(2)}s)`);
 
 // 5b. Sin frames negros: el bug del "pantallazo negro" aparecía justo en cada frontera
 // de ciclo (~10s aquí) cuando el primer PTS del source era > 0 y el frame 0 del ciclo

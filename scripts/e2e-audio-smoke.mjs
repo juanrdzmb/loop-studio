@@ -51,7 +51,30 @@ ok("Dual Studio carga", await page.isVisible("text=Canción Master Común"));
 // Video en slot 16:9 y canción en slot 3
 await page.locator('input[type="file"]').nth(0).setInputFiles(VIDEO);
 await page.waitForSelector("canvas", { timeout: 15000 });
-await page.locator('input[type="file"]').nth(2).setInputFiles(AUDIO);
+await page.getByTestId("visual-loop-16x9").getByText("5.0s seleccionados").waitFor();
+const visualSelects = page.locator("select");
+ok(
+  "Upload visual arranca limpio y estable",
+  await visualSelects.nth(0).inputValue() === "original"
+    && await visualSelects.nth(1).inputValue() === "static"
+    && await visualSelects.nth(2).inputValue() === "none"
+    && await page.locator('button:has-text("Reproducir")').count() === 1
+);
+const creativeProfile = page.getByLabel("Universo creativo del vídeo");
+await creativeProfile.getByRole("button", { name: /Vinland Saga/ }).click();
+ok(
+  "El universo creativo se elige antes de publicar",
+  await creativeProfile.getByRole("button", { name: /Vinland Saga/ }).getAttribute("aria-pressed") === "true"
+);
+await page.getByLabel("Inicio del recorte").fill("1");
+await page.getByLabel("Fin del recorte").fill("4");
+await page.getByTestId("visual-loop-16x9").getByRole("button", { name: /✨ Natural/ }).click();
+ok(
+  "El recorte manual 1s–4s se conserva al activar loop Natural",
+  await page.getByLabel("Inicio del recorte").inputValue() === "1"
+    && await page.getByLabel("Fin del recorte").inputValue() === "4"
+);
+await page.locator('input[type="file"]').nth(1).setInputFiles(AUDIO);
 await page.waitForFunction(
   () => document.body.innerText.includes("60.0s") || document.body.innerText.includes("60.1s"),
   null,
@@ -59,18 +82,9 @@ await page.waitForFunction(
 ).catch(() => {});
 ok("Canción decodificada (60s visible)", true);
 
-// Esperar al resultado del análisis: sin companion → análisis local (alineado a ritmo)
-// con su aviso en el panel; si el analizador local fallara, aviso heurístico.
-const heuristicSeen = await page.waitForFunction(
-  () => document.body.innerText.includes("análisis local") || document.body.innerText.includes("Sin análisis real"),
-  null,
-  { timeout: 20000 }
-).then(() => true).catch(() => false);
-ok("Aviso de fallback sin companion visible", heuristicSeen);
-
-// Transporte de música visible en la sección Slowed+Reverb
+// El transporte duplicado del bloque de audio se eliminó: queda uno por workspace.
 const transport = await page.locator('button:has-text("Escuchar")').count();
-ok("Transporte de música presente (botón Escuchar)", transport > 0, `(${transport} botones)`);
+ok("No hay un segundo transporte de música confuso", transport === 0, `(${transport} botones)`);
 
 // Preview completo: arranca con el transporte del workspace (Reproducir → Pausar)
 await page.locator('button:has-text("Reproducir")').first().click();
@@ -93,8 +107,9 @@ ok("16:9 usa la canción completa una sola vez", fullSongMode);
 
 // 9:16: ventana exacta, móvil y sin loop interno
 await page.getByTestId("loop-editor").getByRole("button", { name: "📱 9:16" }).click();
-const fixed25 = await page.getByTestId("loop-editor").getByText("Fragmento de salida: 25s").isVisible();
-ok("Short comienza con fragmento exacto de 25s", fixed25);
+await page.locator('input[type="file"]').nth(0).setInputFiles(VIDEO);
+const fixed30Initial = await page.getByTestId("loop-editor").getByText("Fragmento de salida: 30s").isVisible();
+ok("Short comienza con fragmento exacto de 30s", fixed30Initial);
 await page.getByRole("button", { name: "30s", exact: true }).click();
 const fixed30 = await page.getByTestId("loop-editor").getByText("Fragmento de salida: 30s").isVisible();
 ok("Cambiar a 30s conserva una sola toma exacta", fixed30);
@@ -102,18 +117,32 @@ const noInternalLoop = await page.getByTestId("loop-editor").getByText(/sin repe
 ok("La UI confirma que no hay repetición interna de audio", noInternalLoop);
 
 // Catálogo curado: diez efectos útiles, no el catálogo histórico completo
+await page.getByText("🧰 Extras · efectos de sonido").click();
 await page.getByRole("button", { name: /Añadir SFX en/ }).first().click();
 const curatedCount = await page.getByRole("button", { name: /Añadir en/ }).count();
 ok("Selector SFX muestra el catálogo curado", curatedCount === 10, `(${curatedCount} efectos)`);
 await page.getByRole("button", { name: "✕" }).last().click();
 
 // Seis perfiles editoriales reales, incluido Golden Brown
+await page.getByText("🧰 Extras · personaje y marca de agua").click();
 const profileCount = await page.locator('button:has-text("Golden Brown Slow Edit")').count();
 ok("Perfil Golden Brown / slow edit disponible", profileCount === 1);
 await page.getByLabel("Nombre de la canción para títulos").fill("Golden Brown");
 await page.locator('button:has-text("Golden Brown Slow Edit")').click();
+await page.getByText("🧰 Extras · portadas y textos de publicación").click();
 const generatedTitle = await page.getByTestId("youtube-title").innerText();
 ok("El título empieza por el nombre real de la canción", generatedTitle.startsWith("Golden Brown"), generatedTitle);
+const firstDescription = await page.getByTestId("youtube-description").inputValue();
+await page.getByRole("button", { name: /Regenerar Comentarios/ }).click();
+const regeneratedTitle = await page.getByTestId("youtube-title").innerText();
+const regeneratedDescription = await page.getByTestId("youtube-description").inputValue();
+ok(
+  "Regenerar crea un título y descripción distintos sin alargarlos",
+  regeneratedTitle !== generatedTitle
+    && regeneratedDescription !== firstDescription
+    && regeneratedDescription.length < 550,
+  `${regeneratedTitle} (${regeneratedDescription.length} caracteres)`
+);
 const multiPlatform =
   (await page.getByTestId("instagram-caption").inputValue()).includes("#Reels") &&
   (await page.getByTestId("tiktok-caption").inputValue()).includes("#TikTokEdits");

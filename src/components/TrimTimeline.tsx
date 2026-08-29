@@ -59,6 +59,7 @@ export default function TrimTimeline({ duration, start, end, currentTime, onChan
         )}
         <input
           type="range"
+          aria-label="Inicio del recorte"
           min={0}
           max={duration}
           step={0.01}
@@ -68,6 +69,7 @@ export default function TrimTimeline({ duration, start, end, currentTime, onChan
         />
         <input
           type="range"
+          aria-label="Fin del recorte"
           min={0}
           max={duration}
           step={0.01}
