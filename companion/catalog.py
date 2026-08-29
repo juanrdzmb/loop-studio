@@ -69,13 +69,33 @@ AMBIENCE: dict[str, dict] = {
     "farm": {"file": "farm_relax.mp3", "label": "Farm"},
 }
 
-# Live in audio_ambience/ (audio_sfx/ is empty)
+SFX_DIR = ROOT / "public" / "sfx"
+
+# Dedicated one-shot samples live in public/sfx/. Ambience loops stay in audio_ambience/.
 SFX: dict[str, dict] = {
     "thunder": {"file": "thunder.mp3", "label": "Thunder", "gain": 0.08},
     "katana": {"file": "katana.mp3", "label": "Katana", "gain": 0.06},
     "sword": {"file": "sword.mp3", "label": "Sword", "gain": 0.06},
     "bamboo": {"file": "bamboo.mp3", "label": "Bamboo", "gain": 0.09},
     "cave": {"file": "drop cave .mp3", "label": "Cave Drop", "gain": 0.10},
+    "berserk_dragonslayer_clang": {"file": "dragonslayer_clang.wav", "label": "Dragonslayer Clang", "gain": 0.12},
+    "berserk_dark_bell": {"file": "dark_bell.wav", "label": "Dark Bell", "gain": 0.10},
+    "berserk_heartbeat": {"file": "heartbeat.wav", "label": "Heartbeat", "gain": 0.12},
+    "berserk_sword_whoosh": {"file": "sword_whoosh.wav", "label": "Blade Cleave", "gain": 0.10},
+    "berserk_armor_rattle": {"file": "armor_rattle.wav", "label": "Armor Clatter", "gain": 0.10},
+    "vagabond_katana_draw": {"file": "katana_draw.wav", "label": "Katana Draw", "gain": 0.10},
+    "vagabond_sword_parry": {"file": "sword_parry.wav", "label": "Sword Parry", "gain": 0.10},
+    "vagabond_bamboo_drop": {"file": "bamboo_drop.wav", "label": "Bamboo Drop", "gain": 0.10},
+    "vagabond_zen_breath": {"file": "zen_breath.wav", "label": "Samurai Exhale", "gain": 0.09},
+    "climber_ice_axe": {"file": "ice_axe.wav", "label": "Ice Axe", "gain": 0.11},
+    "climber_blizzard": {"file": "blizzard.wav", "label": "Blizzard Gale", "gain": 0.10},
+    "climber_heavy_breath": {"file": "heavy_breath.wav", "label": "Thin Air Breath", "gain": 0.10},
+    "climber_rock_crumble": {"file": "rock_crumble.wav", "label": "Rock Crumble", "gain": 0.10},
+    "vinland_war_horn": {"file": "war_horn.wav", "label": "War Horn", "gain": 0.12},
+    "vinland_shield_bash": {"file": "shield_bash.wav", "label": "Shield Bash", "gain": 0.12},
+    "vinland_thunder_rain": {"file": "thunder.mp3", "label": "Thunder Rain", "gain": 0.10},
+    "manga_don_impact": {"file": "manga_don.wav", "label": "Manga Don Boom", "gain": 0.12},
+    "manga_page_turn": {"file": "manga_page.wav", "label": "Page Swipe", "gain": 0.08},
 }
 
 # Rotación para videos largos (sin corte brusco: el render funde entre capítulos)
@@ -119,8 +139,12 @@ def sfx_path(sid: str) -> str | None:
     meta = SFX.get(sid)
     if not meta:
         return None
-    p = AMB_DIR / meta["file"]
-    return str(p) if p.is_file() else None
+    name = meta["file"]
+    for folder in (SFX_DIR, AMB_DIR):
+        p = folder / name
+        if p.is_file():
+            return str(p)
+    return None
 
 
 def available_overlays() -> list[dict]:
@@ -228,6 +252,8 @@ VISUAL_STYLES: dict[str, dict] = {
 
 
 def visual_style_filter(style_id: str) -> str:
+    if style_id == "lofi_sunset":
+        style_id = "anime_lofi"
     meta = VISUAL_STYLES.get(style_id) or VISUAL_STYLES["anime_lofi"]
     return meta["filter"]
 

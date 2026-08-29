@@ -33,14 +33,26 @@ def _studio_out() -> Path:
         p = Path.home() / "Videos" / "Dark" / "Youtube" / "export"
     return p
 
-def _archive_render(src: str, *, shorts: bool, preview: bool) -> str | None:
+def _slug(s: str, n: int = 36) -> str:
+    import re
+    out = re.sub(r"[^a-zA-Z0-9]+", "-", (s or "").strip())[:n].strip("-").lower()
+    return out or ""
+
+
+def _archive_render(src: str, *, shorts: bool, preview: bool, character: str = "", song: str = "") -> str | None:
     if preview or not src or not os.path.isfile(src):
         return None
-    dest_dir = _studio_out() / ("shorts" if shorts else "16x9")
+    folder = "shorts" if shorts else "16x9"
+    char = _slug(character, 24) or "misc"
+    dest_dir = _studio_out() / folder / char
     dest_dir.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y-%m-%d_%H%M%S")
-    name = f"{stamp}_{'9x16' if shorts else '16x9'}.mp4"
-    dest = dest_dir / name
+    song_s = _slug(song, 36)
+    bits = [stamp]
+    if song_s:
+        bits.append(song_s)
+    bits.append("9x16" if shorts else "16x9")
+    dest = dest_dir / ("_".join(bits) + ".mp4")
     shutil.copy2(src, dest)
     return str(dest)
 
@@ -369,24 +381,45 @@ async def analyze_video(
             start = float(l["start_time"])
             end = float(l["end_time"])
             score, label = evaluate_motion_loop(start, end, smalls, flows, fps, stride, motion_period)
+            fade_sec = min(max(0.2 if score >= 85 else 0.4, 0.12), max(0.12, (end - start) * 0.1))
             cands.append({
                 "start": round(start, 3),
                 "end": round(end, 3),
                 "duration": round(float(l["duration"]), 3),
                 "score": score,
                 "label": label,
+                "kind": "detected",
+                "fade_sec": round(fade_sec, 3),
+                "reason": "LoopyCut alineó imagen y dirección de movimiento en la costura.",
             })
+        full_score, full_label = evaluate_motion_loop(
+            0.0, duration, smalls, flows, fps, stride, motion_period
+        )
+        full_fade = min(0.7, max(0.2, duration * 0.1))
         full_cand = {
             "start": 0.0,
             "end": round(duration, 3),
             "duration": round(duration, 3),
-            "score": 100.0,
-            "label": "Clip completo (Toma continua)" if motion_period <= 0 else f"Clip completo · Ciclo armónico ({duration:.1f}s)",
+            "score": full_score,
+            "label": full_label if full_score >= 70 else "Clip completo · Costura aproximada",
+            "kind": "full",
+            "fade_sec": round(full_fade, 3),
+            "reason": "Fallback que conserva el clip completo; la unión puede necesitar fundido.",
         }
-        longer = [c for c in cands if c["duration"] >= 3.0]
-        if not longer:
-            longer = [c for c in cands if c["duration"] >= 1.2]
-        cands = [full_cand] + _dedup_loops(longer or cands)[:7]
+        min_preferred_duration = max(3.0, duration * 0.5)
+        preferred = [
+            c for c in cands
+            if c["score"] >= 70.0 and c["duration"] >= min_preferred_duration
+        ]
+        if not preferred:
+            preferred = [c for c in cands if c["score"] >= 70.0 and c["duration"] >= 3.0]
+        ranked = _dedup_loops(preferred or cands)
+        ranked.sort(
+            key=lambda c: 0.75 * float(c["score"])
+            + 25.0 * min(1.0, float(c["duration"]) / max(0.1, duration)),
+            reverse=True,
+        )
+        cands = ranked[:7] + [full_cand]
         return {
             "candidates": cands,
             "duration": round(duration, 3),
@@ -418,13 +451,18 @@ def _loop_segment(
     fade = min(1.5, max(0.2, seam_fade if seam_fade > 0 else min(0.6, v_dur * 0.12)))
 
     if seam_mode == "pingpong" and v_dur >= 1.0:
+        turn_fade = min(0.35, max(0.12, v_dur * 0.06))
         vf = (
             f"[0:v]format=yuv420p,split=2[fwd][rev_src];"
             f"[fwd]setpts=PTS-STARTPTS,settb=AVTB[f];"
             f"[rev_src]reverse,setpts=PTS-STARTPTS,settb=AVTB[r];"
-            f"[f][r]concat=n=2:v=1:a=0,format=yuv420p[out]"
+            f"[f][r]xfade=transition=fade:duration={turn_fade:.4f}:offset={v_dur - turn_fade:.4f},settb=AVTB[fr];"
+            f"[fr]split=2[fr1][fr2];"
+            f"[fr1]trim=start=0:end={turn_fade:.4f},setpts=PTS-STARTPTS,settb=AVTB[b];"
+            f"[fr2]trim=start={turn_fade:.4f}:end={v_dur*2 - turn_fade*2:.4f},setpts=PTS-STARTPTS,settb=AVTB[m];"
+            f"[m][b]xfade=transition=fade:duration={turn_fade:.4f}:offset={v_dur*2 - turn_fade*3:.4f},format=yuv420p[out]"
         )
-        seg_dur = v_dur * 2
+        seg_dur = v_dur * 2 - turn_fade * 2
     elif seam_mode == "smooth" and v_dur > fade * 2.2:
         vf = (
             f"[0:v]format=yuv420p,split=3[beg][mid][end];"
@@ -823,17 +861,51 @@ def render_file(jid: str):
 async def export_image(
     kind: str = Form("thumbs"),
     file: UploadFile = File(...),
+    character: str = Form(""),
+    song: str = Form(""),
 ):
     folder = "covers" if kind in ("covers", "album", "cover") else "thumbs"
-    dest_dir = _studio_out() / folder
+    char = _slug(character, 24) or "misc"
+    dest_dir = _studio_out() / folder / char
     dest_dir.mkdir(parents=True, exist_ok=True)
     ext = os.path.splitext(file.filename or "img.jpg")[1] or ".jpg"
     if ext.lower() not in {".jpg", ".jpeg", ".png", ".webp"}:
         ext = ".jpg"
-    name = f"{time.strftime('%Y-%m-%d_%H%M%S')}{ext}"
+    stamp = time.strftime("%Y-%m-%d_%H%M%S")
+    song_s = _slug(song, 36)
+    name = f"{stamp}_{song_s or folder}{ext}"
     dest = dest_dir / name
     data = await file.read()
     dest.write_bytes(data)
     return {"ok": True, "path": str(dest)}
 
+
+@app.post("/export/media")
+async def export_media(
+    kind: str = Form("16x9"),
+    file: UploadFile = File(...),
+    character: str = Form(""),
+    song: str = Form(""),
+):
+    """Save a Dual Studio / Manga Motion export into ~/Vídeos/Dark/Youtube/export/…"""
+    kind_l = (kind or "16x9").lower()
+    if kind_l in ("thumbs", "covers", "album", "cover"):
+        return await export_image(kind=kind_l, file=file, character=character, song=song)
+    folder = "shorts" if kind_l in ("shorts", "9x16", "vertical") else "16x9"
+    char = _slug(character, 24) or "misc"
+    dest_dir = _studio_out() / folder / char
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y-%m-%d_%H%M%S")
+    song_s = _slug(song, 36)
+    ext = os.path.splitext(file.filename or "v.mp4")[1].lower() or ".mp4"
+    if ext not in {".mp4", ".webm", ".mov", ".jpg", ".jpeg", ".png", ".webp"}:
+        ext = ".mp4"
+    bits = [stamp]
+    if song_s:
+        bits.append(song_s)
+    bits.append("9x16" if folder == "shorts" else "16x9")
+    dest = dest_dir / ("_".join(bits) + ext)
+    data = await file.read()
+    dest.write_bytes(data)
+    return {"ok": True, "path": str(dest)}
 

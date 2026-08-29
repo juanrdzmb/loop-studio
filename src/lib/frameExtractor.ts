@@ -74,10 +74,14 @@ async function extractWithMediabunny(
   let done = 0;
   for await (const sample of sink.samplesAtTimestamps(timestamps)) {
     if (sample) {
-      sample.draw(ctx, 0, 0, w, h);
-      const img = ctx.getImageData(0, 0, w, h);
-      frames.push({ data: img.data, width: w, height: h });
-      sample.close();
+      try {
+        sample.draw(ctx, 0, 0, w, h);
+        const img = ctx.getImageData(0, 0, w, h);
+        frames.push({ data: img.data, width: w, height: h });
+      } finally {
+        // Nunca delegar este cierre al GC: VideoSample mantiene recursos del decoder.
+        sample.close();
+      }
     } else if (frames.length > 0) {
       // Sin frame en ese timestamp: repetir el último disponible
       frames.push(frames[frames.length - 1]);

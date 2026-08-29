@@ -5,6 +5,13 @@
   --foreground: #171717;
 }
 
+/* RootLayout fuerza el tema oscuro: no depender del tema del sistema evita
+   márgenes blancos alrededor de las herramientas oscuras. */
+html.dark {
+  --background: #09090b;
+  --foreground: #f4f4f5;
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);

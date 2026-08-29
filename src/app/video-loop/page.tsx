@@ -6,7 +6,9 @@ import TrimTimeline from "@/components/TrimTimeline";
 import SongLoopWaveform from "@/components/SongLoopWaveform";
 import { downloadBlob } from "@/lib/gifEncoder";
 import { studioStore } from "@/lib/sessionStore";
-import { ParticleType, PhysicsParticleSystem } from "@/lib/mangaMotionEngine";
+import { ParticleType, PhysicsParticleSystem, calculateOrganicPingPongTime } from "@/lib/mangaMotionEngine";
+import SfxLoopTimeline from "@/components/SfxLoopTimeline";
+import { LoopSfxCue } from "@/lib/seinenSfxLibrary";
 import {
   analyzeMusic,
   analyzeVideo,
@@ -364,17 +366,27 @@ function VideoSong16x9Player({
           sw = vid.videoWidth;
           sh = vid.videoHeight;
 
-          // Non-blocking smooth loop wrap
+          // Non-blocking smooth loop wrap with organic boomerang support
           if (isPlaying) {
             if (vid.paused) {
               vid.play().catch(() => {});
             }
-            if (vid.currentTime >= effEnd || vid.currentTime < effStart - 0.2) {
-              vid.currentTime = effStart;
+            if (seamMode === "pingpong") {
+              const pingT = calculateOrganicPingPongTime(elapsed, loopDur, "organic");
+              const targetT = effStart + pingT;
+              if (Math.abs(vid.currentTime - targetT) > 0.08) {
+                vid.currentTime = targetT;
+              }
+              curLoopSec = pingT;
+            } else {
+              if (vid.currentTime >= effEnd || vid.currentTime < effStart - 0.2) {
+                vid.currentTime = effStart;
+              }
+              curLoopSec = Math.max(0, Math.min(loopDur, vid.currentTime - effStart));
             }
+          } else {
+            curLoopSec = Math.max(0, Math.min(loopDur, vid.currentTime - effStart));
           }
-
-          curLoopSec = Math.max(0, Math.min(loopDur, vid.currentTime - effStart));
 
           // Real-time smooth seam crossfade with head frame
           if (seamMode === "smooth" && loopDur > seamFade) {
@@ -678,6 +690,7 @@ export default function VideoLoopPage() {
   const [sfxOn, setSfxOn] = useState(true);
   const [watermark, setWatermark] = useState(true);
   const [intensity, setIntensity] = useState(0.45);
+  const [sfxCues, setSfxCues] = useState<LoopSfxCue[]>([]);
 
   const [plan, setPlan] = useState<LayerPlan | null>(null);
   const [previewBusy, setPreviewBusy] = useState(false);
@@ -1075,7 +1088,23 @@ export default function VideoLoopPage() {
         videoStart: vStart,
         videoEnd: vEnd,
       });
-      setPlan(used);
+      const customSfxList = sfxCues.map((c) => ({
+        id: c.sfxId,
+        label: c.name || c.sfxId,
+        time: c.time,
+        gain: c.volume * 0.1,
+        volume: c.volume,
+        reason: "Timeline marker",
+      }));
+
+      const planToSend = {
+        ...used,
+        visualStyle,
+        overlay: atmosphere === "off" ? null : (particles !== "none" ? particles : used.overlay),
+        sfx: customSfxList.length > 0 ? customSfxList : used.sfx,
+        seamMode,
+        seamFade,
+      };
 
       const blob = await renderLoop(
         videoFile,
@@ -1087,13 +1116,7 @@ export default function VideoLoopPage() {
           audioEnd: audioSel.end,
           targetDuration: targetSec,
           preview: false,
-          plan: {
-            ...used,
-            visualStyle,
-            overlay: atmosphere === "off" ? null : (particles !== "none" ? particles : used.overlay),
-            seamMode,
-            seamFade,
-          },
+          plan: planToSend,
           seamMode,
           seamFade,
         },
@@ -1122,6 +1145,11 @@ export default function VideoLoopPage() {
     vStart,
     vEnd,
     onRenderProg,
+    sfxCues,
+    seamMode,
+    seamFade,
+    particles,
+    particleIntensity,
   ]);
 
   const generateShort = useCallback(async () => {
@@ -1819,6 +1847,18 @@ export default function VideoLoopPage() {
                 </div>
               </div>
             )}
+          </div>
+
+          {/* Seinen Manga SFX Loop Timeline Sequencer */}
+          <div className="pt-2">
+            <SfxLoopTimeline
+              loopDuration={targetSec}
+              currentTime={animTime % targetSec}
+              isPlaying={true}
+              hasMedia={Boolean(videoFile)}
+              cues={sfxCues}
+              onCuesChange={setSfxCues}
+            />
           </div>
 
           {/* Cinematic Manga Camera Modes */}

@@ -187,6 +187,11 @@ export class MangaLiveAudioPlayer {
   private playing = false;
   private currentConfig: MangaAudioConfig = { ...DEFAULT_MANGA_AUDIO_CONFIG };
 
+  /** Public access to the live AudioContext (creates it on demand) so SFX timelines can share one context. */
+  getAudioContext(): AudioContext | null {
+    return this.ctx ?? this.ensureContext();
+  }
+
   private ensureContext(): AudioContext {
     if (!this.ctx || this.ctx.state === "closed") {
       const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
@@ -619,7 +624,313 @@ export function drawFullAudioTrimmerWaveform(
 }
 
 /**
- * Render complete final master audio for WebCodecs MP4 export with clean segment extraction
+ * Renderiza UN período de loop (duración = slice − fade) con la costura de
+ * crossfade igual-potencia HORNEADA dentro del buffer: los primeros `fade`
+ * segundos mezclan la cola saliente (slice[period..dur)) con la cabeza entrante
+ * (slice[0..fade)) usando las mismas curvas sqrt del tiling del export.
+ *
+ * Es la primitiva compartida preview↔export: el preview loopea este buffer de
+ * forma nativa (AudioBufferSourceNode.loop) y el export lo repite hasta
+ * durationSec — la costura suena IDÉNTICA en ambos porque es el mismo audio.
+ */
+export async function buildProcessedLoopCycle(
+  slice: AudioBuffer,
+  volume: number,
+  opts?: { maxFadeSec?: number }
+): Promise<AudioBuffer> {
+  const sr = slice.sampleRate;
+  const channels = Math.min(2, Math.max(1, slice.numberOfChannels));
+  const vol = Math.max(0, volume);
+  // Canción completa → fundido un poco más largo (hasta 4 s) para que la transición
+  // fin→inicio del tema entero sea imperceptible; loops cortos mantienen 2.5 s.
+  const maxFade = opts?.maxFadeSec ?? 2.5;
+  const fade = Math.min(maxFade, Math.max(0.8, slice.duration * 0.06), slice.duration * 0.45);
+  const period = Math.max(0.2, slice.duration - fade);
+  const outLength = Math.max(1, Math.floor(period * sr));
+  const offline = new OfflineAudioContext(channels, outLength, sr);
+
+  const CURVE_POINTS = 128;
+  const fadeInCurve = new Float32Array(CURVE_POINTS);
+  const fadeOutCurve = new Float32Array(CURVE_POINTS);
+  for (let i = 0; i < CURVE_POINTS; i++) {
+    const x = i / (CURVE_POINTS - 1);
+    fadeInCurve[i] = Math.sqrt(x) * vol;
+    fadeOutCurve[i] = Math.sqrt(1 - x) * vol;
+  }
+
+  // Cola saliente (final del ciclo anterior): slice[period..dur) con fade-out
+  const tail = offline.createBufferSource();
+  tail.buffer = sliceAudioBuffer(slice, period, slice.duration - period);
+  const gTail = offline.createGain();
+  gTail.gain.setValueCurveAtTime(fadeOutCurve, 0, fade);
+  tail.connect(gTail);
+  gTail.connect(offline.destination);
+  tail.start(0);
+
+  // Cabeza entrante (inicio del ciclo siguiente): slice[0..period) con fade-in;
+  // tras la curva el gain queda clavado en el último valor (√1 · vol = vol)
+  const head = offline.createBufferSource();
+  head.buffer = sliceAudioBuffer(slice, 0, period);
+  const gHead = offline.createGain();
+  gHead.gain.setValueCurveAtTime(fadeInCurve, 0, fade);
+  head.connect(gHead);
+  gHead.connect(offline.destination);
+  head.start(0);
+
+  return offline.startRendering();
+}
+
+/**
+ * Extiende un slice ya procesado hasta targetSec repitiendo el ciclo de loop
+ * (buildProcessedLoopCycle). El resultado es periódico con período = ciclo: cada
+ * costura suena exactamente igual (incluida la del inicio), igual que en el
+ * preview que loopea ese mismo ciclo de forma nativa.
+ */
+export async function loopAudioWithCrossfade(
+  buffer: AudioBuffer,
+  targetSec: number,
+  musicVolume: number,
+  opts?: { maxFadeSec?: number }
+): Promise<AudioBuffer> {
+  const sr = buffer.sampleRate;
+  const channels = Math.min(2, Math.max(1, buffer.numberOfChannels));
+
+  if (buffer.duration >= targetSec - 0.02) {
+    const outLength = Math.max(1, Math.ceil(targetSec * sr));
+    const offline = new OfflineAudioContext(channels, outLength, sr);
+    const src = offline.createBufferSource();
+    src.buffer = sliceAudioBuffer(buffer, 0, targetSec);
+    const g = offline.createGain();
+    g.gain.value = musicVolume;
+    src.connect(g);
+    g.connect(offline.destination);
+    src.start(0);
+    return offline.startRendering();
+  }
+
+  const cycle = await buildProcessedLoopCycle(buffer, musicVolume, {
+    maxFadeSec: opts?.maxFadeSec,
+  });
+  const outLength = Math.max(1, Math.ceil(targetSec * sr));
+  const out = new AudioBuffer({ length: outLength, numberOfChannels: channels, sampleRate: sr });
+  const cycleLen = cycle.length;
+  for (let c = 0; c < channels; c++) {
+    const dst = out.getChannelData(c);
+    const src = cycle.getChannelData(Math.min(c, cycle.numberOfChannels - 1));
+    for (let pos = 0; pos < outLength; pos += cycleLen) {
+      dst.set(src.subarray(0, Math.min(cycleLen, outLength - pos)), pos);
+    }
+  }
+  return out;
+}
+
+/**
+ * Pipeline del PREVIEW: slice del recorte → slowed+reverb opcional → ciclo de
+ * loop con la costura horneada (buildProcessedLoopCycle). El buffer que devuelve
+ * es el MISMO período que el export repetirá (buildProcessedMusicSlice), así que
+ * lo que oyes en el preview es exactamente lo que se exporta. El volumen NO va
+ * horneado (se aplica en vivo con un GainNode): la ganancia lineal conmuta con
+ * las curvas sqrt del crossfade, por lo que el resultado es idéntico.
+ */
+export async function buildProcessedLoopBuffer(
+  req: Omit<ProcessedLoopRequest, "durationSec" | "volume">
+): Promise<AudioBuffer> {
+  // Modo canción completa: ignora el recorte y usa el tema entero con fundido largo
+  const isFull = !!req.fullSongLoop;
+  const len = isFull
+    ? Math.max(0.8, req.sourceBuffer.duration)
+    : Math.max(0.8, req.loopEnd - req.loopStart);
+  const start = isFull ? 0 : req.loopStart;
+  let slice = sliceAudioBuffer(req.sourceBuffer, start, len);
+  if (req.enableSlowedReverb) {
+    slice = await renderSlowedReverb(slice, req.reverbSettings);
+  }
+  return buildProcessedLoopCycle(slice, 1, { maxFadeSec: isFull ? 4.0 : 2.5 });
+}
+
+/**
+ * Pipeline compartido entre el export y el preview: slice del loop → slowed+reverb
+ * opcional → tiling con crossfade igual-potencia hasta durationSec.
+ */
+export interface ProcessedLoopRequest {
+  sourceBuffer: AudioBuffer;
+  loopStart: number;
+  loopEnd: number;
+  enableSlowedReverb: boolean;
+  reverbSettings: ReverbSettings;
+  durationSec: number;
+  volume: number;
+  /** Si true, ignora loopStart/End y usa la canción entera con fundido imperceptible */
+  fullSongLoop?: boolean;
+}
+
+export async function buildProcessedMusicSlice(req: ProcessedLoopRequest): Promise<AudioBuffer> {
+  const isFull = !!req.fullSongLoop;
+  const len = isFull
+    ? Math.max(0.8, req.sourceBuffer.duration)
+    : Math.max(0.8, req.loopEnd - req.loopStart);
+  const start = isFull ? 0 : req.loopStart;
+  let slice = sliceAudioBuffer(req.sourceBuffer, start, len);
+  if (req.enableSlowedReverb) {
+    slice = await renderSlowedReverb(slice, req.reverbSettings);
+  }
+  return loopAudioWithCrossfade(slice, req.durationSec, Math.max(0, req.volume), {
+    maxFadeSec: isFull ? 4.0 : 2.5,
+  });
+}
+
+export interface ProcessedOneShotRequest {
+  sourceBuffer: AudioBuffer;
+  /** Posición en la canción original. Se reajusta al final si no cabe la ventana. */
+  sourceStart?: number;
+  /** Duración exacta de salida. Si se omite, procesa la canción completa una sola vez. */
+  targetDurationSec?: number;
+  enableSlowedReverb: boolean;
+  reverbSettings: ReverbSettings;
+  volume?: number;
+}
+
+/**
+ * Convierte una duración de salida en la cantidad de canción fuente necesaria.
+ * Con slowed activo, 25 s de salida a 0.85x consumen 21.25 s del original.
+ */
+export function sourceWindowForOutput(
+  outputDurationSec: number,
+  enableSlowedReverb: boolean,
+  settings: ReverbSettings
+): number {
+  const speed = enableSlowedReverb ? Math.max(0.1, settings.speed) : 1;
+  return Math.max(0.05, outputDurationSec * speed);
+}
+
+/** Mantiene una ventana de duración fija dentro de los límites de la canción. */
+export function clampOneShotWindow(
+  requestedStart: number,
+  sourceWindowSec: number,
+  sourceDurationSec: number
+): { start: number; end: number; duration: number } {
+  const duration = Math.min(Math.max(0.05, sourceWindowSec), Math.max(0.05, sourceDurationSec));
+  const start = Math.max(0, Math.min(requestedStart, Math.max(0, sourceDurationSec - duration)));
+  return { start, end: Math.min(sourceDurationSec, start + duration), duration };
+}
+
+/**
+ * Copia un master al tamaño exacto, aplica volumen y reduce únicamente si el pico
+ * superaría -0.18 dBFS. Para fragmentos añade 15 ms de protección en los bordes:
+ * evita clics de corte sin crear una costura ni repetir audio dentro del Short.
+ */
+export function copyOneShotMaster(
+  buffer: AudioBuffer,
+  durationSec: number,
+  volume: number = 1,
+  edgeFadeSec: number = 0
+): AudioBuffer {
+  const channels = Math.min(2, Math.max(1, buffer.numberOfChannels));
+  const length = Math.max(1, Math.ceil(durationSec * buffer.sampleRate));
+  const out = new AudioBuffer({ length, numberOfChannels: channels, sampleRate: buffer.sampleRate });
+  const copyLength = Math.min(length, buffer.length);
+  let peak = 0;
+  for (let c = 0; c < channels; c++) {
+    const src = buffer.getChannelData(Math.min(c, buffer.numberOfChannels - 1));
+    for (let i = 0; i < copyLength; i++) peak = Math.max(peak, Math.abs(src[i]));
+  }
+  const requestedGain = Math.max(0, volume);
+  // Normalizar primero siempre al mismo master unity; después aplicar el volumen.
+  // Así preview (buffer unity + GainNode) y export (ganancia horneada) coinciden.
+  const normalizedGain = peak > 0.98 ? 0.98 / peak : 1;
+  const desiredGain = normalizedGain * requestedGain;
+  const gain = peak * desiredGain > 0.98 ? 0.98 / peak : desiredGain;
+  const fadeSamples = Math.min(
+    Math.floor(Math.max(0, edgeFadeSec) * buffer.sampleRate),
+    Math.floor(copyLength / 2)
+  );
+
+  for (let c = 0; c < channels; c++) {
+    const src = buffer.getChannelData(Math.min(c, buffer.numberOfChannels - 1));
+    const dst = out.getChannelData(c);
+    for (let i = 0; i < copyLength; i++) {
+      let edgeGain = 1;
+      if (fadeSamples > 0 && i < fadeSamples) edgeGain = i / fadeSamples;
+      if (fadeSamples > 0 && i >= copyLength - fadeSamples) {
+        edgeGain = Math.min(edgeGain, (copyLength - 1 - i) / fadeSamples);
+      }
+      dst[i] = src[i] * gain * Math.max(0, edgeGain);
+    }
+  }
+  return out;
+}
+
+/** Repite un master completo sin recortar su inicio ni su final. Las uniones
+ * intermedias usan fundido de potencia constante para evitar el golpe de vuelta. */
+export function repeatOneShotMasterWithCrossfade(
+  buffer: AudioBuffer,
+  repetitions: number
+): AudioBuffer {
+  const count = Math.max(1, Math.min(5, Math.round(repetitions)));
+  if (count === 1 || buffer.length < 2) return copyOneShotMaster(buffer, buffer.duration);
+  const channels = Math.min(2, Math.max(1, buffer.numberOfChannels));
+  const fadeSamples = Math.min(
+    Math.floor(buffer.sampleRate * Math.min(2, Math.max(0.8, buffer.duration * 0.06))),
+    Math.floor(buffer.length * 0.45)
+  );
+  if (fadeSamples < 2) return copyOneShotMaster(buffer, buffer.duration * count);
+  const stride = buffer.length - fadeSamples;
+  const length = buffer.length + (count - 1) * stride;
+  const out = new AudioBuffer({ length, numberOfChannels: channels, sampleRate: buffer.sampleRate });
+  let peak = 0;
+  for (let c = 0; c < channels; c++) {
+    const src = buffer.getChannelData(Math.min(c, buffer.numberOfChannels - 1));
+    const dst = out.getChannelData(c);
+    for (let repeat = 0; repeat < count; repeat++) {
+      const offset = repeat * stride;
+      for (let i = 0; i < buffer.length; i++) {
+        let gain = 1;
+        if (repeat > 0 && i < fadeSamples) gain *= Math.sqrt(i / fadeSamples);
+        if (repeat < count - 1 && i >= buffer.length - fadeSamples) {
+          gain *= Math.sqrt((buffer.length - 1 - i) / fadeSamples);
+        }
+        const at = offset + i;
+        dst[at] += src[i] * gain;
+      }
+    }
+    for (let i = 0; i < dst.length; i++) peak = Math.max(peak, Math.abs(dst[i]));
+  }
+  if (peak > 0.98) {
+    const gain = 0.98 / peak;
+    for (let c = 0; c < channels; c++) {
+      const data = out.getChannelData(c);
+      for (let i = 0; i < data.length; i++) data[i] *= gain;
+    }
+  }
+  return out;
+}
+
+/**
+ * Pipeline sin loops internos:
+ * - 16:9: procesa la canción completa una vez y conserva su duración resultante.
+ * - Short: procesa exactamente la ventana necesaria y entrega 25/30 s exactos.
+ */
+export async function buildProcessedOneShotBuffer(req: ProcessedOneShotRequest): Promise<AudioBuffer> {
+  const fixedOutput = req.targetDurationSec != null;
+  const sourceWindow = fixedOutput
+    ? sourceWindowForOutput(req.targetDurationSec!, req.enableSlowedReverb, req.reverbSettings)
+    : req.sourceBuffer.duration;
+  const window = clampOneShotWindow(
+    fixedOutput ? req.sourceStart ?? 0 : 0,
+    sourceWindow,
+    req.sourceBuffer.duration
+  );
+  let processed = sliceAudioBuffer(req.sourceBuffer, window.start, window.duration);
+  if (req.enableSlowedReverb) {
+    processed = await renderSlowedReverb(processed, req.reverbSettings);
+  }
+  const duration = fixedOutput ? req.targetDurationSec! : processed.duration;
+  return copyOneShotMaster(processed, duration, req.volume ?? 1, fixedOutput ? 0.015 : 0);
+}
+
+/**
+ * Render complete final master audio for WebCodecs MP4 export.
+ * Exact target duration: if the song is shorter, loop it with a constant-power-ish overlap fade.
  */
 export async function renderMangaMasterAudio(
   musicBuffer: AudioBuffer | null,
@@ -628,38 +939,20 @@ export async function renderMangaMasterAudio(
 ): Promise<AudioBuffer | null> {
   if (!musicBuffer) return null;
 
-  const sr = 44100;
-  const outLength = Math.ceil(targetDurationSeconds * sr);
-  const offline = new OfflineAudioContext(2, outLength, sr);
-
-  const speed = Math.max(0.1, config.reverbSettings.speed);
-  const sliceDur = targetDurationSeconds * speed;
+  const alreadyProcessed = !config.useSlowedReverb;
+  const speed = alreadyProcessed ? 1 : Math.max(0.1, config.reverbSettings.speed);
+  const sliceDur = Math.max(0.05, targetDurationSeconds * speed);
   const slicedBuffer = sliceAudioBuffer(musicBuffer, config.audioStartTime || 0, sliceDur);
 
-  let processedMusic: AudioBuffer | null = null;
-  if (config.useSlowedReverb) {
-    processedMusic = await renderSlowedReverb(slicedBuffer, config.reverbSettings);
-  } else {
-    processedMusic = slicedBuffer;
-  }
+  const processedMusic = config.useSlowedReverb
+    ? await renderSlowedReverb(slicedBuffer, config.reverbSettings)
+    : slicedBuffer;
 
-  await ensureReverbWorklet(offline);
-
-  if (processedMusic) {
-    const musicSource = offline.createBufferSource();
-    musicSource.buffer = processedMusic;
-    musicSource.loop = true;
-
-    const musicGain = offline.createGain();
-    musicGain.gain.value = config.musicVolume;
-
-    musicSource.connect(musicGain);
-    musicGain.connect(offline.destination);
-    musicSource.start(0);
-  }
-
-  const finalRenderedBuffer = await offline.startRendering();
-  return finalRenderedBuffer;
+  return loopAudioWithCrossfade(
+    processedMusic,
+    targetDurationSeconds,
+    Math.max(0, config.musicVolume)
+  );
 }
 
 export interface AudioHighlightAnalysis {
@@ -720,9 +1013,6 @@ export function analyzeAudioHighlights(buffer: AudioBuffer): AudioHighlightAnaly
   // Find Build-up: highest positive slope (rise)
   let bestRiseIdx = 0;
   let bestRiseScore = -1;
-
-  // Find Melodic: moderate energy with high dynamic variation
-  let bestMelodicIdx = 0;
 
   for (let i = 1; i < numWindows - 1; i++) {
     const smoothed = (energyProfile[i - 1] + energyProfile[i] + energyProfile[i + 1]) / 3;

@@ -369,19 +369,40 @@ export class SlowedReverbPlayer {
   private anchorTime = 0;
   private rate = 1;
   private playing = false;
+  private loopRange: { start: number; end: number } | null = null;
+  /** Serializa cargas: evita carreras si el effect re-dispara load() durante una carga en vuelo */
+  private loadChain: Promise<unknown> = Promise.resolve();
 
   get isPlaying(): boolean {
     return this.playing;
   }
 
-  async load(file: File): Promise<number> {
+  load(file: File): Promise<number> {
+    const run = async (): Promise<number> => {
+      await this.stop();
+      if (!this.ctx) this.ctx = new AudioContext();
+      await ensureReverbWorklet(this.ctx);
+      const arr = await file.arrayBuffer();
+      this.buffer = await this.ctx.decodeAudioData(arr);
+      this.anchorOffset = 0;
+      return this.buffer.duration;
+    };
+    const p = this.loadChain.then(run, run);
+    this.loadChain = p.catch(() => {});
+    return p;
+  }
+
+  /**
+   * Inyecta un buffer ya decodificado (evita re-decodificar el mismo archivo
+   * en cada player). Debe llamarse tras un gesto de usuario para que el
+   * AudioContext pueda resumirse después.
+   */
+  async setBuffer(buffer: AudioBuffer): Promise<void> {
     await this.stop();
     if (!this.ctx) this.ctx = new AudioContext();
     await ensureReverbWorklet(this.ctx);
-    const arr = await file.arrayBuffer();
-    this.buffer = await this.ctx.decodeAudioData(arr);
+    this.buffer = buffer;
     this.anchorOffset = 0;
-    return this.buffer.duration;
   }
 
   get duration(): number {
@@ -394,15 +415,27 @@ export class SlowedReverbPlayer {
     return this.buffer;
   }
 
-  play(s: ReverbSettings) {
+  async play(s: ReverbSettings, loopRange?: { start: number; end: number }) {
     if (!this.ctx || !this.buffer || this.playing) return;
-    void this.ctx.resume();
+    try {
+      await this.ctx.resume();
+    } catch {}
+    // Re-chequeo tras el await: otro play() pudo completarse mientras tanto
+    if (!this.ctx || !this.buffer || this.playing) return;
     if (this.graph) {
       teardownGraph(this.graph);
       this.graph = null;
     }
     this.graph = buildGraph(this.ctx, this.buffer, s, this.ctx.destination);
     this.rate = s.speed;
+    if (loopRange) this.loopRange = loopRange;
+    const loop = this.loopRange;
+    const loopLen = loop ? loop.end - loop.start : 0;
+    if (loop && loopLen > 0.6) {
+      this.graph.source.loop = true;
+      this.graph.source.loopStart = Math.max(0, loop.start);
+      this.graph.source.loopEnd = Math.min(this.buffer.duration, loop.end);
+    }
     const from = Math.min(Math.max(0, this.anchorOffset), Math.max(0, this.buffer.duration - 0.01));
     // Rampa corta para evitar clics al arrancar o tras un seek
     const t0 = this.ctx.currentTime;
@@ -437,6 +470,25 @@ export class SlowedReverbPlayer {
     }
     liveUpdateGraph(this.ctx, this.graph, s);
     this.settings = { ...s };
+  }
+
+  /**
+   * Actualiza los puntos de loop del source en caliente (aplicados al siguiente wrap).
+   * Si está sonando, la posición actual se conserva; llama a seek() para saltar.
+   */
+  setLoopRange(range: { start: number; end: number } | null) {
+    this.loopRange = range;
+    if (!this.graph || !this.buffer) return;
+    const loopLen = range ? range.end - range.start : 0;
+    if (range && loopLen > 0.6) {
+      this.graph.source.loop = true;
+      this.graph.source.loopStart = Math.max(0, range.start);
+      this.graph.source.loopEnd = Math.min(this.buffer.duration, range.end);
+    } else {
+      this.graph.source.loop = false;
+      this.graph.source.loopStart = 0;
+      this.graph.source.loopEnd = 0;
+    }
   }
 
   pause() {
@@ -486,6 +538,175 @@ export class SlowedReverbPlayer {
     this.ctx = null;
   }
 
+}
+
+/**
+ * Reproductor de un buffer YA PROCESADO en loop nativo (sample-accurate, sin gap).
+ * Es la mitad de audio del preview de dual-studio: recibe el ciclo de loop renderizado
+ * offline con el mismo pipeline del export (buildProcessedLoopBuffer) y lo loopea.
+ *
+ * La cadena es mínima (source → gain → destination): sin worklet ni convolver, así que
+ * cambiar volumen es en vivo y re-anclar tras un seek no produce cortes apreciables.
+ * El loop SIEMPRE está activo (el buffer ya ES el ciclo); nada lo desactiva por corto.
+ */
+export class LoopBufferPlayer {
+  private ctx: AudioContext | null = null;
+  private buffer: AudioBuffer | null = null;
+  private source: AudioBufferSourceNode | null = null;
+  private gain: GainNode | null = null;
+  /** Posición de lectura dentro del buffer (s) al anclar el reloj */
+  private anchorOffset = 0;
+  /** ctx.currentTime en el momento del ancla */
+  private anchorTime = 0;
+  private playing = false;
+  private volume = 1;
+
+  constructor() {
+    const AudioContextClass =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    this.ctx = new AudioContextClass();
+    this.gain = this.ctx.createGain();
+    this.gain.gain.value = this.volume;
+    this.gain.connect(this.ctx.destination);
+  }
+
+  get isPlaying(): boolean {
+    return this.playing;
+  }
+
+  get duration(): number {
+    return this.buffer ? this.buffer.duration : 0;
+  }
+
+  get decodedBuffer(): AudioBuffer | null {
+    return this.buffer;
+  }
+
+  setVolume(v: number) {
+    this.volume = Math.max(0, v);
+    if (this.gain && this.ctx) {
+      this.gain.gain.setTargetAtTime(this.volume, this.ctx.currentTime, 0.02);
+    }
+  }
+
+  /**
+   * Sustituye el buffer (nuevo ciclo renderizado) conservando la posición RELATIVA
+   * si estaba sonando, para que el swap no salte de sitio de forma audible.
+   */
+  async setBuffer(buffer: AudioBuffer): Promise<void> {
+    const frac =
+      this.buffer && this.buffer.duration > 0 && this.playing
+        ? Math.min(1, Math.max(0, this.getOffset() / this.buffer.duration))
+        : 0;
+    this.buffer = buffer;
+    if (this.playing) {
+      const target = frac * buffer.duration;
+      this.rebuildSource(target);
+    } else {
+      this.anchorOffset = Math.min(this.anchorOffset, Math.max(0, buffer.duration - 0.01));
+    }
+  }
+
+  /** Detiene el source actual y arranca uno nuevo en `from` (usado por play y seek). */
+  private rebuildSource(from: number) {
+    if (!this.ctx || !this.buffer || !this.gain) return;
+    if (this.source) {
+      try {
+        this.source.onended = null;
+        this.source.stop();
+      } catch {
+        /* ya parado */
+      }
+      try {
+        this.source.disconnect();
+      } catch {
+        /* ignore */
+      }
+      this.source = null;
+    }
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.buffer;
+    src.loop = true;
+    src.loopStart = 0;
+    src.loopEnd = this.buffer.duration;
+    src.connect(this.gain);
+    const start = Math.min(Math.max(0, from), Math.max(0, this.buffer.duration - 0.01));
+    // Rampa corta para evitar clics al arrancar o tras un seek
+    const t0 = this.ctx.currentTime;
+    this.gain.gain.cancelScheduledValues(t0);
+    this.gain.gain.setValueAtTime(0.0001, t0);
+    this.gain.gain.exponentialRampToValueAtTime(Math.max(0.0002, this.volume), t0 + 0.03);
+    src.start(t0, start);
+    this.source = src;
+    this.anchorOffset = start;
+    this.anchorTime = t0;
+  }
+
+  async play(fromSec?: number) {
+    if (!this.ctx || !this.buffer) return;
+    try {
+      await this.ctx.resume();
+    } catch {}
+    if (this.playing) {
+      // Ya sonando: un play sin posición explícita no hace nada; con posición, re-ancla
+      if (fromSec === undefined) return;
+    }
+    this.rebuildSource(fromSec !== undefined ? fromSec : this.anchorOffset);
+    this.playing = true;
+  }
+
+  pause() {
+    if (!this.playing) return;
+    this.anchorOffset = this.getOffset();
+    if (this.source) {
+      try {
+        this.source.onended = null;
+        this.source.stop();
+      } catch {
+        /* ya parado */
+      }
+      try {
+        this.source.disconnect();
+      } catch {
+        /* ignore */
+      }
+      this.source = null;
+    }
+    this.playing = false;
+  }
+
+  /** Salta a una posición del buffer (s). Si suena, re-ancla sin cortes apreciables. */
+  seek(seconds: number) {
+    if (!this.buffer) return;
+    const target = Math.max(0, Math.min(seconds, this.buffer.duration - 0.01));
+    if (this.playing) {
+      this.rebuildSource(target);
+    } else {
+      this.anchorOffset = target;
+    }
+  }
+
+  /** Posición de lectura actual dentro del buffer (0..duration) */
+  getOffset(): number {
+    if (!this.ctx) return this.anchorOffset;
+    return this.playing ? this.anchorOffset + (this.ctx.currentTime - this.anchorTime) : this.anchorOffset;
+  }
+
+  dispose() {
+    this.pause();
+    if (this.gain) {
+      try {
+        this.gain.disconnect();
+      } catch {
+        /* ignore */
+      }
+      this.gain = null;
+    }
+    this.buffer = null;
+    void this.ctx?.close();
+    this.ctx = null;
+  }
 }
 
 /** Renderiza offline con los ajustes y devuelve un AudioBuffer final */

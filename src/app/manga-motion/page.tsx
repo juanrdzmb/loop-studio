@@ -15,9 +15,12 @@ import {
   renderMangaMotionFrame,
 } from "@/lib/mangaMotionEngine";
 import { exportMangaMotionVideo } from "@/lib/mangaMotionExport";
-import { renderMangaMotionVideoBackend } from "@/lib/companion";
+import { renderMangaMotionVideoBackend, saveExportMedia } from "@/lib/companion";
+import { ensureWatermarkFont } from "@/lib/watermark";
 import {
   MangaTextItem,
+  TextDepthPlane,
+  TextEntranceEffect,
   BubbleType,
   MANGA_SFX_DICTIONARY,
   ANIME_PHRASES,
@@ -37,6 +40,8 @@ import {
   AudioHighlightAnalysis,
 } from "@/lib/mangaAudioEngine";
 import { audioBufferToWav } from "@/lib/audioEngine";
+import SfxLoopTimeline from "@/components/SfxLoopTimeline";
+import { LoopSfxCue } from "@/lib/seinenSfxLibrary";
 
 export default function MangaMotionStudioPage() {
   // Project Settings
@@ -50,6 +55,9 @@ export default function MangaMotionStudioPage() {
   const [mediaFileName, setMediaFileName] = useState<string>("");
   const [isVideo, setIsVideo] = useState<boolean>(false);
   const [videoDuration, setVideoDuration] = useState<number>(0);
+
+  // SFX Timeline Cues
+  const [sfxCues, setSfxCues] = useState<LoopSfxCue[]>([]);
 
   // Audio Engine State
   const [audioBuffer, setAudioBuffer] = useState<AudioBuffer | null>(null);
@@ -96,6 +104,8 @@ export default function MangaMotionStudioPage() {
 
   // Audio Player Ref
   const audioPlayerRef = useRef<MangaAudioPlayer | null>(null);
+  // Shared AudioContext handle for the SFX timeline (filled when the player is created)
+  const audioCtxRef = useRef<AudioContext | null>(null);
 
   // Live Timer decoupled from state for smooth 60 FPS
   const currentTimeRef = useRef(0);
@@ -105,6 +115,10 @@ export default function MangaMotionStudioPage() {
   const audioConfigRef = useRef(audioConfig);
   const isAudioMutedRef = useRef(isAudioMuted);
   const mediaElRef = useRef<HTMLImageElement | HTMLVideoElement | null>(null);
+
+  useEffect(() => {
+    void ensureWatermarkFont();
+  }, []);
 
   useEffect(() => {
     configRef.current = config;
@@ -130,6 +144,7 @@ export default function MangaMotionStudioPage() {
   const getAudioPlayer = useCallback(() => {
     if (!audioPlayerRef.current) {
       audioPlayerRef.current = new MangaAudioPlayer();
+      audioCtxRef.current = audioPlayerRef.current.getAudioContext();
     }
     return audioPlayerRef.current;
   }, []);
@@ -511,9 +526,10 @@ export default function MangaMotionStudioPage() {
     if (!mediaEl) return;
 
     let animId: number;
-    let lastTime = performance.now();
+    let lastTime = 0;
 
     const loop = (now: number) => {
+      if (!lastTime) lastTime = now;
       const delta = Math.min(0.1, (now - lastTime) / 1000);
       lastTime = now;
 
@@ -530,21 +546,8 @@ export default function MangaMotionStudioPage() {
           }
         }
 
-        // Sync Video Element current time with seamless loop mode (ping-pong / smooth)
         if (mediaElRef.current instanceof HTMLVideoElement) {
           const vid = mediaElRef.current;
-          const vidDur = vid.duration || maxDur;
-          let targetVidT = 0;
-          if (configRef.current.seamMode === "pingpong") {
-            const pingPhase = (currentTimeRef.current % (vidDur * 2)) / vidDur;
-            const normT = pingPhase <= 1.0 ? pingPhase : 2.0 - pingPhase;
-            targetVidT = normT * vidDur;
-          } else {
-            targetVidT = currentTimeRef.current % vidDur;
-          }
-          if (Math.abs(vid.currentTime - targetVidT) > 0.18) {
-            vid.currentTime = targetVidT;
-          }
           if (vid.paused && isPlayingRef.current) {
             void vid.play();
           }
@@ -780,7 +783,7 @@ export default function MangaMotionStudioPage() {
     pausePlayback();
     setIsExporting(true);
     setExportProgress(0);
-    setExportStatus("Sintetizando audio maestro y codificando video HD a 60 FPS...");
+    setExportStatus("Preparando audio maestro y ciclo visual…");
     setError(null);
 
     try {
@@ -800,33 +803,20 @@ export default function MangaMotionStudioPage() {
         }
       }
 
-      if (isVideo && rawMediaFile) {
-        setExportStatus("Renderizando video con aceleración FFmpeg (partículas + filtros + loop continuo)...");
-        setExportProgress(20);
-        const audioFileToSend = audioBlob
-          ? new File([audioBlob], "master_audio.wav", { type: "audio/wav" })
-          : null;
-        const blob = await renderMangaMotionVideoBackend(rawMediaFile, audioFileToSend, {
-          ...config,
-          duration: targetDuration,
-        });
-        setExportProgress(100);
-        if (exportedVideoUrl) {
-          URL.revokeObjectURL(exportedVideoUrl);
-        }
-        const videoUrl = URL.createObjectURL(blob);
-        setExportedVideoUrl(videoUrl);
-        setExportedBlob(blob);
-        setExportStatus(`¡Video HD (${targetDuration}s) generado con éxito! Puedes reproducirlo abajo o descargarlo.`);
-        return;
+      if (!mediaEl) {
+        throw new Error("Por favor, sube una imagen o video primero.");
       }
 
+      setExportStatus("Renderizando ciclo visual (partículas + filtros + loop)…");
       const res = await exportMangaMotionVideo({
         image: mediaEl,
+        sourceFile: rawMediaFile,
         config: { ...config, duration: targetDuration },
         audioBuffer: finalAudio,
-        onProgress: (ratio) => {
+        sfxCues,
+        onProgress: (ratio, stage) => {
           setExportProgress(Math.round(ratio * 100));
+          if (stage) setExportStatus(stage);
         },
       });
 
@@ -837,7 +827,16 @@ export default function MangaMotionStudioPage() {
       const videoUrl = URL.createObjectURL(res.blob);
       setExportedVideoUrl(videoUrl);
       setExportedBlob(res.blob);
-      setExportStatus(`¡Video HD (${targetDuration}s) generado con éxito! Puedes reproducirlo abajo o descargarlo.`);
+      const darkKind = config.aspectRatio === "9:16" ? "shorts" : "16x9";
+      const darkPath = await saveExportMedia(res.blob, {
+        kind: darkKind,
+        song: audioFileName || mediaFileName,
+      });
+      setExportStatus(
+        darkPath
+          ? `Video HD (${targetDuration}s) listo · guardado en Dark: ${darkPath}`
+          : `¡Video HD (${targetDuration}s) generado con éxito! Puedes reproducirlo abajo o descargarlo.`
+      );
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Error al exportar el video");
     } finally {
@@ -1396,7 +1395,7 @@ export default function MangaMotionStudioPage() {
                       <select
                         value={activeTextObj.depthPlane || "always_visible"}
                         onChange={(e) => {
-                          const val = e.target.value as any;
+                          const val = e.target.value as TextDepthPlane;
                           setConfig((prev) => ({
                             ...prev,
                             textItems: prev.textItems.map((item) =>
@@ -1421,7 +1420,7 @@ export default function MangaMotionStudioPage() {
                       <select
                         value={activeTextObj.entranceEffect || "none"}
                         onChange={(e) => {
-                          const val = e.target.value as any;
+                          const val = e.target.value as TextEntranceEffect;
                           setConfig((prev) => ({
                             ...prev,
                             textItems: prev.textItems.map((item) =>
@@ -1910,6 +1909,19 @@ export default function MangaMotionStudioPage() {
                   </div>
                 </div>
               )}
+
+              {/* Seinen Manga Loop SFX Timeline Sequencer */}
+              <SfxLoopTimeline
+                loopDuration={config.duration}
+                currentTime={currentTime}
+                isPlaying={isPlaying}
+                onTogglePlay={togglePlayPause}
+                cues={sfxCues}
+                onCuesChange={setSfxCues}
+                onSeekRequest={handleSeek}
+                hasMedia={Boolean(mediaEl)}
+                audioContextRef={audioCtxRef}
+              />
 
               {/* Audio Presets & Slowed Reverb */}
               <div className="space-y-2">

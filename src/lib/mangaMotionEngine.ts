@@ -33,6 +33,7 @@ import {
   MangaTextItem,
   drawMangaTextBubble,
 } from "./mangaTypographyEngine";
+import { drawProfessionalWatermark } from "./watermark";
 
 export type AspectRatio = "9:16" | "16:9" | "1:1";
 export type CameraMovement =
@@ -65,7 +66,8 @@ export type AestheticStyle =
   | "cyberpunk_neon"
   | "screentone"
   | "vintage_sepia"
-  | "lofi_sunset";
+  | "lofi_sunset"
+  | "golden_sunset";
 
 export type KatanaArcColor =
   | "getsuga_dark"     // Dark violet / cyan void
@@ -94,7 +96,9 @@ export interface MangaMotionConfig {
   fps: number;             // 30 or 60
   enableSeamlessLoop: boolean;
   loopCrossfadeDuration: number; // 1.0..3.0s
-  seamMode: "smooth" | "pingpong" | "cut";
+  seamMode: "smooth" | "pingpong" | "cut" | "calm";
+  /** Velocidad de la fuente en Continuo calmado (0.25..0.75; default 0.4). */
+  calmPlaybackRate?: number;
 
   // Clean Camera Movement (Zero unwanted jitter)
   cameraMove: CameraMovement;
@@ -130,6 +134,11 @@ export interface MangaMotionConfig {
   aestheticStyle: AestheticStyle;
   vignette: number;        // 0..100
   grain: number;           // 0..100
+
+  // Watermark (Central subtle branding)
+  watermarkEnabled?: boolean;
+  watermarkText?: string;
+  watermarkOpacity?: number; // 0..1
 }
 
 export const CAMERA_MODE_DEFAULTS: Record<
@@ -198,6 +207,7 @@ export const DEFAULT_MANGA_CONFIG: MangaMotionConfig = {
   enableSeamlessLoop: true,
   loopCrossfadeDuration: 1.8,
   seamMode: "smooth",
+  calmPlaybackRate: 0.4,
 
   cameraMove: "static",    // Clean static by default
   cameraSpeed: 1.0,
@@ -237,6 +247,10 @@ export const DEFAULT_MANGA_CONFIG: MangaMotionConfig = {
   aestheticStyle: "original",
   vignette: 0,
   grain: 0,
+
+  watermarkEnabled: true,
+  watermarkText: "SILENT VIGIL",
+  watermarkOpacity: 0.28,
 };
 
 // Curated Pro Manga Presets
@@ -469,6 +483,9 @@ interface Particle {
   z: number;           // Depth 0.2 .. 1.0
   vx: number;
   vy: number;
+  /** Velocidad base (px/frame a factor=1); la lluvia la fija al spawn sin jitter por frame */
+  vx0: number;
+  vy0: number;
   rot: number;
   vRot: number;
   wobblePhase: number;
@@ -484,26 +501,36 @@ class PhysicsParticleSystem {
   private currentType: ParticleType = "none";
   private maxParticles = 90;
 
-  init(type: ParticleType, targetW: number, targetH: number) {
+  init(type: ParticleType, targetW: number, targetH: number, intensity = 50) {
     this.currentType = type;
     this.particles = [];
     if (type === "none") return;
 
-    const count = type === "bamboo_leaves" ? 35 : type === "embers_fire" ? 65 : type === "sakura_petals" ? 45 : 75;
+    let count: number;
+    if (type === "bamboo_leaves") count = 35;
+    else if (type === "embers_fire") count = 65;
+    else if (type === "sakura_petals") count = 45;
+    else if (type === "cinematic_rain") {
+      // La lluvia responde a la intensidad con DENSIDAD (no solo velocidad):
+      // 50 → ~120 gotas, 10 → ~48, 100 → ~240 (tope por rendimiento).
+      count = Math.round(120 * Math.min(2, Math.max(0.4, intensity / 50)));
+    } else count = 75;
 
     for (let i = 0; i < count; i++) {
-      this.particles.push(this.createParticle(targetW, targetH, true));
+      this.particles.push(this.createParticle(type, targetW, targetH, true));
     }
   }
 
-  private createParticle(targetW: number, targetH: number, randomY = false): Particle {
+  private createParticle(type: ParticleType, targetW: number, targetH: number, randomY = false): Particle {
     const z = 0.3 + Math.random() * 0.7; // depth
-    return {
+    const p: Particle = {
       x: Math.random() * targetW,
       y: randomY ? Math.random() * targetH : -20 - Math.random() * 60,
       z,
       vx: (Math.random() - 0.5) * 1.5,
       vy: 1.0 + Math.random() * 2.5,
+      vx0: 0,
+      vy0: 0,
       rot: Math.random() * Math.PI * 2,
       vRot: (Math.random() - 0.5) * 0.05,
       wobblePhase: Math.random() * Math.PI * 2,
@@ -513,20 +540,48 @@ class PhysicsParticleSystem {
       size: 8 + Math.random() * 18,
       hue: Math.random(),
     };
+    if (type === "cinematic_rain") {
+      // Caída rápida y rectilínea: velocidad FIJA por gota (el Math.random() por frame
+      // provocaba jitter visible). Parallax: las lejanas (z bajo) caen más lento.
+      p.vy0 = (11 + Math.random() * 6) * (0.45 + 0.55 * z);
+      // Deriva de viento coherente (toda la lluvia misma diagonal aproximada)
+      p.vx0 = p.vy0 * (-0.14 - Math.random() * 0.1);
+      p.vx = p.vx0;
+      p.vy = p.vy0;
+      p.rot = 0;
+      p.vRot = 0;
+    }
+    return p;
   }
 
-  update(type: ParticleType, intensity: number, targetW: number, targetH: number, t: number, speedMult: number = 1.0) {
+  update(type: ParticleType, intensity: number, targetW: number, targetH: number, t: number, speedMult: number = 1.0, dtScale: number = 1.0) {
     if (type !== this.currentType) {
-      this.init(type, targetW, targetH);
+      this.init(type, targetW, targetH, intensity);
     }
     if (type === "none") return;
 
     const factor = (intensity / 50) * speedMult;
+    // dtScale normaliza el movimiento al tiempo real (1.0 = un frame a 60 fps) para que la
+    // velocidad sea idéntica en preview (refresco del monitor) y export (fps del source).
+    const step = Math.max(0, Math.min(4, Number.isFinite(dtScale) ? dtScale : 1));
+
+    // Densidad de lluvia en vivo: el slider de intensidad añade/quita gotas gradualmente
+    if (type === "cinematic_rain") {
+      const targetRain = Math.round(120 * Math.min(2, Math.max(0.4, intensity / 50)));
+      if (this.particles.length < targetRain) {
+        const add = Math.min(6, targetRain - this.particles.length);
+        for (let k = 0; k < add; k++) {
+          this.particles.push(this.createParticle("cinematic_rain", targetW, targetH, false));
+        }
+      } else if (this.particles.length > targetRain + 10) {
+        this.particles.length = targetRain + 10;
+      }
+    }
 
     for (let i = 0; i < this.particles.length; i++) {
       const p = this.particles[i];
-      p.wobblePhase += 0.03 * p.wobbleSpeed * factor;
-      p.rot += p.vRot * factor;
+      p.wobblePhase += 0.03 * p.wobbleSpeed * factor * step;
+      p.rot += p.vRot * factor * step;
 
       if (type === "bamboo_leaves") {
         // Falling and fluttering in wind
@@ -540,8 +595,9 @@ class PhysicsParticleSystem {
         p.vx = Math.sin(p.wobblePhase) * 2.2 + 0.5;
         p.vy = (1.4 + Math.sin(p.wobblePhase * 1.2) * 0.5) * p.z * factor;
       } else if (type === "cinematic_rain") {
-        p.vx = -1.5 * factor;
-        p.vy = (14.0 + Math.random() * 4.0) * p.z * factor;
+        // Velocidad fija asignada al spawn (vx0/vy0) × factor: sin aleatoriedad por frame
+        p.vx = p.vx0 * factor;
+        p.vy = p.vy0 * factor;
       } else if (type === "dark_ink_fog") {
         p.vx = Math.sin(p.wobblePhase * 0.5) * 0.8 + 0.3;
         p.vy = -(0.6 + Math.cos(p.wobblePhase * 0.6) * 0.4) * factor;
@@ -553,8 +609,8 @@ class PhysicsParticleSystem {
         p.vy = -(0.8 + Math.cos(p.wobblePhase) * 0.5) * factor;
       }
 
-      p.x += p.vx;
-      p.y += p.vy;
+      p.x += p.vx * step;
+      p.y += p.vy * step;
 
       // Wrap around bounds
       if (type === "embers_fire" || type === "dark_ink_fog" || type === "golden_sparks") {
@@ -580,6 +636,15 @@ class PhysicsParticleSystem {
     for (const p of this.particles) {
       ctx.save();
       ctx.translate(p.x, p.y);
+
+      // Lluvia: el streak se alinea al vector de velocidad REAL (sin rotación
+      // aleatoria ni escala tipo "hoja"); la profundidad manda en longitud/grosor/alpha.
+      if (type === "cinematic_rain") {
+        this.drawRainStreak(ctx, p);
+        ctx.restore();
+        continue;
+      }
+
       ctx.rotate(p.rot);
       ctx.scale(p.scale * p.z, p.scale * p.z);
       ctx.globalAlpha = p.opacity;
@@ -590,8 +655,6 @@ class PhysicsParticleSystem {
         this.drawEmberSpark(ctx, p.size);
       } else if (type === "sakura_petals") {
         this.drawSakuraPetal(ctx, p.size);
-      } else if (type === "cinematic_rain") {
-        this.drawRainDrop(ctx, p.size);
       } else if (type === "dark_ink_fog") {
         this.drawInkFog(ctx, p.size * 3.5);
       } else if (type === "blood_drips") {
@@ -657,14 +720,26 @@ class PhysicsParticleSystem {
     ctx.stroke();
   }
 
-  // 4. Fast Diagonal Rain Streak
-  private drawRainDrop(ctx: CanvasRenderingContext2D, size: number) {
-    const len = size * 2.8;
-    ctx.strokeStyle = "rgba(224, 231, 255, 0.45)";
-    ctx.lineWidth = 1.2;
+  // 4. Lluvia: estela alineada al vector de velocidad real (halo suave + núcleo brillante)
+  private drawRainStreak(ctx: CanvasRenderingContext2D, p: Particle) {
+    const speed = Math.hypot(p.vx, p.vy) || 1;
+    const ux = p.vx / speed;
+    const uy = p.vy / speed;
+    // La estela apunta en contra del movimiento (motion blur); más larga y gruesa de cerca
+    const len = p.size * (1.6 + 2.4 * p.z) * (0.55 + 0.45 * p.scale);
+    const lw = 0.7 + p.z * 1.4;
+
+    ctx.lineCap = "round";
     ctx.beginPath();
     ctx.moveTo(0, 0);
-    ctx.lineTo(-len * 0.2, len);
+    ctx.lineTo(-ux * len, -uy * len);
+    // Halo translúcido: cuerpo de gota en movimiento sin bordes duros
+    ctx.strokeStyle = `rgba(191, 205, 250, ${0.08 + 0.14 * p.z})`;
+    ctx.lineWidth = lw * 2.8;
+    ctx.stroke();
+    // Núcleo brillante
+    ctx.strokeStyle = `rgba(228, 233, 247, ${0.32 + 0.34 * p.z})`;
+    ctx.lineWidth = lw;
     ctx.stroke();
   }
 
@@ -865,20 +940,23 @@ function drawActionSpeedLines(
  */
 export function renderMangaMotionFrame(
   ctx: CanvasRenderingContext2D,
-  img: HTMLImageElement | HTMLVideoElement | HTMLCanvasElement,
+  img: HTMLImageElement | HTMLVideoElement | HTMLCanvasElement | ImageBitmap | CanvasImageSource,
   config: MangaMotionConfig,
   targetW: number,
   targetH: number,
   t: number,
-  selectedTextId: string | null = null
+  selectedTextId: string | null = null,
+  particleSystem?: PhysicsParticleSystem,
+  dtScale: number = 1.0
 ) {
   // Clear Frame
   ctx.clearRect(0, 0, targetW, targetH);
   ctx.fillStyle = "#09090b";
   ctx.fillRect(0, 0, targetW, targetH);
 
-  const imgW = (img as HTMLVideoElement).videoWidth || img.width || (img as HTMLImageElement).naturalWidth || 640;
-  const imgH = (img as HTMLVideoElement).videoHeight || img.height || (img as HTMLImageElement).naturalHeight || 480;
+  const anyImg = img as unknown as { videoWidth?: number; videoHeight?: number; width?: number; height?: number; naturalWidth?: number; naturalHeight?: number; displayWidth?: number; displayHeight?: number };
+  const imgW = anyImg.videoWidth || anyImg.width || anyImg.naturalWidth || anyImg.displayWidth || 640;
+  const imgH = anyImg.videoHeight || anyImg.height || anyImg.naturalHeight || anyImg.displayHeight || 480;
 
   // 1. Professional Manga Motion Camera Calculations (8 Advanced Cinematic Modes)
   let camPanX = 0;
@@ -965,8 +1043,10 @@ export function renderMangaMotionFrame(
     filterStr = "contrast(135%) saturate(160%) hue-rotate(320deg)";
   } else if (config.aestheticStyle === "vintage_sepia") {
     filterStr = "sepia(70%) contrast(110%) brightness(92%)";
-  } else if (config.aestheticStyle === "lofi_sunset") {
+  } else if (config.aestheticStyle === "lofi_sunset" || (config.aestheticStyle as string) === "anime_lofi") {
     filterStr = "saturate(140%) hue-rotate(15deg) contrast(105%)";
+  } else if (config.aestheticStyle === "golden_sunset") {
+    filterStr = "contrast(116%) brightness(102%) saturate(134%) sepia(42%) hue-rotate(-14deg)";
   }
 
   ctx.save();
@@ -1036,16 +1116,19 @@ export function renderMangaMotionFrame(
     ctx.restore();
   }
 
-  // 7. High Definition Particles
-  globalParticles.update(
+  // 7. High Definition Particles (instancia propia por canvas/slot; la singleton solo
+  // es el default para compatibilidad con páginas que no pasan una)
+  const particleSys = particleSystem ?? globalParticles;
+  particleSys.update(
     config.particles,
     config.particleIntensity,
     targetW,
     targetH,
     t,
-    config.particleSpeed || 1.0
+    config.particleSpeed || 1.0,
+    dtScale
   );
-  globalParticles.draw(ctx, config.particles);
+  particleSys.draw(ctx, config.particles);
 
   // 8. Manga Typography & Speech Bubbles
   if (config.textItems && config.textItems.length > 0) {
@@ -1078,6 +1161,17 @@ export function renderMangaMotionFrame(
     ctx.fillStyle = vigGrad;
     ctx.fillRect(0, 0, targetW, targetH);
     ctx.restore();
+  }
+
+  if (config.watermarkEnabled !== false) {
+    const opacity = typeof config.watermarkOpacity === "number" ? config.watermarkOpacity : 0.28;
+    drawProfessionalWatermark(ctx, {
+      text: config.watermarkText || "SILENT VIGIL",
+      width: targetW,
+      height: targetH,
+      opacity,
+      shorts: config.aspectRatio === "9:16",
+    });
   }
 }
 
@@ -1220,4 +1314,44 @@ export async function exportMangaMotionVideo(params: {
 
     renderNextFrame();
   });
+}
+
+/**
+ * Organic Ping-Pong / Boomerang Time Calculator
+ * Uses smooth sinusoidal easing (cos-based ease-in-out) so the motion decelerates
+ * smoothly before turning around and accelerates naturally on return,
+ * eliminating violent mechanical whiplash / bounce.
+ */
+/**
+ * Constant-speed boomerang (one continuous take).
+ * The old cosine ease parked the camera at each turn — it looked lagged, then sped up.
+ * Linear reverse keeps 1× speed; the organic variant only eases near each turn so
+ * it does not look like a mechanical camera reversal.
+ */
+export function calculateOrganicPingPongTime(
+  t: number,
+  duration: number,
+  easeType: "organic" | "linear" = "linear"
+): number {
+  if (duration <= 0.05) return 0;
+  const cycle = duration * 2;
+  const phase = ((t % cycle) + cycle) % cycle;
+  const along = phase <= duration ? phase : cycle - phase;
+
+  if (easeType !== "organic") return along;
+
+  // Un "colchón" de desaceleración/aceleración en cada extremo. Más generoso
+  // que antes (0.4-0.8s vs 0.2-0.6) para que el giro del boomerang sea suave
+  // y no maree. Escala con la duración del clip.
+  const pad = Math.min(0.8, Math.max(0.4, duration * 0.12), duration * 0.25);
+  if (pad < 0.04) return along;
+  if (along < pad) {
+    const x = along / pad;
+    return pad * (x * x * (3 - 2 * x));
+  }
+  if (along > duration - pad) {
+    const x = (along - (duration - pad)) / pad;
+    return duration - pad + pad * (x * x * (3 - 2 * x));
+  }
+  return along;
 }

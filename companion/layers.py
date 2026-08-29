@@ -419,12 +419,14 @@ def render_composed(
         inputs += ["-stream_loop", "-1", "-i", overlay_path(oid)]
         ov_idx = idx
         idx += 1
-    au_idx = idx
-    if audio_start > 0.001:
-        inputs += ["-stream_loop", "-1", "-ss", f"{audio_start:.4f}", "-i", audio_path]
-    else:
-        inputs += ["-stream_loop", "-1", "-i", audio_path]
-    idx += 1
+    au_idx = None
+    if audio_path and os.path.isfile(audio_path):
+        au_idx = idx
+        if audio_start > 0.001:
+            inputs += ["-stream_loop", "-1", "-ss", f"{audio_start:.4f}", "-i", audio_path]
+        else:
+            inputs += ["-stream_loop", "-1", "-i", audio_path]
+        idx += 1
     amb_idx = None
     if aid and ambience_path(aid):
         inputs += ["-stream_loop", "-1", "-i", ambience_path(aid)]
@@ -495,10 +497,13 @@ def render_composed(
     last = "outv"
 
     # --- audio ---
-    af: list[str] = [
-        f"[{au_idx}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=1.0[music]"
-    ]
-    mix = ["[music]"]
+    af: list[str] = []
+    mix: list[str] = []
+    if au_idx is not None:
+        af.append(
+            f"[{au_idx}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=1.0[music]"
+        )
+        mix.append("[music]")
     if amb_idx is not None:
         af.append(
             f"[{amb_idx}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,"
@@ -507,7 +512,7 @@ def render_composed(
         mix.append("[amb]")
     for i, s in sfx_indices:
         ms = int(max(0, s["time"]) * 1000)
-        base_g = float(s.get("gain") or 0.08)
+        base_g = float(s.get("volume") or s.get("gain") or 0.08)
         intensity_val = float(plan.get("intensity") or 0.45)
         g = base_g * (0.6 + 0.6 * intensity_val)
         af.append(
@@ -516,8 +521,11 @@ def render_composed(
         )
         mix.append(f"[sfx{i}]")
     n = len(mix)
-    if n == 1:
-        af.append("[music]loudnorm=I=-14:TP=-1.0:LRA=11,alimiter=limit=0.98[outa]")
+    if n == 0:
+        # Fallback silent audio track
+        af.append(f"aevalsrc=0:d={target:.4f}:s=48000:c=stereo[outa]")
+    elif n == 1:
+        af.append(f"{mix[0]}loudnorm=I=-14:TP=-1.0:LRA=11,alimiter=limit=0.98[outa]")
     else:
         af.append(
             f"{''.join(mix)}amix=inputs={n}:duration=first:dropout_transition=0:normalize=0,"

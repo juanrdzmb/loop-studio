@@ -10,6 +10,12 @@ export interface LoopCandidate {
   duration: number;
   score: number;
   label?: string;
+  /** Solo vídeo: candidato encontrado o fallback de clip completo. */
+  kind?: "detected" | "full";
+  /** Solo vídeo: fundido recomendado por el analizador, en segundos. */
+  fadeSec?: number;
+  /** Explicación breve para la UI. */
+  reason?: string;
 }
 
 export interface CompanionHealth {
@@ -141,6 +147,19 @@ export async function analyzeVideo(
     windowSec?: number;
   } = {}
 ): Promise<LoopCandidate[]> {
+  const look = await analyzeVideoLook(video, opts);
+  return look.candidates;
+}
+
+export async function analyzeVideoLook(
+  video: File,
+  opts: {
+    length?: number;
+    downsample?: number;
+    similarity?: number;
+    windowSec?: number;
+  } = {}
+): Promise<{ candidates: LoopCandidate[]; duration: number; motionPeriod: number }> {
   const fd = new FormData();
   fd.append("video", video);
   if (opts.length) fd.append("length", String(opts.length));
@@ -150,7 +169,21 @@ export async function analyzeVideo(
   const res = await fetch(`${COMPANION_URL}/analyze/video`, { method: "POST", body: fd });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || "Error analizando el video");
-  return data.candidates as LoopCandidate[];
+  const candidates = (data.candidates || []).map((candidate: Record<string, unknown>) => ({
+    start: Number(candidate.start) || 0,
+    end: Number(candidate.end) || 0,
+    duration: Number(candidate.duration) || 0,
+    score: Number(candidate.score) || 0,
+    label: typeof candidate.label === "string" ? candidate.label : undefined,
+    kind: candidate.kind === "detected" ? "detected" : candidate.kind === "full" ? "full" : undefined,
+    fadeSec: Number(candidate.fade_sec ?? candidate.fadeSec) || undefined,
+    reason: typeof candidate.reason === "string" ? candidate.reason : undefined,
+  })) as LoopCandidate[];
+  return {
+    candidates,
+    duration: Number(data.duration) || 0,
+    motionPeriod: Number(data.motion_period) || 0,
+  };
 }
 
 export async function planLayers(
@@ -315,17 +348,70 @@ export async function youtubePack(opts: {
   return data as YoutubePack;
 }
 
-export async function saveExportImage(blob: Blob, kind: "thumbs" | "covers"): Promise<string | null> {
+export async function saveExportImage(
+  blob: Blob,
+  kind: "thumbs" | "covers",
+  meta?: { character?: string; song?: string }
+): Promise<string | null> {
   try {
     const fd = new FormData();
     fd.append("kind", kind);
     fd.append("file", blob, kind === "covers" ? "cover.jpg" : "thumb.jpg");
+    if (meta?.character) fd.append("character", meta.character);
+    if (meta?.song) fd.append("song", meta.song);
     const res = await fetch(`${COMPANION_URL}/export/image`, { method: "POST", body: fd });
     const data = await res.json();
     return data.path || null;
   } catch {
     return null;
   }
+}
+
+export interface SaveExportMediaResult {
+  /** Ruta en disco si el guardado funcionó; null en caso contrario. */
+  path: string | null;
+  /** Motivo del fallo (en español) si path es null; null si guardó bien. */
+  error: string | null;
+}
+
+/** Guarda en disco vía companion informando SIEMPRE del fallo (sin tragarlo en silencio). */
+export async function saveExportMediaResult(
+  blob: Blob,
+  opts: { kind: "16x9" | "shorts" | "9x16" | "thumbs" | "covers"; character?: string; song?: string; filename?: string }
+): Promise<SaveExportMediaResult> {
+  try {
+    const fd = new FormData();
+    fd.append("kind", opts.kind);
+    const ext = opts.kind === "thumbs" || opts.kind === "covers" ? "jpg" : "mp4";
+    fd.append("file", blob, opts.filename || `export.${ext}`);
+    if (opts.character) fd.append("character", opts.character);
+    if (opts.song) fd.append("song", opts.song);
+    const res = await fetch(`${COMPANION_URL}/export/media`, { method: "POST", body: fd });
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`;
+      try {
+        const data = await res.json();
+        if (data?.error) detail = String(data.error);
+      } catch {
+        /* respuesta sin JSON: nos quedamos con el código HTTP */
+      }
+      return { path: null, error: `Companion rechazó el guardado (${detail})` };
+    }
+    const data = await res.json();
+    const path = (data.path as string) || null;
+    return path
+      ? { path, error: null }
+      : { path: null, error: "El companion no devolvió la ruta guardada" };
+  } catch {
+    return { path: null, error: "Companion no disponible en :8787 (arranca con ./iniciar.sh)" };
+  }
+}
+
+export async function saveExportMedia(
+  blob: Blob,
+  opts: { kind: "16x9" | "shorts" | "9x16" | "thumbs" | "covers"; character?: string; song?: string; filename?: string }
+): Promise<string | null> {
+  return (await saveExportMediaResult(blob, opts)).path;
 }
 
 export async function renderMangaMotionVideoBackend(

@@ -10,17 +10,34 @@ interface Props {
   onSelect: (c: LoopCandidate) => void;
   /** Modo recorte: arrastrar sobre la onda define la región */
   trimMode?: boolean;
+  /** If false, parent handles listening (avoids two loops at once). Default true. */
+  autoAudition?: boolean;
+  /** Rejilla de imán para el drag (s, típicamente medio beat). undefined = sin imán. */
+  snapSec?: number;
+  /** Si existe, el drag mueve una ventana fija en vez de cambiar su duración. */
+  fixedDurationSec?: number;
 }
 
 const BAND_COLORS = [
-  "rgba(217,70,239,0.28)", // fuchsia
-  "rgba(34,211,238,0.25)", // cyan
-  "rgba(250,204,21,0.22)", // yellow
-  "rgba(74,222,128,0.22)", // green
-  "rgba(251,146,60,0.22)", // orange
-  "rgba(244,114,182,0.22)", // pink
-  "rgba(96,165,250,0.22)", // blue
-  "rgba(167,139,250,0.22)", // violet
+  "rgba(217,70,239,0.45)", // fuchsia
+  "rgba(34,211,238,0.40)", // cyan
+  "rgba(250,204,21,0.38)", // yellow
+  "rgba(74,222,128,0.38)", // green
+  "rgba(251,146,60,0.38)", // orange
+  "rgba(244,114,182,0.38)", // pink
+  "rgba(96,165,250,0.38)", // blue
+  "rgba(167,139,250,0.38)", // violet
+];
+
+const BAND_SOLID = [
+  "#d946ef",
+  "#22d3ee",
+  "#facc15",
+  "#4ade80",
+  "#fb923c",
+  "#f472b6",
+  "#60a5fa",
+  "#a78bfa",
 ];
 
 function fmt(t: number): string {
@@ -40,6 +57,9 @@ export default function SongLoopWaveform({
   selected,
   onSelect,
   trimMode = false,
+  autoAudition = true,
+  snapSec,
+  fixedDurationSec,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const peaksRef = useRef<{ min: Float32Array; max: Float32Array } | null>(null);
@@ -97,19 +117,32 @@ export default function SongLoopWaveform({
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
 
-    const mid = h / 2;
     const t2x = (t: number) => (t / duration) * w;
 
-    // Bandas de candidatos
-    candidates.forEach((c, i) => {
+    // Carriles escalonados para los candidatos (arriba, uno por fila, sin solaparse)
+    const maxLanes = Math.min(6, candidates.length || 1);
+    const laneH = Math.min(13, Math.max(8, h * 0.15));
+    const lanesH = maxLanes * laneH;
+    const waveTop = lanesH + 2;
+    const waveH = Math.max(10, h - waveTop - 4);
+    const waveMid = waveTop + waveH / 2;
+    const sorted = [...candidates].sort((a, b) => a.start - b.start);
+    sorted.forEach((c, i) => {
       const x0 = t2x(c.start);
       const x1 = t2x(c.end);
-      ctx.fillStyle = c === selected ? "rgba(217,70,239,0.35)" : BAND_COLORS[i % BAND_COLORS.length];
-      ctx.fillRect(x0, 0, Math.max(2, x1 - x0), h);
-      if (c === selected) {
+      const lane = i % maxLanes;
+      const y = lane * laneH;
+      const on = c === selected;
+      ctx.fillStyle = on ? "rgba(217,70,239,0.55)" : BAND_COLORS[i % BAND_COLORS.length];
+      ctx.fillRect(x0, y + 1, Math.max(2, x1 - x0), laneH - 2);
+      if (on) {
         ctx.strokeStyle = "#e879f9";
         ctx.lineWidth = 1.5;
-        ctx.strokeRect(x0 + 0.5, 0.5, Math.max(2, x1 - x0) - 1, h - 1);
+        ctx.strokeRect(x0 + 0.5, y + 1.5, Math.max(2, x1 - x0) - 1, laneH - 3);
+      } else {
+        ctx.strokeStyle = BAND_SOLID[i % BAND_SOLID.length];
+        ctx.lineWidth = 0.5;
+        ctx.strokeRect(x0 + 0.5, y + 1.5, Math.max(2, x1 - x0) - 1, laneH - 3);
       }
     });
 
@@ -119,10 +152,10 @@ export default function SongLoopWaveform({
       const x0 = t2x(custom.start);
       const x1 = t2x(custom.end);
       ctx.fillStyle = "rgba(217,70,239,0.35)";
-      ctx.fillRect(x0, 0, Math.max(2, x1 - x0), h);
+      ctx.fillRect(x0, waveTop, Math.max(2, x1 - x0), waveH);
       ctx.strokeStyle = "#e879f9";
       ctx.lineWidth = 1.5;
-      ctx.strokeRect(x0 + 0.5, 0.5, Math.max(2, x1 - x0) - 1, h - 1);
+      ctx.strokeRect(x0 + 0.5, waveTop + 0.5, Math.max(2, x1 - x0) - 1, waveH - 1);
     }
 
     // Región en curso (arrastrando en modo recorte)
@@ -130,18 +163,18 @@ export default function SongLoopWaveform({
       const x0 = t2x(Math.min(dragRegion.a, dragRegion.b));
       const x1 = t2x(Math.max(dragRegion.a, dragRegion.b));
       ctx.fillStyle = "rgba(34,211,238,0.30)";
-      ctx.fillRect(x0, 0, Math.max(2, x1 - x0), h);
+      ctx.fillRect(x0, waveTop, Math.max(2, x1 - x0), waveH);
       ctx.strokeStyle = "#22d3ee";
       ctx.lineWidth = 1.5;
-      ctx.strokeRect(x0 + 0.5, 0.5, Math.max(2, x1 - x0) - 1, h - 1);
+      ctx.strokeRect(x0 + 0.5, waveTop + 0.5, Math.max(2, x1 - x0) - 1, waveH - 1);
     }
     // Waveform
     const { min, max } = peaks;
     const scale = w / min.length;
     ctx.fillStyle = "#71717a";
     for (let c = 0; c < min.length; c++) {
-      const y0 = mid - max[c] * mid * 0.92;
-      const y1 = mid - min[c] * mid * 0.92;
+      const y0 = waveMid - max[c] * (waveH / 2) * 0.92;
+      const y1 = waveMid - min[c] * (waveH / 2) * 0.92;
       ctx.fillRect(c * scale, y0, Math.max(1, scale), Math.max(1, y1 - y0));
     }
 
@@ -237,21 +270,72 @@ export default function SongLoopWaveform({
     [duration]
   );
 
-  /** Modo recorte: arrastrar define la región; al soltar se confirma */
+  const fixedRegionAt = useCallback(
+    (centerTime: number): { a: number; b: number } => {
+      const fixed = Math.min(duration, Math.max(0.05, fixedDurationSec ?? duration));
+      const start = Math.max(0, Math.min(centerTime - fixed / 2, duration - fixed));
+      return { a: start, b: start + fixed };
+    },
+    [duration, fixedDurationSec]
+  );
+
+  /** Candidato bajo el cursor (solo si el clic cae dentro de su rango de tiempo) */
+  const bandAt = useCallback(
+    (t: number): LoopCandidate | null =>
+      candidates.find((c) => t >= c.start && t <= c.end) ?? null,
+    [candidates]
+  );
+
+  /** Clic corto (<0.5s): selecciona/audiciona la banda bajo el cursor en cualquier modo */
+  const onPointerClick = useCallback(
+    (t: number) => {
+      const hit = bandAt(t);
+      if (!hit) return;
+      if (hit === selected && auditioning) {
+        stopAudition();
+        return;
+      }
+      onSelect(hit);
+      if (autoAudition) startAudition(hit);
+    },
+    [bandAt, selected, auditioning, onSelect, startAudition, stopAudition, autoAudition]
+  );
+
+  /** Modo recorte: arrastrar define la región; clic corto selecciona banda */
   const onPointerDown = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>) => {
-      if (!trimMode) return;
       e.currentTarget.setPointerCapture(e.pointerId);
       dragStartRef.current = timeAt(e);
-      setDragRegion({ a: dragStartRef.current, b: dragStartRef.current });
+      setDragRegion(
+        trimMode && fixedDurationSec
+          ? fixedRegionAt(dragStartRef.current)
+          : { a: dragStartRef.current, b: dragStartRef.current }
+      );
     },
-    [trimMode, timeAt]
+    [timeAt, trimMode, fixedDurationSec, fixedRegionAt]
   );
 
   const onPointerMove = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
     if (dragStartRef.current == null) return;
-    setDragRegion({ a: dragStartRef.current, b: timeAt(e) });
-  }, [timeAt]);
+    const current = timeAt(e);
+    setDragRegion(
+      trimMode && fixedDurationSec
+        ? fixedRegionAt(current)
+        : { a: dragStartRef.current, b: current }
+    );
+  }, [timeAt, trimMode, fixedDurationSec, fixedRegionAt]);
+
+  /** Imanar un tiempo a la rejilla del beat si queda cerca (tolerancia 120 ms o 30% del paso) */
+  const snapT = useCallback(
+    (t: number): number => {
+      if (!snapSec || snapSec <= 0) return t;
+      const snapped = Math.round(t / snapSec) * snapSec;
+      const tol = Math.max(0.12, snapSec * 0.3);
+      if (Math.abs(snapped - t) > tol) return t;
+      return Math.max(0, Math.min(duration, snapped));
+    },
+    [snapSec, duration]
+  );
 
   const onPointerUp = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -260,61 +344,58 @@ export default function SongLoopWaveform({
       const b = timeAt(e);
       dragStartRef.current = null;
       setDragRegion(null);
-      if (Math.abs(b - a) < 0.5) return; // demasiado corto: ignorar
+      if (trimMode && fixedDurationSec) {
+        const raw = fixedRegionAt(b);
+        const fixed = raw.b - raw.a;
+        const start = Math.max(0, Math.min(snapT(raw.a), duration - fixed));
+        const region: LoopCandidate = {
+          start,
+          end: start + fixed,
+          duration: fixed,
+          score: 100,
+          label: "Selección manual",
+        };
+        onSelect(region);
+        if (autoAudition) startAudition(region);
+        return;
+      }
+      if (Math.abs(b - a) < 0.5) {
+        // Clic simple: seleccionar banda bajo el cursor (si hay)
+        onPointerClick(b);
+        return;
+      }
+      const s = snapT(Math.min(a, b));
+      const en = snapT(Math.max(a, b));
       const region: LoopCandidate = {
-        start: Math.min(a, b),
-        end: Math.max(a, b),
-        duration: Math.abs(b - a),
+        start: s,
+        end: en,
+        duration: Math.max(0.5, en - s),
         score: 100,
       };
       onSelect(region);
-      startAudition(region);
+      if (autoAudition) startAudition(region);
     },
-    [timeAt, onSelect, startAudition]
-  );
-
-  /** Clic sobre la waveform: selecciona/audiciona el candidato bajo el cursor */
-  const onCanvasClick = useCallback(
-    (e: React.MouseEvent<HTMLCanvasElement>) => {
-      if (trimMode) return; // en modo recorte manda el arrastre
-      const rect = e.currentTarget.getBoundingClientRect();
-      const t = ((e.clientX - rect.left) / rect.width) * duration;
-      const hit =
-        candidates.find((c) => t >= c.start && t <= c.end) ??
-        candidates.reduce<LoopCandidate | null>(
-          (best, c) =>
-            best == null || Math.abs((c.start + c.end) / 2 - t) < Math.abs((best.start + best.end) / 2 - t)
-              ? c
-              : best,
-          null
-        );
-      if (!hit) return;
-      if (hit === selected && auditioning) {
-        stopAudition();
-        return;
-      }
-      onSelect(hit);
-      startAudition(hit);
-    },
-    [candidates, duration, selected, auditioning, onSelect, startAudition, stopAudition, trimMode]
+    [timeAt, onSelect, startAudition, autoAudition, onPointerClick, snapT, trimMode, fixedDurationSec, fixedRegionAt, duration]
   );
 
   return (
     <div className="space-y-2">
       <canvas
         ref={canvasRef}
-        onClick={onCanvasClick}
+        data-testid="loop-waveform"
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
-        className={`w-full h-20 rounded-lg bg-zinc-950 border border-zinc-800 ${
+        className={`w-full h-24 rounded-lg bg-zinc-950 border border-zinc-800 ${
           trimMode ? "cursor-crosshair" : "cursor-pointer"
         }`}
       />
       <div className="flex items-center justify-between text-xs text-zinc-400">
         <span>
           {trimMode
-            ? "✂️ Arrastra sobre la onda para elegir el trozo de canción"
+            ? fixedDurationSec
+              ? "✂️ Arrastra para colocar el fragmento; su duración permanece fija"
+              : "✂️ Arrastra sobre la onda para recortar a mano · clic en una banda (arriba) para elegir un loop"
             : "👆 Clic sobre una banda para escuchar ese loop"}
           {auditioning ? " · sonando en bucle" : ""}
         </span>
