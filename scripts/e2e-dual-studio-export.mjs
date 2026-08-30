@@ -60,13 +60,11 @@ await page.waitForFunction(
 ok("Draft del clip listo", true);
 
 // Configure: original filter, no particles, static camera, cut seam, 30s target, watermark off
-const selects = page.locator('select');
-// 16:9 workspace selects: style, camera, particles, seam (first 4 in DOM order)
-await selects.nth(0).selectOption("original");
-await selects.nth(1).selectOption("static");
-await selects.nth(2).selectOption("none");
-await page.getByText("Opciones avanzadas de continuidad").first().click();
-await selects.nth(3).selectOption("cut");
+await page.getByText("Ajustes visuales y estabilización").click();
+await page.getByLabel("Filtro visual 16:9").selectOption("original");
+await page.getByLabel("Cámara 2.5D 16:9").selectOption("static");
+await page.getByLabel("Partículas 16:9").selectOption("none");
+await page.getByLabel("Modo de continuidad 16:9").selectOption("cut");
 await page.locator('input[type=checkbox]').first().uncheck({ force: true }); // watermark off
 await page.locator('button:has-text("30s")').first().click(); // 16:9 duration preset
 
@@ -140,7 +138,7 @@ ok("Nitidez preservada (>60% varianza Laplaciana)", ratio > 60, `(${ratio.toFixe
 
 // 8. Pingpong: reverse half must decode correctly (segmented reverse stream).
 //    Cycle = 2×5s; export frame at t=7.5s corresponds to source frame at 2.5s.
-await selects.nth(3).selectOption("pingpong");
+await page.getByLabel("Modo de continuidad 16:9").selectOption("pingpong");
 await page.click('button:has-text("Exportar Solo 16:9")');
 await page.waitForSelector("text=Confirma tu exportación", { timeout: 5000 });
 await page.click('button:has-text("Sí, exportar ahora")');

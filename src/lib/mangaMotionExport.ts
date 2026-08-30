@@ -20,7 +20,6 @@ import {
 import {
   type MangaMotionConfig,
   renderMangaMotionFrame,
-  calculateOrganicPingPongTime,
   globalParticles,
   PhysicsParticleSystem,
 } from "./mangaMotionEngine";
@@ -28,11 +27,17 @@ import {
   type LoopSfxCue,
   renderSfxCuesToOffline,
 } from "./seinenSfxLibrary";
+import { SAFE_MASTER_PEAK } from "./audioRepeat";
 import { ensureWatermarkFont } from "./watermark";
 import {
   getForwardLoopFrameState,
   type VisualAlignment,
 } from "./forwardLoop";
+import { getSmoothPingPongFrameState } from "./pingPongLoop";
+import {
+  sourceTransformAt,
+  type ClipStabilization,
+} from "./videoStabilization";
 
 export interface MangaExportOptions {
   image: HTMLImageElement | HTMLVideoElement | HTMLCanvasElement;
@@ -55,6 +60,9 @@ export interface MangaExportOptions {
   particleSystem?: PhysicsParticleSystem;
   /** Alineación global opcional IN->OUT para crossfade motion-compensated. */
   sourceAlignment?: VisualAlignment | null;
+  /** Trayectoria local de microestabilización compartida con el preview. */
+  sourceStabilization?: ClipStabilization | null;
+  stabilizationEnabled?: boolean;
 }
 
 export class ExportCancelledError extends Error {
@@ -214,7 +222,7 @@ export function sourceTimeForExport(
 ): number {
   if (sourceDuration <= 0.05) return sourceStart;
   if (seamMode === "pingpong") {
-    return sourceStart + calculateOrganicPingPongTime(t, sourceDuration, "organic");
+    return getSmoothPingPongFrameState(t, sourceDuration, sourceStart).primaryTime;
   }
   let sourceClock: number;
   if (seamMode === "calm") {
@@ -237,11 +245,10 @@ export function computeVisualCrossfadeDuration(
   >,
   cycleDuration: number
 ): number {
-  // Pingpong / boomerang: fundido corto en el punto de giro para eliminar el
-  // parpadeo negro que se veía al reiniciar el ciclo (el primer frame del clip
-  // solía ser oscuro y partículas/watermark aparecían de golpe).
+  // El boomerang suaviza AMBOS giros con el frame extremo en el compositor. No
+  // debe añadir además un fundido final→inicio: sería una segunda transición.
   if (config.seamMode === "pingpong") {
-    return Math.min(0.35, Math.max(0.12, cycleDuration * 0.04));
+    return 0;
   }
   if (
     !config.enableSeamlessLoop ||
@@ -330,6 +337,49 @@ async function detectSourceFps(blob: Blob): Promise<number> {
   }
 }
 
+type PingPongEndpointFrames = { start: ImageBitmap | null; end: ImageBitmap | null };
+
+/** Decodifica únicamente los dos extremos necesarios para amortiguar los giros. */
+async function decodePingPongEndpointFrames(
+  blob: Blob,
+  startTime: number,
+  endTime: number,
+  gate?: <T>(promise: Promise<T>, timeoutMs?: number) => Promise<T>
+): Promise<PingPongEndpointFrames> {
+  const input = new Input({ formats: ALL_FORMATS, source: new BlobSource(blob) });
+  const result: PingPongEndpointFrames = { start: null, end: null };
+  const toBitmap = async (sample: VideoSample | null): Promise<ImageBitmap | null> => {
+    if (!sample) return null;
+    let frame: VideoFrame | null = null;
+    try {
+      frame = sample.toVideoFrame();
+      return await createImageBitmap(frame);
+    } finally {
+      try { frame?.close(); } catch {}
+      sample.close();
+    }
+  };
+  try {
+    const track = await input.getPrimaryVideoTrack();
+    if (!track || !(await track.canDecode())) return result;
+    const sink = new VideoSampleSink(track);
+    const get = (time: number) => {
+      const promise = sink.getSample(Math.max(0, time));
+      return gate ? gate(promise, PAINT_WATCHDOG_TIMEOUT_MS) : promise;
+    };
+    result.start = await toBitmap(await get(startTime));
+    result.end = await toBitmap(await get(Math.max(startTime, endTime)));
+    return result;
+  } catch (err) {
+    try { result.start?.close(); } catch {}
+    try { result.end?.close(); } catch {}
+    console.warn("No se pudieron preparar los frames de giro del boomerang:", err);
+    return { start: null, end: null };
+  } finally {
+    input.dispose();
+  }
+}
+
 /** Split cycle frames into maximal monotonic runs of source times (forward = stream, backward = segments). */
 function monotonicRuns(
   srcTimes: number[]
@@ -369,25 +419,15 @@ async function renderCycleStreaming(
   cycleTimes: number[],
   width: number,
   height: number,
-  paintFrame: (source: CanvasImageSource, t: number) => void,
+  paintFrame: (source: CanvasImageSource, t: number, sourceTime: number) => void,
   onFrame: (cycleIndex: number) => Promise<void>,
   onProgress?: (painted: number, total: number, phase?: "paint" | "decode") => void,
   gate?: <T>(promise: Promise<T>, timeoutMs?: number) => Promise<T>,
   shouldCancel?: () => void
 ): Promise<void> {
   const input = new Input({ formats: ALL_FORMATS, source: new BlobSource(blob) });
-  const srcCanvas = document.createElement("canvas");
-  srcCanvas.width = width;
-  srcCanvas.height = height;
-  const srcCtx = srcCanvas.getContext("2d");
-  if (!srcCtx) throw new Error("No se pudo obtener el canvas de fuente");
-
   const total = srcTimes.length;
   const runs = monotonicRuns(srcTimes);
-  const bytesPerFrame = width * height * 4;
-  // ~256 MB por segmento: acota el buffer de samples del pingpong y reduce los saltos
-  // entre segmentos (1 re-búsqueda + flush del decoder por segmento, nunca por frame).
-  const maxSegment = Math.max(4, Math.min(90, Math.floor((256 * 1024 * 1024) / bytesPerFrame)));
   const decodeGate = <T>(p: Promise<T>) => (gate ? gate(p, PAINT_WATCHDOG_TIMEOUT_MS) : p);
 
   try {
@@ -399,6 +439,20 @@ async function renderCycleStreaming(
       throw new Error(`Códec de video no decodificable (WebCodecs).${hint}`);
     }
     const sink = new VideoSampleSink(track);
+    // El staging conserva la geometría nativa. Antes adoptaba directamente el
+    // tamaño 9:16 y estiraba una fuente horizontal antes del recorte `cover`.
+    const sourceWidth = Math.max(2, track.displayWidth || width);
+    const sourceHeight = Math.max(2, track.displayHeight || height);
+    const srcCanvas = document.createElement("canvas");
+    srcCanvas.width = sourceWidth;
+    srcCanvas.height = sourceHeight;
+    const srcCtx = srcCanvas.getContext("2d");
+    if (!srcCtx) throw new Error("No se pudo obtener el canvas de fuente");
+    srcCtx.imageSmoothingEnabled = true;
+    srcCtx.imageSmoothingQuality = "high";
+    const bytesPerFrame = sourceWidth * sourceHeight * 4;
+    // ~256 MB por segmento: acota el buffer de samples del pingpong y reduce los saltos.
+    const maxSegment = Math.max(4, Math.min(90, Math.floor((256 * 1024 * 1024) / bytesPerFrame)));
 
     let painted = 0;
 
@@ -496,12 +550,12 @@ async function renderCycleStreaming(
               const sample = buf.length > 0 ? buf[ptr]! : null;
               if (sample) {
                 try {
-                  sample.draw(srcCtx, 0, 0, width, height);
+                  sample.draw(srcCtx, 0, 0, sourceWidth, sourceHeight);
                 } catch {
                   /* frame corrupto: se pinta el vecino ya dibujado */
                 }
               }
-              paintFrame(srcCanvas, cycleTimes[i]!);
+              paintFrame(srcCanvas, cycleTimes[i]!, srcTimes[i]!);
               await onFrame(i);
               painted++;
             }
@@ -540,7 +594,7 @@ async function renderCycleStreaming(
             if (sample === undefined) break;
             if (sample) {
               try {
-                sample.draw(srcCtx, 0, 0, width, height);
+                sample.draw(srcCtx, 0, 0, sourceWidth, sourceHeight);
               } finally {
                 sample.close();
               }
@@ -551,7 +605,7 @@ async function renderCycleStreaming(
               // ese mismo contenido: jamás se compone sobre el canvas transparente.
               for (let k = run.start; k <= i; k++) {
                 shouldCancel?.();
-                paintFrame(srcCanvas, cycleTimes[k]!);
+                paintFrame(srcCanvas, cycleTimes[k]!, srcTimes[k]!);
                 await onFrame(k);
                 painted++;
               }
@@ -570,12 +624,12 @@ async function renderCycleStreaming(
             if (sample === undefined) break;
             if (sample) {
               try {
-                sample.draw(srcCtx, 0, 0, width, height);
+                sample.draw(srcCtx, 0, 0, sourceWidth, sourceHeight);
               } finally {
                 sample.close();
               }
             }
-            paintFrame(srcCanvas, cycleTimes[i]!);
+            paintFrame(srcCanvas, cycleTimes[i]!, srcTimes[i]!);
             await onFrame(i);
             i++;
             painted++;
@@ -586,7 +640,7 @@ async function renderCycleStreaming(
         }
         for (; i < run.end; i++) {
           shouldCancel?.();
-          paintFrame(srcCanvas, cycleTimes[i]!);
+          paintFrame(srcCanvas, cycleTimes[i]!, srcTimes[i]!);
           await onFrame(i);
           painted++;
         }
@@ -663,8 +717,8 @@ async function mixMasterAudio(
     const data = rendered.getChannelData(c);
     for (let i = 0; i < data.length; i++) peak = Math.max(peak, Math.abs(data[i]));
   }
-  if (peak > 0.98) {
-    const gain = 0.98 / peak;
+  if (peak > SAFE_MASTER_PEAK) {
+    const gain = SAFE_MASTER_PEAK / peak;
     for (let c = 0; c < rendered.numberOfChannels; c++) {
       const data = rendered.getChannelData(c);
       for (let i = 0; i < data.length; i++) data[i] *= gain;
@@ -825,7 +879,9 @@ export async function exportMangaMotionVideo(
       onProgress?.(0.01, "Leyendo velocidad de fotogramas del clip…");
       detected = await detectSourceFps(sourceBlob);
     }
-    fps = detected > 0 ? Math.max(10, Math.min(cap, Math.round(detected))) : Math.min(30, cap);
+    // Conservar 23.976/29.97/59.94: redondear introducía una cadencia irregular
+    // visible como vibración en paneos lentos y en el tramo inverso.
+    fps = detected > 0 ? Math.max(10, Math.min(cap, detected)) : Math.min(30, cap);
     if (typeof VideoDecoder === "undefined") fps = Math.min(fps, 30);
   } else {
     fps = config.fps || 60;
@@ -904,15 +960,35 @@ export async function exportMangaMotionVideo(
   if (!ctx) throw new Error("No se pudo obtener el contexto 2D del Canvas");
 
   const srcCanvas = document.createElement("canvas");
-  srcCanvas.width = width;
-  srcCanvas.height = height;
+  srcCanvas.width = rawW;
+  srcCanvas.height = rawH;
   const srcCtx = srcCanvas.getContext("2d");
   if (!srcCtx) throw new Error("No se pudo obtener el canvas de fuente");
+  srcCtx.imageSmoothingEnabled = true;
+  srcCtx.imageSmoothingQuality = "high";
 
   const cycleConfig: MangaMotionConfig = { ...config, duration: cycleDuration };
   const particleSys = opts.particleSystem ?? globalParticles;
   particleSys.init(cycleConfig.particles, width, height, cycleConfig.particleIntensity);
+  const turnParticleSys = new PhysicsParticleSystem();
+  turnParticleSys.init("none", width, height, 0);
   await ensureWatermarkFont();
+
+  const pingPongEndpoints = seamMode === "pingpong" && sourceBlob
+    ? await decodePingPongEndpointFrames(
+        sourceBlob,
+        sourceStart,
+        Math.max(sourceStart, sourceEnd - frameDur),
+        gate
+      )
+    : { start: null, end: null };
+  const turnCanvas = document.createElement("canvas");
+  turnCanvas.width = width;
+  turnCanvas.height = height;
+  const turnCtx = turnCanvas.getContext("2d");
+  if (!turnCtx) throw new Error("No se pudo preparar el canvas del giro boomerang");
+  turnCtx.imageSmoothingEnabled = true;
+  turnCtx.imageSmoothingQuality = "high";
 
   // Smart Forward: crossfade cinemático 0.25-1.0 con curva cosine; calm escala proporcional.
   const crossfadeDur = computeVisualCrossfadeDuration(config, cycleDuration);
@@ -947,17 +1023,32 @@ export async function exportMangaMotionVideo(
   // Bitrate explícito orientado a la subida de YouTube: suficiente para partículas
   // sin inflar el archivo. A más de 30 fps se reserva margen adicional.
   const pixels = width * height;
+  const pixelRatio = pixels / (1920 * 1080);
   const reference1080 = fps > 30 ? 16_000_000 : 12_000_000;
+  const scaledBitrate = pixelRatio >= 3.5
+    ? (fps > 30 ? 60_000_000 : 45_000_000)
+    : pixelRatio * reference1080;
   const targetBitrate = Math.round(
-    Math.min(60_000_000, Math.max(7_000_000, (pixels / (1920 * 1080)) * reference1080)) / 100_000
+    Math.min(60_000_000, Math.max(7_000_000, scaledBitrate)) / 100_000
   ) * 100_000;
+  const codecQuantizer: Partial<Record<VideoCodec, number>> = {
+    avc: 18,
+    hevc: 18,
+    vp9: 22,
+    av1: 84,
+  };
 
   // Factory del encoder del ciclo: el reintento tras un atasco necesita uno limpio
   // (el intento fallido dejó frames parciales en el Output anterior)
   const createCycleEncoder = () => {
     const source = new CanvasSource(canvas, {
       codec: videoCodec,
-      quality: new Quality({ bitrate: targetBitrate }),
+      quality: new Quality({
+        bitrate: targetBitrate,
+        quantizer: codecQuantizer[videoCodec],
+        bitrateMode: "variable",
+      }),
+      latencyMode: "quality",
       // One keyframe per cycle: every tiled copy starts on an IDR, files stay lean
       keyFrameInterval: Math.max(0.5, cycleDuration),
     });
@@ -975,10 +1066,49 @@ export async function exportMangaMotionVideo(
 
   const drawComposited = (
     source: CanvasImageSource,
-    t: number
+    t: number,
+    sourceTime: number
   ) => {
+    const frameConfig: MangaMotionConfig = {
+      ...cycleConfig,
+      sourceTransform: sourceTransformAt(
+        opts.sourceStabilization,
+        sourceTime,
+        opts.stabilizationEnabled !== false
+      ),
+    };
     // dtScale = fps/60: las partículas avanzan en tiempo real igual que en el preview
-    renderMangaMotionFrame(ctx, source, cycleConfig, width, height, t, null, particleSys, fps / 60);
+    renderMangaMotionFrame(ctx, source, frameConfig, width, height, t, null, particleSys, fps / 60);
+
+    if (seamMode === "pingpong") {
+      const state = getSmoothPingPongFrameState(t, sourceDuration, sourceStart);
+      const endpoint = state.endpoint === "start" ? pingPongEndpoints.start : pingPongEndpoints.end;
+      if (state.inTransition && state.endpointMix > 0 && endpoint) {
+        renderMangaMotionFrame(
+          turnCtx,
+          endpoint,
+          {
+            ...cycleConfig,
+            particles: "none",
+            sourceTransform: sourceTransformAt(
+              opts.sourceStabilization,
+              Math.min(sourceEnd - frameDur, Math.max(sourceStart, state.endpointTime)),
+              opts.stabilizationEnabled !== false
+            ),
+          },
+          width,
+          height,
+          t,
+          null,
+          turnParticleSys,
+          0
+        );
+        ctx.save();
+        ctx.globalAlpha = state.endpointMix;
+        ctx.drawImage(turnCanvas, 0, 0);
+        ctx.restore();
+      }
+    }
   };
 
   const finishFrame = async (i: number) => {
@@ -1106,13 +1236,13 @@ export async function exportMangaMotionVideo(
       await new Promise<void>(r => {
         requestAnimationFrame(() => requestAnimationFrame(() => r()));
       });
-      srcCtx.drawImage(video, 0, 0, width, height);
+      srcCtx.drawImage(video, 0, 0, rawW, rawH);
 
       for (let i = 0; i < cycleFrames; i++) {
         shouldCancel();
         await seekTo(video, srcTimes[i]!);
-        srcCtx.drawImage(video, 0, 0, width, height);
-        drawComposited(srcCanvas, cycleTimes[i]!);
+        srcCtx.drawImage(video, 0, 0, rawW, rawH);
+        drawComposited(srcCanvas, cycleTimes[i]!, srcTimes[i]!);
         await finishFrame(i);
       }
     } finally {
@@ -1190,7 +1320,7 @@ export async function exportMangaMotionVideo(
       await renderCycleSeekBased();
     } else {
       for (let i = 0; i < cycleFrames; i++) {
-        drawComposited(image, cycleTimes[i]!);
+        drawComposited(image, cycleTimes[i]!, srcTimes[i]!);
         await finishFrame(i);
       }
     }
@@ -1314,6 +1444,8 @@ export async function exportMangaMotionVideo(
     throw err;
   } finally {
     closePendingHeadFrames();
+    try { pingPongEndpoints.start?.close(); } catch {}
+    try { pingPongEndpoints.end?.close(); } catch {}
     watchdog.stop();
   }
 }

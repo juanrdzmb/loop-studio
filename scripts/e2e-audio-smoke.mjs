@@ -52,12 +52,12 @@ ok("Dual Studio carga", await page.isVisible("text=Canción Master Común"));
 await page.locator('input[type="file"]').nth(0).setInputFiles(VIDEO);
 await page.waitForSelector("canvas", { timeout: 15000 });
 await page.getByTestId("visual-loop-16x9").getByText("5.0s seleccionados").waitFor();
-const visualSelects = page.locator("select");
 ok(
   "Upload visual arranca limpio y estable",
-  await visualSelects.nth(0).inputValue() === "original"
-    && await visualSelects.nth(1).inputValue() === "static"
-    && await visualSelects.nth(2).inputValue() === "none"
+  await page.getByLabel("Filtro visual 16:9").inputValue() === "original"
+    && await page.getByLabel("Cámara 2.5D 16:9").inputValue() === "static"
+    && await page.getByLabel("Partículas 16:9").inputValue() === "none"
+    && await page.getByLabel("Modo de continuidad 16:9").inputValue() === "cut"
     && await page.locator('button:has-text("Reproducir")').count() === 1
 );
 const creativeProfile = page.getByLabel("Universo creativo del vídeo");
@@ -68,7 +68,7 @@ ok(
 );
 await page.getByLabel("Inicio del recorte").fill("1");
 await page.getByLabel("Fin del recorte").fill("4");
-await page.getByTestId("visual-loop-16x9").getByRole("button", { name: /✨ Natural/ }).click();
+await page.getByTestId("visual-loop-16x9").getByLabel("Modo de continuidad 16:9").selectOption("smooth");
 ok(
   "El recorte manual 1s–4s se conserva al activar loop Natural",
   await page.getByLabel("Inicio del recorte").inputValue() === "1"

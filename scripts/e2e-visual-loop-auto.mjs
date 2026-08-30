@@ -58,11 +58,26 @@ page.on("pageerror", (error) => pageErrors.push(error.message));
 await page.goto(`${BASE}/dual-studio`, { waitUntil: "networkidle" });
 await page.locator('input[type="file"]').nth(0).setInputFiles(SOURCE);
 const loopCard = page.getByTestId("visual-loop-16x9");
-await loopCard.getByRole("button", { name: /✨ Natural/ }).click();
+// Esperar a que la metadata del clip cargue y la tarjeta muestre la selección
+// inicial ("9.0s seleccionados" viene de visualLoop16, creado en loadedmetadata):
+// si se activa Natural antes, enableNaturalLoop no encuentra clip completo y no
+// llega a pedir el análisis al companion.
 await page.waitForFunction(
   () => {
     const card = document.querySelector('[data-testid="visual-loop-16x9"]');
-    return Boolean(card?.textContent?.includes("seleccionados") && !card.textContent.includes("Analizando…"));
+    return Boolean(card?.textContent?.includes("seleccionados"));
+  },
+  null,
+  { timeout: 30000 }
+);
+await loopCard.getByLabel("Modo de continuidad 16:9").selectOption("smooth");
+await page.waitForFunction(
+  () => {
+    const card = document.querySelector('[data-testid="visual-loop-16x9"]');
+    // "Buscando una unión natural…" es el estado de análisis activo: la tarjeta
+    // ya muestra el clip completo mientras tanto, así que esperar solo a
+    // "seleccionados" leería el fallback antes de que responda el companion.
+    return Boolean(card?.textContent?.includes("seleccionados") && !card.textContent.includes("Buscando una unión natural"));
   },
   null,
   { timeout: 30000 }
@@ -72,11 +87,10 @@ const durationMatch = cardText.match(/([\d.]+)s seleccionados/);
 const selectedDuration = Number(durationMatch?.[1] || 0);
 ok("LoopyCut elige el ciclo detectado, no el clip completo", selectedDuration > 3.5 && selectedDuration < 5.5, `(${selectedDuration}s de 9s)`);
 
-const selects = page.locator("select");
-await selects.nth(0).selectOption("original");
-await selects.nth(1).selectOption("static");
-await selects.nth(2).selectOption("none");
-await page.getByText("Opciones avanzadas de continuidad").first().click();
+await page.getByText("Ajustes visuales y estabilización").click();
+await page.getByLabel("Filtro visual 16:9").selectOption("original");
+await page.getByLabel("Cámara 2.5D 16:9").selectOption("static");
+await page.getByLabel("Partículas 16:9").selectOption("none");
 ok("El modo automático nunca activa boomerang", await page.getByLabel("Modo de continuidad 16:9").inputValue() === "smooth");
 await page.locator('input[type="checkbox"]').first().uncheck({ force: true });
 await page.getByRole("button", { name: "30s", exact: true }).first().click();

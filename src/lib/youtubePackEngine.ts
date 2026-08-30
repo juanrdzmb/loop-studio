@@ -312,15 +312,19 @@ export interface YoutubePackResult {
 export function cleanSongName(raw: string | null | undefined): string {
   if (!raw) return "this one";
   let name = raw.replace(/\.[a-zA-Z0-9]+$/, "");
-  name = name.replace(/^[0-9_\-.\s]+/, "");
-  name = name.replace(/[_.\-]+/g, " ").trim();
-  name = name.replace(/\s+/g, " ");
+  name = name.replace(/^[0-9]+[_.\-\s]*/, "");
+  name = name.replace(/[_.]+/g, " ").trim();
   name = name.replace(/\(Official Video\)/gi, "");
   name = name.replace(/\(Official Audio\)/gi, "");
   name = name.replace(/\(Audio\)/gi, "");
   name = name.replace(/\[HD\]/gi, "");
   name = name.replace(/slowed\s*\+*\s*reverb/gi, "").trim();
   name = name.replace(/\s+[–—|-]\s+topic$/i, "").trim();
+  // Un separador legible conserva el crédito Artista — Canción. Los guiones
+  // internos de nombres como Jay-Z no se tocan.
+  name = name.replace(/\s+[-|]\s+/g, " — ");
+  name = name.replace(/\s*[–—]\s*/g, " — ");
+  name = name.replace(/\s+/g, " ").replace(/(?:\s+—)+\s*$/, "").trim();
   return name.length > 0 ? name : "this one";
 }
 
@@ -356,11 +360,16 @@ export function generateOrganicYoutubePack(opts: {
   const minutes = Math.max(0.5, opts.targetDurationMinutes || 1);
   const seed = (opts.seedOffset || 0) * 17 + songName.length * 13 + cid.length * 5;
 
-  // La canción y el universo se mantienen reconocibles; lo que rota es el ángulo
-  // emocional. Así cada subida conserva relevancia de búsqueda sin sonar a plantilla.
+  // Canción, personaje y serie quedan visibles desde el principio. Rota el ángulo,
+  // no los términos reales que ayudan a reconocer y encontrar el vídeo.
+  const searchableTitles = [
+    `{song} — {name} ({series})`,
+    `{song} | {series} {name} Edit`,
+    `{song} — a {series} night with {name}`,
+  ];
   const title = capTitle(
-    `${fill(pick(meta.titles, seed), songName, meta)}${isSlowed ? " | Slowed + Reverb" : ""}`,
-    96
+    `${fill(pick(searchableTitles, seed), songName, meta)}${isSlowed ? " | Slowed + Reverb" : " | Original Tempo"}`,
+    100
   );
   const note = fill(pick(meta.notes, seed + 3), songName, meta)
     .split("\n")
@@ -368,21 +377,29 @@ export function generateOrganicYoutubePack(opts: {
   const pinned = pick(meta.pinnedComments, seed + 11);
   const shortHook = pick(meta.shortsHooks, seed + 7);
 
-  const keywordLine = `${songName}${isSlowed ? " slowed + reverb" : ""} · ${meta.series} ${meta.name} edit.`;
-  const slowedLine = isSlowed ? "Slowed + reverb, built for a quiet replay." : "Original tempo, built for a quiet replay.";
-  const durationLine = minutes >= 1 ? "Full version — let the scene breathe." : "Short version — full edit on the channel.";
-  const description = `${keywordLine}
-${note}
-${slowedLine} ${durationLine}
+  const durationLabel = minutes >= 1
+    ? `${Number.isInteger(minutes) ? minutes : minutes.toFixed(1)}-minute`
+    : `${Math.round(minutes * 60)}-second`;
+  const effectLabel = isSlowed ? "slowed + reverb" : "original tempo";
+  const longHashtags = [...new Set(meta.hashtags)].slice(0, 5);
+  const ctas = [
+    `What should ${meta.name} hear next?`,
+    "Leave the next song below — I read every suggestion.",
+    `Which track belongs in the next ${meta.series} edit?`,
+  ];
+  const description = `${note}
 
-${meta.hashtags.slice(0, 4).join(" ")}`;
+${songName} — ${effectLabel}, paired with ${meta.name} from ${meta.series}. A ${durationLabel} seamless visual loop by Silent Vigil.
+
+${pick(ctas, seed + 19)}
+
+${longHashtags.join(" ")}`;
 
   const shortsTitle = capTitle(`${songName} | ${meta.name} Edit #Shorts`, 96);
 
-  const shortsHashtags = ["#Shorts", ...meta.hashtags.slice(0, 4)];
-  const shortsDescription = `${songName} · ${meta.series} ${meta.name} edit.
-${shortHook}
-Full version on the channel.
+  const shortsHashtags = ["#Shorts", ...meta.hashtags.slice(0, 3)];
+  const shortsDescription = `${shortHook}
+${songName} · ${meta.name} (${meta.series}) · ${effectLabel}.
 
 ${shortsHashtags.join(" ")}`;
 
@@ -392,11 +409,11 @@ ${shortsHashtags.join(" ")}`;
     meta.series.toLowerCase(),
     ...(isSlowed ? [`${songName.toLowerCase()} slowed`, "slowed and reverb"] : [`${songName.toLowerCase()} loop`]),
     ...meta.tags,
-  ])].slice(0, 12);
-  const instagramHashtags = [...meta.hashtags.slice(0, 5), "#Reels"];
-  const tiktokHashtags = [...meta.hashtags.slice(0, 4), "#AnimeEdit", "#TikTokEdits"];
-  const instagramCaption = `${shortHook}\n\n${songName} · ${meta.series}\n\n${instagramHashtags.join(" ")}`;
-  const tiktokCaption = `${shortHook} ${songName} · ${meta.name}\n\n${tiktokHashtags.join(" ")}`;
+  ])].slice(0, 8);
+  const instagramHashtags = [...meta.hashtags.slice(0, 4), "#Reels"];
+  const tiktokHashtags = [...meta.hashtags.slice(0, 3), "#AnimeEdit", "#TikTokEdits"];
+  const instagramCaption = `${shortHook}\n\n${songName} · ${meta.name}, ${meta.series}.\nSave it for the next quiet night.\n\n${instagramHashtags.join(" ")}`;
+  const tiktokCaption = `${songName} found ${meta.name} at the wrong hour.\n${shortHook}\n\n${tiktokHashtags.join(" ")}`;
 
   return {
     characterId: cid,
@@ -405,7 +422,7 @@ ${shortsHashtags.join(" ")}`;
     songName,
     title,
     description,
-    hashtags: meta.hashtags,
+    hashtags: longHashtags,
     tags,
     tagsLine: tags.join(", "),
     playlist: meta.playlist,

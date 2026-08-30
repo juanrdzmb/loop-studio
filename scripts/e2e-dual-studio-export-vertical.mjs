@@ -71,11 +71,10 @@ const fullClipText = await fullClipCard.innerText();
 ok("Short conserva el clip completo, sin micro-recorte", /\d+\.\d+s seleccionados/.test(fullClipText), fullClipText.replace(/\n/g, " · "));
 
 // Configure 9:16 workspace: original, static, none, pingpong
-const selects = page.locator("select");
-await selects.nth(0).selectOption("original");
-await selects.nth(1).selectOption("static");
-await selects.nth(2).selectOption("none");
-await page.getByText("Opciones avanzadas de continuidad").last().click();
+await page.getByText("Ajustes visuales y estabilización").click();
+await page.getByLabel("Filtro visual 9:16").selectOption("original");
+await page.getByLabel("Cámara 2.5D 9:16").selectOption("static");
+await page.getByLabel("Partículas 9:16").selectOption("none");
 await page.getByLabel("Modo de continuidad 9:16").selectOption("pingpong");
 await page.locator('input[type="checkbox"]').first().uncheck({ force: true }); // watermark off
 // 9:16 duration presets: pick 30s (last group of duration buttons contains "30s")
@@ -127,9 +126,12 @@ ok("Bitrate alto (>8 Mbps)", outBitrate > 8_000_000, `(${(outBitrate / 1e6).toFi
 const outDur = Number(outStream.duration || 0);
 ok("Duración objetivo 30s", Math.abs(outDur - 30) < 0.5, `(${outDur.toFixed(2)}s)`);
 
-// 5. Pingpong alignment: en el cuarto tras el giro, t = 1.25D debe volver a 0.75D.
-const reverseOutputTime = srcDuration * 1.25;
-const expectedSourceTime = srcDuration * 0.75;
+// 5. Pingpong alignment: en el cuarto tras el giro, t = 1.30D debe volver a 0.70D.
+// Ambos tiempos se eligen como múltiplos exactos de 1/30 s: un seek a mitad de
+// frame (p. ej. 6.25 s = frame 187.5) deja el PSNR a merced de qué lado de la
+// frontera aterrice ffmpeg y vuelve la prueba intermitente.
+const reverseOutputTime = srcDuration * 1.3;
+const expectedSourceTime = srcDuration * 0.7;
 execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-ss", String(reverseOutputTime), "-i", OUT, "-frames:v", "1", `${WORK}/ev_frame.png`]);
 execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-ss", String(expectedSourceTime), "-i", SRC, "-frames:v", "1", `${WORK}/sv_frame.png`]);
 const psnrOut = execFileSync("bash", ["-c",

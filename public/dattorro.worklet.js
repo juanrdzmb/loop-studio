@@ -123,7 +123,7 @@ class DattorroReverb extends AudioWorkletProcessor {
 		const dp = 1 - Math.max(0.001, Math.min(0.999, parameters.damping[0]));
 		const ex = (parameters.excursionRate[0] || 0.5) / sampleRate;
 		const ed = ((parameters.excursionDepth[0] || 0.7) * sampleRate) / 1000;
-		const we = (parameters.wet[0] || 0.3) * 0.6;
+		const we = (parameters.wet[0] ?? 0.3) * 0.6;
 		const dr = parameters.dry[0] ?? 0.6;
 
 		// Flush denormals

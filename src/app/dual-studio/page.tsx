@@ -25,12 +25,18 @@ import {
   ExportCancelledError,
 } from "@/lib/mangaMotionExport";
 import { getForwardLoopFrameState } from "@/lib/forwardLoop";
+import { getSmoothPingPongFrameState } from "@/lib/pingPongLoop";
 import {
   buildClipFrameCache,
   disposeClipFrameCache,
   clipFrameAt,
   type ClipFrameCache,
 } from "@/lib/clipFrameCache";
+import {
+  analyzeClipFrameStabilization,
+  sourceTransformAt,
+  type ClipStabilization,
+} from "@/lib/videoStabilization";
 import { saveExportMediaResult, analyzeMusic, type LoopCandidate } from "@/lib/companion";
 import { drawThumbnailChannelMark, ensureWatermarkFont } from "@/lib/watermark";
 import {
@@ -123,7 +129,7 @@ function formatDuration(seconds: number): string {
 
 function visualLoopSummary(mode: SeamMode, selection: VisualLoopSelection | null): string {
   const seam = mode === "pingpong"
-    ? "Boomerang"
+    ? "Boomerang suave"
     : mode === "smooth"
       ? "Fundido continuo"
       : mode === "calm"
@@ -231,6 +237,8 @@ export default function DualStudioPage() {
   const [particleSpeed16x9, setParticleSpeed16x9] = useState<number>(1.0);
   const [seamMode16x9, setSeamMode16x9] = useState<SeamMode>("cut");
   const [calmPlaybackRate16x9] = useState<number>(0.4);
+  const [stabilization16x9, setStabilization16x9] = useState<ClipStabilization | null>(null);
+  const [stabilizationEnabled16x9, setStabilizationEnabled16x9] = useState(true);
 
   // Style & Effect Settings for 9:16 — inicial limpio, el usuario decide qué añadir
   const [style9x16, setStyle9x16] = useState<AestheticStyle>("original");
@@ -239,6 +247,8 @@ export default function DualStudioPage() {
   const [particleSpeed9x16, setParticleSpeed9x16] = useState<number>(1.0);
   const [seamMode9x16, setSeamMode9x16] = useState<SeamMode>("cut");
   const [calmPlaybackRate9x16] = useState<number>(0.4);
+  const [stabilization9x16, setStabilization9x16] = useState<ClipStabilization | null>(null);
+  const [stabilizationEnabled9x16, setStabilizationEnabled9x16] = useState(true);
 
   // Slowed + Reverb Audio Studio State
   const [enableSlowedReverb, setEnableSlowedReverb] = useState<boolean>(false);
@@ -310,6 +320,8 @@ export default function DualStudioPage() {
   const particleSpeed16x9Ref = useRef(particleSpeed16x9);
   const seamMode16x9Ref = useRef(seamMode16x9);
   const calmPlaybackRate16x9Ref = useRef(calmPlaybackRate16x9);
+  const stabilization16x9Ref = useRef(stabilization16x9);
+  const stabilizationEnabled16x9Ref = useRef(stabilizationEnabled16x9);
 
   const style9x16Ref = useRef(style9x16);
   const particles9x16RefState = useRef(particles9x16);
@@ -317,6 +329,8 @@ export default function DualStudioPage() {
   const particleSpeed9x16Ref = useRef(particleSpeed9x16);
   const seamMode9x16Ref = useRef(seamMode9x16);
   const calmPlaybackRate9x16Ref = useRef(calmPlaybackRate9x16);
+  const stabilization9x16Ref = useRef(stabilization9x16);
+  const stabilizationEnabled9x16Ref = useRef(stabilizationEnabled9x16);
 
   const isPlaying16x9Ref = useRef(isPlaying16x9);
   const isPlaying9x16Ref = useRef(isPlaying9x16);
@@ -382,6 +396,8 @@ export default function DualStudioPage() {
   useEffect(() => { particleSpeed16x9Ref.current = particleSpeed16x9; }, [particleSpeed16x9]);
   useEffect(() => { seamMode16x9Ref.current = seamMode16x9; }, [seamMode16x9]);
   useEffect(() => { calmPlaybackRate16x9Ref.current = calmPlaybackRate16x9; }, [calmPlaybackRate16x9]);
+  useEffect(() => { stabilization16x9Ref.current = stabilization16x9; }, [stabilization16x9]);
+  useEffect(() => { stabilizationEnabled16x9Ref.current = stabilizationEnabled16x9; }, [stabilizationEnabled16x9]);
   useEffect(() => { camera16x9Ref.current = camera16x9; }, [camera16x9]);
   useEffect(() => { cameraIntensity16x9Ref.current = cameraIntensity16x9; }, [cameraIntensity16x9]);
 
@@ -391,6 +407,8 @@ export default function DualStudioPage() {
   useEffect(() => { particleSpeed9x16Ref.current = particleSpeed9x16; }, [particleSpeed9x16]);
   useEffect(() => { seamMode9x16Ref.current = seamMode9x16; }, [seamMode9x16]);
   useEffect(() => { calmPlaybackRate9x16Ref.current = calmPlaybackRate9x16; }, [calmPlaybackRate9x16]);
+  useEffect(() => { stabilization9x16Ref.current = stabilization9x16; }, [stabilization9x16]);
+  useEffect(() => { stabilizationEnabled9x16Ref.current = stabilizationEnabled9x16; }, [stabilizationEnabled9x16]);
   useEffect(() => { camera9x16Ref.current = camera9x16; }, [camera9x16]);
   useEffect(() => { cameraIntensity9x16Ref.current = cameraIntensity9x16; }, [cameraIntensity9x16]);
   useEffect(() => { target16x9DurationRef.current = target16x9Duration; }, [target16x9Duration]);
@@ -503,14 +521,23 @@ export default function DualStudioPage() {
   // Handle 16:9 Media Upload (Video or Image)
   const loadClipCache = (file: File, which: "16x9" | "9x16") => {
     const is16 = which === "16x9";
+    // Un clip nuevo entrante pausa el preview AQUÍ: si el usuario llega a pulsar
+    // Reproducir mientras el borrador se prepara, su play explícito se respeta
+    // y no se corta cuando el cache termina de construirse.
     if (is16) {
+      isPlaying16x9Ref.current = false;
+      setIsPlaying16x9(false);
       disposeClipFrameCache(clipCache16Ref.current);
       clipCache16Ref.current = null;
       setDraftReady16(false);
+      setStabilization16x9(null);
     } else {
+      isPlaying9x16Ref.current = false;
+      setIsPlaying9x16(false);
       disposeClipFrameCache(clipCache9Ref.current);
       clipCache9Ref.current = null;
       setDraftReady9(false);
+      setStabilization9x16(null);
     }
     void buildClipFrameCache(file, { maxWidth: 640, fps: 18 })
       .then((cache) => {
@@ -519,13 +546,17 @@ export default function DualStudioPage() {
           clipCache16Ref.current = cache;
           setDraftReady16(true);
           draftKick16Ref.current += 1;
-          setIsPlaying16x9(false);
+          void analyzeClipFrameStabilization(cache).then((analysis) => {
+            if (clipCache16Ref.current === cache) setStabilization16x9(analysis);
+          }).catch((err) => console.warn("No se pudo medir la microvibración 16:9:", err));
         } else {
           disposeClipFrameCache(clipCache9Ref.current);
           clipCache9Ref.current = cache;
           setDraftReady9(true);
           draftKick9Ref.current += 1;
-          setIsPlaying9x16(false);
+          void analyzeClipFrameStabilization(cache).then((analysis) => {
+            if (clipCache9Ref.current === cache) setStabilization9x16(analysis);
+          }).catch((err) => console.warn("No se pudo medir la microvibración 9:16:", err));
         }
       })
       .catch((err: unknown) => {
@@ -559,10 +590,10 @@ export default function DualStudioPage() {
         const locked = is16 ? seamLocked16Ref.current : seamLocked9Ref.current;
         if (!locked) {
           if (is16) {
-            setSeamMode16x9(selectedNaturalLoop ? "smooth" : "calm");
+            setSeamMode16x9("smooth");
             if (!selectedNaturalLoop) setCamera16x9("static");
           } else {
-            setSeamMode9x16(selectedNaturalLoop ? "smooth" : "calm");
+            setSeamMode9x16("smooth");
             if (!selectedNaturalLoop) setCamera9x16("static");
           }
         }
@@ -641,13 +672,19 @@ export default function DualStudioPage() {
     if (which === "16x9") {
       seamLocked16Ref.current = true;
       setSeamMode16x9(mode);
-      if (mode === "pingpong") setCamera16x9("static");
+      if (mode === "pingpong") {
+        setCamera16x9("static");
+        setSeamHint16("Boomerang suave: velocidad estable y giro amortiguado. Para humo, lluvia o acción intensa, Natural suele ocultar mejor la unión.");
+      }
       setIsPlaying16x9(false);
       draftKick16Ref.current += 1;
     } else {
       seamLocked9Ref.current = true;
       setSeamMode9x16(mode);
-      if (mode === "pingpong") setCamera9x16("static");
+      if (mode === "pingpong") {
+        setCamera9x16("static");
+        setSeamHint9("Boomerang suave: velocidad estable y giro amortiguado. Para humo, lluvia o acción intensa, Natural suele ocultar mejor la unión.");
+      }
       setIsPlaying9x16(false);
       draftKick9Ref.current += 1;
     }
@@ -679,6 +716,7 @@ export default function DualStudioPage() {
     setParticles16x9("none");
     setSeamMode16x9("cut");
     setCamera16x9("static");
+    setStabilizationEnabled16x9(true);
     setWatermarkEnabled(false);
     setIsPlaying16x9(false);
     draftKick16Ref.current += 1;
@@ -741,6 +779,7 @@ export default function DualStudioPage() {
     setParticles9x16("none");
     setSeamMode9x16("cut");
     setCamera9x16("static");
+    setStabilizationEnabled9x16(true);
     setWatermarkEnabled(false);
     setIsPlaying9x16(false);
     draftKick9Ref.current += 1;
@@ -1460,7 +1499,65 @@ export default function DualStudioPage() {
           // Si el <video> todavía no tiene un frame decodificado, conservar el canvas
           // anterior. Pintar en ese estado compondría únicamente el fondo negro.
           if (previewSource16) {
-            renderMangaMotionFrame(ctx, previewSource16, config16Live, W, H, elapsed16x9, null, particles16x9Ref.current, dt * 60);
+            renderMangaMotionFrame(
+              ctx,
+              previewSource16,
+              {
+                ...config16Live,
+                sourceTransform: sourceTransformAt(
+                  stabilization16x9Ref.current,
+                  srcT16,
+                  stabilizationEnabled16x9Ref.current
+                ),
+              },
+              W,
+              H,
+              elapsed16x9,
+              null,
+              particles16x9Ref.current,
+              dt * 60
+            );
+          }
+
+          if (cache16 && seam16 === "pingpong") {
+            const pingState = getSmoothPingPongFrameState(elapsed16x9, vidDur16, sourceStart16);
+            const endpointFrame = pingState.endpoint
+              ? clipFrameAt(cache16, pingState.endpointTime)
+              : null;
+            if (endpointFrame && pingState.endpointMix > 0) {
+              const blend = blendCanvas16Ref.current ?? document.createElement("canvas");
+              blendCanvas16Ref.current = blend;
+              if (blend.width !== W || blend.height !== H) {
+                blend.width = W;
+                blend.height = H;
+              }
+              const blendCtx = blend.getContext("2d");
+              if (blendCtx) {
+                renderMangaMotionFrame(
+                  blendCtx,
+                  endpointFrame,
+                  {
+                    ...config16Live,
+                    particles: "none",
+                    sourceTransform: sourceTransformAt(
+                      stabilization16x9Ref.current,
+                      pingState.endpointTime,
+                      stabilizationEnabled16x9Ref.current
+                    ),
+                  },
+                  W,
+                  H,
+                  elapsed16x9,
+                  null,
+                  blendParticles16Ref.current,
+                  0
+                );
+                ctx.save();
+                ctx.globalAlpha = pingState.endpointMix;
+                ctx.drawImage(blend, 0, 0);
+                ctx.restore();
+              }
+            }
           }
 
           const fade16 = computeVisualCrossfadeDuration(config16Live, cycle16);
@@ -1531,7 +1628,7 @@ export default function DualStudioPage() {
           ctx.fillText(
             `BORRADOR ${targetDur16 >= 60 ? `${targetDur16 / 60} min` : `${targetDur16}s`} · ${
               seam16 === "pingpong"
-                ? "boomerang"
+                ? "boomerang suave"
                 : seam16 === "smooth"
                   ? "fundido"
                   : seam16 === "calm"
@@ -1628,7 +1725,65 @@ export default function DualStudioPage() {
               ? media9
               : null);
           if (previewSource9) {
-            renderMangaMotionFrame(ctx, previewSource9, config9Live, W, H, elapsed9x16, null, particles9x16Ref.current, dt * 60);
+            renderMangaMotionFrame(
+              ctx,
+              previewSource9,
+              {
+                ...config9Live,
+                sourceTransform: sourceTransformAt(
+                  stabilization9x16Ref.current,
+                  srcT9,
+                  stabilizationEnabled9x16Ref.current
+                ),
+              },
+              W,
+              H,
+              elapsed9x16,
+              null,
+              particles9x16Ref.current,
+              dt * 60
+            );
+          }
+
+          if (cache9 && seam9 === "pingpong") {
+            const pingState = getSmoothPingPongFrameState(elapsed9x16, vidDur9, sourceStart9);
+            const endpointFrame = pingState.endpoint
+              ? clipFrameAt(cache9, pingState.endpointTime)
+              : null;
+            if (endpointFrame && pingState.endpointMix > 0) {
+              const blend = blendCanvas9Ref.current ?? document.createElement("canvas");
+              blendCanvas9Ref.current = blend;
+              if (blend.width !== W || blend.height !== H) {
+                blend.width = W;
+                blend.height = H;
+              }
+              const blendCtx = blend.getContext("2d");
+              if (blendCtx) {
+                renderMangaMotionFrame(
+                  blendCtx,
+                  endpointFrame,
+                  {
+                    ...config9Live,
+                    particles: "none",
+                    sourceTransform: sourceTransformAt(
+                      stabilization9x16Ref.current,
+                      pingState.endpointTime,
+                      stabilizationEnabled9x16Ref.current
+                    ),
+                  },
+                  W,
+                  H,
+                  elapsed9x16,
+                  null,
+                  blendParticles9Ref.current,
+                  0
+                );
+                ctx.save();
+                ctx.globalAlpha = pingState.endpointMix;
+                ctx.drawImage(blend, 0, 0);
+                ctx.restore();
+              }
+            }
           }
 
           const fade9 = computeVisualCrossfadeDuration(config9Live, cycle9);
@@ -1699,7 +1854,7 @@ export default function DualStudioPage() {
           ctx.fillText(
             `BORRADOR ${targetDur9}s · ${
               seam9 === "pingpong"
-                ? "boomerang"
+                ? "boomerang suave"
                 : seam9 === "smooth"
                   ? "fundido"
                   : seam9 === "calm"
@@ -1856,6 +2011,8 @@ export default function DualStudioPage() {
         sourceStart: visualLoop16?.start,
         sourceEnd: visualLoop16?.end,
         sourceAlignment: visualLoop16?.alignment ?? null,
+        sourceStabilization: stabilization16x9,
+        stabilizationEnabled: stabilizationEnabled16x9,
         config: config16,
         audioBuffer: audio16x9Buffer,
         sfxCues: sfx16x9Cues,
@@ -1932,7 +2089,11 @@ export default function DualStudioPage() {
       const res9 = await exportMangaMotionVideo({
         image: video9x16El,
         sourceFile: video9x16File,
+        sourceStart: visualLoop9?.start,
+        sourceEnd: visualLoop9?.end,
         sourceAlignment: visualLoop9?.alignment ?? null,
+        sourceStabilization: stabilization9x16,
+        stabilizationEnabled: stabilizationEnabled9x16,
         config: config9,
         audioBuffer: audio9x16Buffer,
         sfxCues: sfx9x16Cues,
@@ -2017,6 +2178,8 @@ export default function DualStudioPage() {
           sourceStart: visualLoop16?.start,
           sourceEnd: visualLoop16?.end,
           sourceAlignment: visualLoop16?.alignment ?? null,
+          sourceStabilization: stabilization16x9,
+          stabilizationEnabled: stabilizationEnabled16x9,
           config: config16,
           audioBuffer: audio16x9Buffer,
           sfxCues: sfx16x9Cues,
@@ -2054,7 +2217,11 @@ export default function DualStudioPage() {
         const res9 = await exportMangaMotionVideo({
           image: video9x16El,
           sourceFile: video9x16File,
+          sourceStart: visualLoop9?.start,
+          sourceEnd: visualLoop9?.end,
           sourceAlignment: visualLoop9?.alignment ?? null,
+          sourceStabilization: stabilization9x16,
+          stabilizationEnabled: stabilizationEnabled9x16,
           config: config9,
           audioBuffer: audio9x16Buffer,
           sfxCues: sfx9x16Cues,
@@ -2823,21 +2990,34 @@ export default function DualStudioPage() {
                   />
                 </div>
               )}
-              <div className="mt-3 grid grid-cols-3 gap-2" aria-label="Tipo de loop 16:9">
-                {[
-                  { mode: "cut" as const, label: "Corte directo", icon: "■" },
-                  { mode: "smooth" as const, label: "Natural", icon: "✨" },
-                  { mode: "pingpong" as const, label: "Boomerang", icon: "↔" },
-                ].map((option) => (
-                  <button
-                    key={option.mode}
-                    type="button"
-                    onClick={() => option.mode === "smooth" ? enableNaturalLoop("16x9") : setManualLoopMode("16x9", option.mode)}
-                    className={`rounded-lg px-2 py-2 font-bold ${seamMode16x9 === option.mode ? "bg-fuchsia-600 text-white" : "bg-zinc-800 text-zinc-300 hover:bg-zinc-700"}`}
-                  >
-                    {option.icon} {option.label}
-                  </button>
-                ))}
+              <div className="mt-3 flex flex-col gap-1.5">
+                <label className="text-[11px] font-semibold text-zinc-300" htmlFor="continuity-16x9">Continuidad</label>
+                <select
+                  id="continuity-16x9"
+                  aria-label="Modo de continuidad 16:9"
+                  value={seamMode16x9}
+                  onChange={(event) => {
+                    const mode = event.target.value as SeamMode;
+                    if (mode === "smooth") enableNaturalLoop("16x9");
+                    else setManualLoopMode("16x9", mode);
+                  }}
+                  className="rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-xs font-semibold text-white"
+                >
+                  <option value="cut">■ Sin loop · corte directo</option>
+                  <option value="smooth">✨ Natural · recomendado</option>
+                  <option value="pingpong">↔ Boomerang suave · ida y vuelta</option>
+                  <option value="extend">⏳ Extender · cámara lenta continua</option>
+                </select>
+                {seamMode16x9 === "extend" && video16x9Duration > 0 && (() => {
+                  const clipDur = visualLoop16?.duration ?? video16x9Duration;
+                  const rate = resolveExtendPlaybackRate(clipDur, target16x9Duration);
+                  return <p className="text-[10px] text-cyan-200">{rate.toFixed(2)}× · el clip se extiende sin rebobinar.</p>;
+                })()}
+                {stabilization16x9 && (
+                  <p data-testid="stabilization-status-16x9" className={stabilization16x9.autoEnabled ? "text-[10px] text-emerald-300" : "text-[10px] text-zinc-500"}>
+                    {stabilization16x9.autoEnabled && stabilizationEnabled16x9 ? "✓ " : ""}{stabilization16x9.reason}
+                  </p>
+                )}
               </div>
               <p className="mt-2 text-[11px] leading-relaxed text-zinc-400">
                 {analyzingVideo16 ? "Buscando una unión natural…" : seamHint16 || "El vídeo empieza limpio. Recorta y activa un loop cuando quieras."}
@@ -2845,10 +3025,13 @@ export default function DualStudioPage() {
             </div>
 
             {/* 16:9 Visual Controls */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+            <details className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-3">
+              <summary className="cursor-pointer text-xs font-bold text-zinc-400">Ajustes visuales y estabilización</summary>
+            <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 text-xs">
               <div className="flex flex-col gap-1">
                 <label className="text-[11px] text-zinc-400 font-semibold">🎨 Filtro Visual:</label>
                 <select
+                  aria-label="Filtro visual 16:9"
                   value={style16x9}
                   onChange={(e) => setStyle16x9(e.target.value as AestheticStyle)}
                   className="px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-700 text-white text-xs cursor-pointer"
@@ -2864,6 +3047,7 @@ export default function DualStudioPage() {
               <div className="flex flex-col gap-1">
                 <label className="text-[11px] text-zinc-400 font-semibold">🎥 Cámara 2.5D:</label>
                 <select
+                  aria-label="Cámara 2.5D 16:9"
                   value={camera16x9}
                   onChange={(e) => setCamera16x9(e.target.value as CameraMovement)}
                   className="px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-700 text-white text-xs cursor-pointer"
@@ -2879,6 +3063,7 @@ export default function DualStudioPage() {
               <div className="flex flex-col gap-1">
                 <label className="text-[11px] text-zinc-400 font-semibold">✨ Partículas:</label>
                 <select
+                  aria-label="Partículas 16:9"
                   value={particles16x9}
                   onChange={(e) => setParticles16x9(e.target.value as ParticleType)}
                   className="px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-700 text-white text-xs cursor-pointer"
@@ -2923,44 +3108,22 @@ export default function DualStudioPage() {
                 )}
               </div>
 
-              <details className="rounded-lg border border-zinc-800 bg-zinc-950 p-2">
-                <summary className="cursor-pointer text-[11px] font-semibold text-zinc-400">Opciones avanzadas de continuidad</summary>
-                <div className="mt-2 flex flex-col gap-1">
-                <label className="text-[11px] text-zinc-400 font-semibold">Continuidad:</label>
-                <select
-                  aria-label="Modo de continuidad 16:9"
-                  value={seamMode16x9}
-                  onChange={(e) => setManualLoopMode("16x9", e.target.value as SeamMode)}
-                  className="px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-700 text-white text-xs cursor-pointer"
-                >
-                  <option value="smooth">✨ Automático — Busca unión natural, siempre hacia delante</option>
-                  <option value="extend">⏳ Extender — Estira el clip a cámara lenta, siempre hacia delante</option>
-                  <option value="pingpong">↔ Boomerang — Ida y vuelta (puede marear)</option>
-                  <option value="cut">✂️ Corte directo</option>
-                </select>
-                {seamMode16x9 === "extend" && video16x9Duration > 0 && (() => {
-                  const clipDur = visualLoop16?.duration ?? video16x9Duration;
-                  const rate = resolveExtendPlaybackRate(clipDur, target16x9Duration);
-                  const cycle = clipDur / rate;
-                  const copies = Math.max(1, Math.ceil(target16x9Duration / cycle - 0.01));
-                  return (
-                    <div className="rounded-md border border-cyan-900/70 bg-cyan-950/20 px-2 py-1 text-[10px] text-cyan-200 leading-snug">
-                      ⏳ {rate.toFixed(2)}× velocidad · ciclo de {cycle.toFixed(1)}s · {copies === 1 ? "el ciclo cubre el video completo" : <>{copies} repetic&oacute;n{copies !== 1 ? "es" : ""} con {copies} fundido{copies !== 1 ? "s" : ""} oculto{copies !== 1 ? "s" : ""}</>}
-                    </div>
-                  );
-                })()}
-                <p className="text-[10px] text-zinc-500 leading-snug pt-1">
-                  {seamMode16x9 === "smooth"
-                    ? "Busca una unión natural y mantiene el movimiento hacia delante (forward crossfade 0.25-1.0 s, con alineación si hay companion)."
-                    : seamMode16x9 === "extend"
-                      ? "Ralentiza el clip (mínimo 0.15×) para que el ciclo cubra la duración final sin rebobinar: se percibe como una toma lenta continua."
-                      : seamMode16x9 === "pingpong"
-                        ? "Reproduce ida y vuelta. Puede resultar más perceptible."
-                        : "Corte directo sin fundido."}
-                </p>
-                </div>
-              </details>
+              <div className="flex flex-col gap-2 rounded-lg border border-zinc-800 bg-zinc-950 p-2">
+                <span className="text-[11px] font-semibold text-zinc-300">Corrección de microvibración</span>
+                <label className="flex items-center gap-2 text-[11px] text-zinc-400">
+                  <input
+                    type="checkbox"
+                    checked={stabilizationEnabled16x9}
+                    disabled={!stabilization16x9?.autoEnabled}
+                    onChange={(event) => setStabilizationEnabled16x9(event.target.checked)}
+                    className="accent-emerald-500"
+                  />
+                  {stabilization16x9?.autoEnabled ? "Aplicar corrección conservadora" : "Sin corrección necesaria"}
+                </label>
+                <p className="text-[10px] leading-snug text-zinc-500">{stabilization16x9?.reason ?? "Se analiza al preparar el vídeo."}</p>
+              </div>
             </div>
+            </details>
 
             {/* 16:9 DURATION SELECTOR PRESETS */}
             <div className="p-3 rounded-xl bg-zinc-950 border border-zinc-800 flex flex-col gap-2 text-xs">
@@ -3004,7 +3167,7 @@ export default function DualStudioPage() {
                   </div>
                   <p>
                     {longFormAudioMode === "repeat"
-                      ? "Las vueltas se unen con un fundido musical corto; el vídeo termina al acabar la última."
+                      ? `${longFormRepeatCount} vueltas totales · duración exacta ${longFormRepeatCount}× el master procesado · uniones con fundido musical.`
                       : "El vídeo termina al acabar la canción completa procesada, sin repetirla."}
                   </p>
                 </div>
@@ -3221,21 +3384,34 @@ export default function DualStudioPage() {
                   />
                 </div>
               )}
-              <div className="mt-3 grid grid-cols-3 gap-2" aria-label="Tipo de loop 9:16">
-                {[
-                  { mode: "cut" as const, label: "Corte directo", icon: "■" },
-                  { mode: "smooth" as const, label: "Natural", icon: "✨" },
-                  { mode: "pingpong" as const, label: "Boomerang", icon: "↔" },
-                ].map((option) => (
-                  <button
-                    key={option.mode}
-                    type="button"
-                    onClick={() => option.mode === "smooth" ? enableNaturalLoop("9x16") : setManualLoopMode("9x16", option.mode)}
-                    className={`rounded-lg px-2 py-2 font-bold ${seamMode9x16 === option.mode ? "bg-amber-500 text-zinc-950" : "bg-zinc-800 text-zinc-300 hover:bg-zinc-700"}`}
-                  >
-                    {option.icon} {option.label}
-                  </button>
-                ))}
+              <div className="mt-3 flex flex-col gap-1.5">
+                <label className="text-[11px] font-semibold text-zinc-300" htmlFor="continuity-9x16">Continuidad</label>
+                <select
+                  id="continuity-9x16"
+                  aria-label="Modo de continuidad 9:16"
+                  value={seamMode9x16}
+                  onChange={(event) => {
+                    const mode = event.target.value as SeamMode;
+                    if (mode === "smooth") enableNaturalLoop("9x16");
+                    else setManualLoopMode("9x16", mode);
+                  }}
+                  className="rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-xs font-semibold text-white"
+                >
+                  <option value="cut">■ Sin loop · corte directo</option>
+                  <option value="smooth">✨ Natural · recomendado</option>
+                  <option value="pingpong">↔ Boomerang suave · ida y vuelta</option>
+                  <option value="extend">⏳ Extender · cámara lenta continua</option>
+                </select>
+                {seamMode9x16 === "extend" && video9x16Duration > 0 && (() => {
+                  const clipDur = visualLoop9?.duration ?? video9x16Duration;
+                  const rate = resolveExtendPlaybackRate(clipDur, target9x16Duration);
+                  return <p className="text-[10px] text-cyan-200">{rate.toFixed(2)}× · el clip cubre el Short sin rebobinar.</p>;
+                })()}
+                {stabilization9x16 && (
+                  <p data-testid="stabilization-status-9x16" className={stabilization9x16.autoEnabled ? "text-[10px] text-emerald-300" : "text-[10px] text-zinc-500"}>
+                    {stabilization9x16.autoEnabled && stabilizationEnabled9x16 ? "✓ " : ""}{stabilization9x16.reason}
+                  </p>
+                )}
               </div>
               <p className="mt-2 text-[11px] leading-relaxed text-zinc-400">
                 {analyzingVideo9 ? "Buscando una unión natural…" : seamHint9 || "El vídeo empieza limpio. Recorta y activa un loop cuando quieras."}
@@ -3243,10 +3419,13 @@ export default function DualStudioPage() {
             </div>
 
             {/* 9:16 Visual Controls */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+            <details className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-3">
+              <summary className="cursor-pointer text-xs font-bold text-zinc-400">Ajustes visuales y estabilización</summary>
+            <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 text-xs">
               <div className="flex flex-col gap-1">
                 <label className="text-[11px] text-zinc-400 font-semibold">🎨 Filtro Visual:</label>
                 <select
+                  aria-label="Filtro visual 9:16"
                   value={style9x16}
                   onChange={(e) => setStyle9x16(e.target.value as AestheticStyle)}
                   className="px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-700 text-white text-xs cursor-pointer"
@@ -3262,6 +3441,7 @@ export default function DualStudioPage() {
               <div className="flex flex-col gap-1">
                 <label className="text-[11px] text-zinc-400 font-semibold">🎥 Cámara 2.5D:</label>
                 <select
+                  aria-label="Cámara 2.5D 9:16"
                   value={camera9x16}
                   onChange={(e) => setCamera9x16(e.target.value as CameraMovement)}
                   className="px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-700 text-white text-xs cursor-pointer"
@@ -3277,6 +3457,7 @@ export default function DualStudioPage() {
               <div className="flex flex-col gap-1">
                 <label className="text-[11px] text-zinc-400 font-semibold">✨ Partículas:</label>
                 <select
+                  aria-label="Partículas 9:16"
                   value={particles9x16}
                   onChange={(e) => setParticles9x16(e.target.value as ParticleType)}
                   className="px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-700 text-white text-xs cursor-pointer"
@@ -3321,44 +3502,22 @@ export default function DualStudioPage() {
                 )}
               </div>
 
-              <details className="rounded-lg border border-zinc-800 bg-zinc-950 p-2">
-                <summary className="cursor-pointer text-[11px] font-semibold text-zinc-400">Opciones avanzadas de continuidad</summary>
-                <div className="mt-2 flex flex-col gap-1">
-                <label className="text-[11px] text-zinc-400 font-semibold">Continuidad:</label>
-                <select
-                  aria-label="Modo de continuidad 9:16"
-                  value={seamMode9x16}
-                  onChange={(e) => setManualLoopMode("9x16", e.target.value as SeamMode)}
-                  className="px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-700 text-white text-xs cursor-pointer"
-                >
-                  <option value="smooth">✨ Automático — Busca unión natural, siempre hacia delante</option>
-                  <option value="extend">⏳ Extender — Estira el clip a cámara lenta, siempre hacia delante</option>
-                  <option value="pingpong">↔ Boomerang — Ida y vuelta (puede marear)</option>
-                  <option value="cut">✂️ Corte directo</option>
-                </select>
-                {seamMode9x16 === "extend" && video9x16Duration > 0 && (() => {
-                  const clipDur = visualLoop9?.duration ?? video9x16Duration;
-                  const rate = resolveExtendPlaybackRate(clipDur, target9x16Duration);
-                  const cycle = clipDur / rate;
-                  const copies = Math.max(1, Math.ceil(target9x16Duration / cycle - 0.01));
-                  return (
-                    <div className="rounded-md border border-cyan-900/70 bg-cyan-950/20 px-2 py-1 text-[10px] text-cyan-200 leading-snug">
-                      ⏳ {rate.toFixed(2)}× velocidad · ciclo de {cycle.toFixed(1)}s · {copies === 1 ? "el ciclo cubre el Short completo" : <>{copies} repetic&oacute;n{copies !== 1 ? "es" : ""} con {copies} fundido{copies !== 1 ? "s" : ""} oculto{copies !== 1 ? "s" : ""}</>}
-                    </div>
-                  );
-                })()}
-                <p className="text-[10px] text-zinc-500 leading-snug pt-1">
-                  {seamMode9x16 === "smooth"
-                    ? "Short mantiene el clip completo con fundido hacia delante (mejora con alineación si hay companion)."
-                    : seamMode9x16 === "extend"
-                      ? "Ralentiza el clip (mínimo 0.15×) para que el ciclo cubra el Short sin rebobinar: toma lenta continua."
-                      : seamMode9x16 === "pingpong"
-                        ? "Reproduce ida y vuelta. Puede resultar más perceptible."
-                        : "Corte directo sin fundido."}
-                </p>
-                </div>
-              </details>
+              <div className="flex flex-col gap-2 rounded-lg border border-zinc-800 bg-zinc-950 p-2">
+                <span className="text-[11px] font-semibold text-zinc-300">Corrección de microvibración</span>
+                <label className="flex items-center gap-2 text-[11px] text-zinc-400">
+                  <input
+                    type="checkbox"
+                    checked={stabilizationEnabled9x16}
+                    disabled={!stabilization9x16?.autoEnabled}
+                    onChange={(event) => setStabilizationEnabled9x16(event.target.checked)}
+                    className="accent-emerald-500"
+                  />
+                  {stabilization9x16?.autoEnabled ? "Aplicar corrección conservadora" : "Sin corrección necesaria"}
+                </label>
+                <p className="text-[10px] leading-snug text-zinc-500">{stabilization9x16?.reason ?? "Se analiza al preparar el vídeo."}</p>
+              </div>
             </div>
+            </details>
 
             {/* 9:16 DURATION SELECTOR PRESETS */}
             <div className="p-3 rounded-xl bg-zinc-950 border border-zinc-800 flex flex-col gap-2 text-xs">

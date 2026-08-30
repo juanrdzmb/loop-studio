@@ -13,6 +13,8 @@ import {
   liveUpdateGraph,
   type Graph,
 } from "./audioEngine";
+import { SAFE_MASTER_PEAK } from "./audioRepeat";
+export { SAFE_MASTER_PEAK, repeatOneShotMasterWithCrossfade } from "./audioRepeat";
 
 export type MangaAudioVibe =
   | "none"
@@ -837,9 +839,9 @@ export function copyOneShotMaster(
   const requestedGain = Math.max(0, volume);
   // Normalizar primero siempre al mismo master unity; después aplicar el volumen.
   // Así preview (buffer unity + GainNode) y export (ganancia horneada) coinciden.
-  const normalizedGain = peak > 0.98 ? 0.98 / peak : 1;
+  const normalizedGain = peak > SAFE_MASTER_PEAK ? SAFE_MASTER_PEAK / peak : 1;
   const desiredGain = normalizedGain * requestedGain;
-  const gain = peak * desiredGain > 0.98 ? 0.98 / peak : desiredGain;
+  const gain = peak * desiredGain > SAFE_MASTER_PEAK ? SAFE_MASTER_PEAK / peak : desiredGain;
   const fadeSamples = Math.min(
     Math.floor(Math.max(0, edgeFadeSec) * buffer.sampleRate),
     Math.floor(copyLength / 2)
@@ -855,51 +857,6 @@ export function copyOneShotMaster(
         edgeGain = Math.min(edgeGain, (copyLength - 1 - i) / fadeSamples);
       }
       dst[i] = src[i] * gain * Math.max(0, edgeGain);
-    }
-  }
-  return out;
-}
-
-/** Repite un master completo sin recortar su inicio ni su final. Las uniones
- * intermedias usan fundido de potencia constante para evitar el golpe de vuelta. */
-export function repeatOneShotMasterWithCrossfade(
-  buffer: AudioBuffer,
-  repetitions: number
-): AudioBuffer {
-  const count = Math.max(1, Math.min(5, Math.round(repetitions)));
-  if (count === 1 || buffer.length < 2) return copyOneShotMaster(buffer, buffer.duration);
-  const channels = Math.min(2, Math.max(1, buffer.numberOfChannels));
-  const fadeSamples = Math.min(
-    Math.floor(buffer.sampleRate * Math.min(2, Math.max(0.8, buffer.duration * 0.06))),
-    Math.floor(buffer.length * 0.45)
-  );
-  if (fadeSamples < 2) return copyOneShotMaster(buffer, buffer.duration * count);
-  const stride = buffer.length - fadeSamples;
-  const length = buffer.length + (count - 1) * stride;
-  const out = new AudioBuffer({ length, numberOfChannels: channels, sampleRate: buffer.sampleRate });
-  let peak = 0;
-  for (let c = 0; c < channels; c++) {
-    const src = buffer.getChannelData(Math.min(c, buffer.numberOfChannels - 1));
-    const dst = out.getChannelData(c);
-    for (let repeat = 0; repeat < count; repeat++) {
-      const offset = repeat * stride;
-      for (let i = 0; i < buffer.length; i++) {
-        let gain = 1;
-        if (repeat > 0 && i < fadeSamples) gain *= Math.sqrt(i / fadeSamples);
-        if (repeat < count - 1 && i >= buffer.length - fadeSamples) {
-          gain *= Math.sqrt((buffer.length - 1 - i) / fadeSamples);
-        }
-        const at = offset + i;
-        dst[at] += src[i] * gain;
-      }
-    }
-    for (let i = 0; i < dst.length; i++) peak = Math.max(peak, Math.abs(dst[i]));
-  }
-  if (peak > 0.98) {
-    const gain = 0.98 / peak;
-    for (let c = 0; c < channels; c++) {
-      const data = out.getChannelData(c);
-      for (let i = 0; i < data.length; i++) data[i] *= gain;
     }
   }
   return out;

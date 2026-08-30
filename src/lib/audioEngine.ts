@@ -31,28 +31,32 @@ export interface ReverbSettings {
   crackle?: number;
   /** Ancho estéreo 0..2 (1 = normal, >1 más envolvente). Default 1 */
   width?: number;
+  /** Separación antes de la primera reflexión, en milisegundos. */
+  preDelayMs?: number;
+  /** Absorción de agudos dentro de la cola 0..1. */
+  damping?: number;
 }
 
 export const REVERB_PRESETS: Record<string, { label: string; settings: ReverbSettings }> = {
   suave: {
     label: "Suave",
     settings: {
-      speed: 0.9, reverbMix: 0.18, decay: 1.6, lowpassHz: 14000, volume: 1,
-      width: 1, bassDb: 1.5, crackle: 0,
+      speed: 0.92, reverbMix: 0.14, decay: 1.4, lowpassHz: 16000, volume: 1,
+      width: 1.02, bassDb: 0.5, crackle: 0, preDelayMs: 18, damping: 0.18,
     },
   },
   clasico: {
     label: "Clásico",
     settings: {
-      speed: 0.85, reverbMix: 0.25, decay: 2.1, lowpassHz: 12000, volume: 1,
-      width: 1.05, bassDb: 2, crackle: 0,
+      speed: 0.87, reverbMix: 0.22, decay: 2.0, lowpassHz: 14000, volume: 1,
+      width: 1.05, bassDb: 1.2, crackle: 0, preDelayMs: 24, damping: 0.25,
     },
   },
   profundo: {
     label: "Profundo",
     settings: {
-      speed: 0.8, reverbMix: 0.32, decay: 2.7, lowpassHz: 10000, volume: 1,
-      width: 1.08, bassDb: 2.5, crackle: 0,
+      speed: 0.82, reverbMix: 0.3, decay: 2.7, lowpassHz: 12000, volume: 1,
+      width: 1.08, bassDb: 1.8, crackle: 0, preDelayMs: 30, damping: 0.34,
     },
   },
 };
@@ -87,6 +91,7 @@ export interface Graph {
   /** Placa Dattorro: salida ya mezclada dry+wet */
   reverb: AudioNode;
   master: GainNode;
+  limiter: DynamicsCompressorNode;
   bass: BiquadFilterNode;
   treble: BiquadFilterNode;
   panner: StereoPannerNode;
@@ -152,6 +157,7 @@ export function teardownGraph(graph: Graph | null): void {
   try { graph.widthGains.rr.disconnect(); } catch {}
   try { graph.merger.disconnect(); } catch {}
   try { graph.master.disconnect(); } catch {}
+  try { graph.limiter.disconnect(); } catch {}
   try { graph.panner.disconnect(); } catch {}
 }
 
@@ -207,11 +213,12 @@ export function buildGraph(
       processorOptions: {},
     });
     const rp = workletNode.parameters;
-    (rp.get("wet") as AudioParam).value = s.reverbMix;
-    (rp.get("dry") as AudioParam).value = 1 - s.reverbMix * 0.6;
+    const mix = Math.max(0, Math.min(1, s.reverbMix));
+    (rp.get("wet") as AudioParam).value = Math.min(1, Math.sin(mix * Math.PI / 2) / 0.6);
+    (rp.get("dry") as AudioParam).value = Math.cos(mix * Math.PI / 2);
     (rp.get("decay") as AudioParam).value = dattorroDecay(s.decay);
-    (rp.get("preDelay") as AudioParam).value = Math.round(ctx.sampleRate * 0.02);
-    (rp.get("damping") as AudioParam).value = 0.08;
+    (rp.get("preDelay") as AudioParam).value = Math.round(ctx.sampleRate * Math.max(0, s.preDelayMs ?? 20) / 1000);
+    (rp.get("damping") as AudioParam).value = Math.max(0.001, Math.min(0.999, s.damping ?? 0.18));
     reverb = workletNode;
   } catch (err) {
     console.warn("AudioWorklet DattorroReverb fallback to dry gain:", err);
@@ -254,6 +261,12 @@ export function buildGraph(
 
   const master = ctx.createGain();
   master.gain.value = s.volume;
+  const limiter = ctx.createDynamicsCompressor();
+  limiter.threshold.value = -1;
+  limiter.knee.value = 0;
+  limiter.ratio.value = 20;
+  limiter.attack.value = 0.003;
+  limiter.release.value = 0.12;
 
   // Rotación 8D: LFO → panner.pan
   const panner = ctx.createStereoPanner();
@@ -284,10 +297,10 @@ export function buildGraph(
   reverb.connect(bass);
   bass.connect(treble);
   treble.connect(splitter);
-  merger.connect(master).connect(panner).connect(dest);
+  merger.connect(master).connect(limiter).connect(panner).connect(dest);
 
   return {
-    source, lowpass, reverb, master, bass, treble, panner,
+    source, lowpass, reverb, master, limiter, bass, treble, panner,
     widthGains: { ll: gLL, lr: gLR, rl: gRL, rr: gRR },
     splitter, merger,
     crackleSource, crackleGain,
@@ -308,9 +321,12 @@ export function liveUpdateGraph(ctx: BaseAudioContext, graph: Graph, s: ReverbSe
 
   if ("parameters" in graph.reverb) {
     const rp = (graph.reverb as AudioWorkletNode).parameters;
-    (rp.get("dry") as AudioParam).setTargetAtTime(1 - s.reverbMix * 0.6, t, 0.04);
-    (rp.get("wet") as AudioParam).setTargetAtTime(s.reverbMix, t, 0.04);
+    const mix = Math.max(0, Math.min(1, s.reverbMix));
+    (rp.get("dry") as AudioParam).setTargetAtTime(Math.cos(mix * Math.PI / 2), t, 0.04);
+    (rp.get("wet") as AudioParam).setTargetAtTime(Math.min(1, Math.sin(mix * Math.PI / 2) / 0.6), t, 0.04);
     (rp.get("decay") as AudioParam).setTargetAtTime(dattorroDecay(s.decay), t, 0.08);
+    (rp.get("preDelay") as AudioParam).setTargetAtTime(Math.round(ctx.sampleRate * Math.max(0, s.preDelayMs ?? 20) / 1000), t, 0.04);
+    (rp.get("damping") as AudioParam).setTargetAtTime(Math.max(0.001, Math.min(0.999, s.damping ?? 0.18)), t, 0.08);
   }
 
   graph.master.gain.setTargetAtTime(s.volume, t, 0.04);

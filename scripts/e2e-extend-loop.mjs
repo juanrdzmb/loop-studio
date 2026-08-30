@@ -58,8 +58,6 @@ await page.waitForFunction(
   { timeout: 30000 }
 );
 
-const details = page.getByText("Opciones avanzadas de continuidad").last();
-await details.click();
 const seamSelect = page.getByLabel("Modo de continuidad 9:16");
 ok(
   "La opción Extender está disponible junto a los modos anteriores",
@@ -74,13 +72,31 @@ const durationInput = page.getByLabel("Duración personalizada del Short");
 await durationInput.fill(String(TARGET));
 await durationInput.blur();
 
-const panel = page.getByText(/velocidad · ciclo de/).last();
+const panel = page.getByText(/· el clip cubre el Short sin rebobinar/).last();
 const panelText = (await panel.count()) > 0 ? await panel.innerText() : "";
 ok(
-  "Panel informativo muestra la velocidad derivada 0.40× y ciclo 15.0s",
-  panelText.includes("0.40×") && panelText.includes("ciclo de 15.0s"),
+  "Panel informativo muestra la velocidad derivada 0.40×",
+  panelText.includes("0.40×"),
   `(${panelText})`
 );
+
+// El draft del clip se construye en segundo plano: hasta que el preview pinta
+// el primer fotograma real, el canvas solo muestra el fondo y el HUD. Esperar
+// al primer render evita medir el estado "cargando clip…" como destello negro.
+await page.waitForFunction(() => {
+  const canvas = document.querySelector('canvas[data-testid="preview-canvas-9x16"]');
+  if (!canvas) return false;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return false;
+  const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+  let luma = 0;
+  let samples = 0;
+  for (let i = 0; i < data.length; i += 4 * 64) {
+    luma += 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+    samples++;
+  }
+  return luma / samples > 50;
+}, null, { timeout: 30000 });
 
 const playBtn = page.getByRole("button", { name: /Reproducir|Pausar/ }).last();
 if ((await playBtn.count()) > 0) {
@@ -114,9 +130,10 @@ ok(
   JSON.stringify(previewStats)
 );
 
-await page.locator('select').nth(4).selectOption("original");
-await page.locator('select').nth(5).selectOption("static");
-await page.locator('select').nth(6).selectOption("none");
+await page.getByText("Ajustes visuales y estabilización").click();
+await page.getByLabel("Filtro visual 9:16").selectOption("original");
+await page.getByLabel("Cámara 2.5D 9:16").selectOption("static");
+await page.getByLabel("Partículas 9:16").selectOption("none");
 await page.locator('input[type="checkbox"]').first().uncheck({ force: true });
 
 await page.getByRole("button", { name: /Exportar Solo 9:16/ }).click();

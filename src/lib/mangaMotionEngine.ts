@@ -34,6 +34,8 @@ import {
   drawMangaTextBubble,
 } from "./mangaTypographyEngine";
 import { drawProfessionalWatermark } from "./watermark";
+import { getSmoothPingPongFrameState } from "./pingPongLoop";
+import type { SourceFrameTransform } from "./videoStabilization";
 
 export type AspectRatio = "9:16" | "16:9" | "1:1";
 export type CameraMovement =
@@ -107,6 +109,8 @@ export interface MangaMotionConfig {
   cameraIntensity: number; // 0..100
   cameraAngle: number;     // -45..45 degrees (Dutch tilt)
   cameraBaseZoom: number;  // 1.0..2.5x base framing zoom
+  /** Corrección por frame calculada por el estabilizador local. */
+  sourceTransform?: SourceFrameTransform;
 
   // High Definition Particles
   particles: ParticleType;
@@ -952,6 +956,8 @@ export function renderMangaMotionFrame(
   particleSystem?: PhysicsParticleSystem,
   dtScale: number = 1.0
 ) {
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
   // Clear Frame
   ctx.clearRect(0, 0, targetW, targetH);
   ctx.fillStyle = "#09090b";
@@ -1027,6 +1033,14 @@ export function renderMangaMotionFrame(
     camRot = userAngle + Math.sin(shakeFreq * 0.8) * 0.03 * decay * intensity;
   }
 
+  const sourceTransform = config.sourceTransform;
+  if (sourceTransform) {
+    camPanX += sourceTransform.dx * targetW;
+    camPanY += sourceTransform.dy * targetH;
+    camZoom *= Math.max(1, sourceTransform.scale);
+    camRot += (sourceTransform.rotation * Math.PI) / 180;
+  }
+
   // 2. Draw Main Image (100% Sharp Original Ink)
   const scaleFill = Math.max(targetW / imgW, targetH / imgH) * camZoom;
   const dstW = imgW * scaleFill;
@@ -1037,19 +1051,19 @@ export function renderMangaMotionFrame(
   // Aesthetic Filter CSS String
   let filterStr = "none";
   if (config.aestheticStyle === "seinen_bw") {
-    filterStr = "grayscale(100%) contrast(160%) brightness(95%)";
+    filterStr = "grayscale(100%) contrast(135%) brightness(98%)";
   } else if (config.aestheticStyle === "retro_90s") {
-    filterStr = "contrast(115%) saturate(130%) sepia(18%)";
+    filterStr = "contrast(110%) saturate(115%) sepia(12%)";
   } else if (config.aestheticStyle === "dark_fantasy") {
-    filterStr = "contrast(140%) saturate(75%) hue-rotate(190deg) brightness(90%)";
+    filterStr = "contrast(122%) saturate(82%) brightness(94%) sepia(6%)";
   } else if (config.aestheticStyle === "cyberpunk_neon") {
-    filterStr = "contrast(135%) saturate(160%) hue-rotate(320deg)";
+    filterStr = "contrast(125%) saturate(140%) hue-rotate(330deg)";
   } else if (config.aestheticStyle === "vintage_sepia") {
-    filterStr = "sepia(70%) contrast(110%) brightness(92%)";
+    filterStr = "sepia(55%) contrast(108%) brightness(96%)";
   } else if (config.aestheticStyle === "lofi_sunset" || (config.aestheticStyle as string) === "anime_lofi") {
-    filterStr = "saturate(140%) hue-rotate(15deg) contrast(105%)";
+    filterStr = "saturate(120%) hue-rotate(8deg) contrast(104%)";
   } else if (config.aestheticStyle === "golden_sunset") {
-    filterStr = "contrast(116%) brightness(102%) saturate(134%) sepia(42%) hue-rotate(-14deg)";
+    filterStr = "contrast(110%) brightness(101%) saturate(120%) sepia(30%) hue-rotate(-8deg)";
   }
 
   ctx.save();
@@ -1065,7 +1079,7 @@ export function renderMangaMotionFrame(
     if (pat) {
       ctx.save();
       ctx.globalCompositeOperation = "multiply";
-      ctx.globalAlpha = 0.42;
+      ctx.globalAlpha = 0.32;
       ctx.fillStyle = pat;
       ctx.fillRect(0, 0, targetW, targetH);
       ctx.restore();
@@ -1337,32 +1351,9 @@ export function calculateOrganicPingPongTime(
   easeType: "organic" | "linear" = "linear"
 ): number {
   if (duration <= 0.05) return 0;
-  const cycle = duration * 2;
-  const phase = ((t % cycle) + cycle) % cycle;
-  const along = phase <= duration ? phase : cycle - phase;
-
-  if (easeType !== "organic") return along;
-
-  // Un "colchón" de desaceleración/aceleración en cada extremo. Escala con la
-  // duración del clip. La curva C² llega a velocidad 1× en el borde con la parte
-  // lineal y a 0 en el giro; así no hay ni pausa perceptible ni salto de velocidad.
-  const pad = Math.min(0.32, Math.max(0.18, duration * 0.035), duration * 0.12);
-  if (pad < 0.04) return along;
-
-  // Hermite quintic: h(0)=0, h'(0)=h''(0)=0 y h(1)=h'(1)=1, h''(1)=0.
-  // La variante inversa conserva esas mismas condiciones antes de la vuelta.
-  const easeIntoLinear = (x: number) => {
-    const clamped = Math.max(0, Math.min(1, x));
-    return clamped * clamped * clamped * (6 - 8 * clamped + 3 * clamped * clamped);
-  };
-  const easeOutOfLinear = (x: number) => 1 - easeIntoLinear(1 - x);
-
-  if (along < pad) {
-    return pad * easeIntoLinear(along / pad);
-  }
-  if (along > duration - pad) {
-    const x = (along - (duration - pad)) / pad;
-    return duration - pad + pad * easeOutOfLinear(x);
-  }
-  return along;
+  // `easeType` se conserva por compatibilidad con las páginas existentes. Ambos
+  // modos usan ahora cadencia lineal: la suavidad visual se aplica como una mezcla
+  // acotada del frame extremo, sin detener ni acelerar el reloj de la fuente.
+  void easeType;
+  return getSmoothPingPongFrameState(t, duration).primaryTime;
 }
