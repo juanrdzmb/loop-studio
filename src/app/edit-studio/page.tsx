@@ -51,6 +51,7 @@ import {
   type LoopSfxCue,
 } from "@/lib/seinenSfxLibrary";
 import { estimateBpmFromBuffer, getTimelineWaveformPeaks } from "@/lib/editAudioAnalysis";
+import { EDIT_PRESETS, applyPresetToProject, type PresetId } from "@/lib/editPresets";
 
 interface RuntimeEditAsset extends EditAssetMeta {
   file: File;
@@ -658,6 +659,55 @@ export default function EditStudioPage() {
     setProject((current) => ({ ...current, textCues: [...current.textCues, cue] }));
   };
 
+  const applyPreset = useCallback((presetId: PresetId) => {
+    const preset = EDIT_PRESETS.find((p) => p.id === presetId);
+    if (!preset) return;
+    if (!assets.length) {
+      setError("Sube 1 imagen/vídeo mínimo para generar el preset");
+      return;
+    }
+    if (project.clips.length && !window.confirm(`¿Reemplazar timeline actual por preset "${preset.label}"? Se perderá el montaje actual (quedará editable después).`)) return;
+    // Semilla: si hay clips, úsalos; si no, usa assets en orden de importación
+    const seedClips: EditTimelineClip[] = project.clips.length
+      ? project.clips
+      : assets.map((asset, idx) => ({
+          id: `seed-${idx}`,
+          assetId: asset.id,
+          label: asset.name.replace(/\.[^.]+$/, ""),
+          duration: 1.2,
+          sourceStart: 0,
+          sourceDuration: asset.kind === "image" ? 1.2 : Math.min(asset.duration, 2),
+          transition: "cut" as const,
+          transitionDuration: 0.12,
+          motion: "push" as const,
+          motionIntensity: 32,
+          playbackRate: 1,
+          velocityCurve: "linear" as const,
+          style: "inherit" as const,
+        }));
+    const bpm = audioBuffer ? (estimateBpmFromBuffer(audioBuffer) ?? project.bpm) : project.bpm;
+    if (audioBuffer) {
+      const autoBpm = estimateBpmFromBuffer(audioBuffer);
+      if (autoBpm) updateProject({ bpm: autoBpm });
+    }
+    const result = applyPresetToProject(project, preset, seedClips, bpm);
+    setProject((cur) => ({
+      ...cur,
+      style: result.style,
+      colorGrade: { ...cur.colorGrade, ...result.colorGrade },
+      particles: result.particles,
+      particleIntensity: result.particleIntensity,
+      particleSpeed: preset.id === "flashStorm" ? 1.15 : preset.id === "vinlandEmotion" ? 0.9 : 1,
+      clips: result.clips,
+      textCues: result.textCues,
+    }));
+    setSelectedClipId(result.clips[0]?.id ?? null);
+    seekTo(0);
+    const total = result.clips.reduce((a, c) => a + c.duration, 0);
+    setStatus(`Preset "${preset.label}" aplicado · ${result.clips.length} tomas · ${total.toFixed(1)}s · texto editable en 06 / Textos`);
+    setError(null);
+  }, [assets, audioBuffer, project, project.bpm, project.clips, seekTo, updateProject]);
+
   const saveProjectFile = () => {
     const manifest = {
       ...project,
@@ -806,6 +856,36 @@ export default function EditStudioPage() {
               <span className="w-24 text-right font-mono text-[11px] text-zinc-400">{formatTime(currentTime)}</span>
             </div>
           </div>
+
+          <section className="border border-zinc-800 bg-gradient-to-br from-fuchsia-950/20 via-zinc-950 to-zinc-950 p-3">
+            <div className="flex items-center justify-between gap-2">
+              <h2 className="text-xs font-black uppercase tracking-[0.2em] text-fuchsia-200">✨ Presets 1-clic — 25-35s · texto editable</h2>
+              <span className="font-mono text-[9px] text-zinc-500">Sube X imágenes + canción → elige → edita texto abajo</span>
+            </div>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              {EDIT_PRESETS.map((preset) => (
+                <button
+                  key={preset.id}
+                  type="button"
+                  onClick={() => applyPreset(preset.id)}
+                  className="group text-left border border-zinc-800 bg-black p-3 hover:border-fuchsia-700 hover:bg-zinc-900 transition"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <span className="text-lg">{preset.icon}</span>
+                    <span className="rounded bg-fuchsia-600 px-1.5 py-0.5 font-mono text-[9px] font-black text-white">{preset.targetDuration}s</span>
+                  </div>
+                  <div className="mt-1 text-[11px] font-black uppercase tracking-wider text-white group-hover:text-fuchsia-200">{preset.label}</div>
+                  <div className="mt-1 text-[10px] leading-snug text-zinc-400">{preset.desc}</div>
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    <span className="rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-[8px] text-zinc-300">{preset.style}</span>
+                    <span className="rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-[8px] text-zinc-300">{preset.particles.type}</span>
+                    <span className="rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-[8px] text-zinc-300">{preset.textTemplates.map((t) => t.text).join(" · ")}</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+            <p className="mt-2 text-[9px] text-zinc-500">Cada preset genera timeline 25-35s beat-snapped al BPM detectado, con transiciones/cámara/velocidad y textos punch ya colocados. Luego edita toma por toma o cambia el texto en la sección de Textos.</p>
+          </section>
 
           <section className="border border-zinc-800 bg-zinc-950">
             <div className="flex flex-col gap-3 border-b border-zinc-800 px-3 py-3">
