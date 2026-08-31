@@ -52,14 +52,14 @@ Orden de verificación: `npx tsc --noEmit` → `npm run lint` → `npm run build
 - `/video-loop` — legacy, depende 100% del companion Python; solo tocar si se pide explícitamente.
 - `/combinar`, `/slowed-reverb` — utilidades del flujo GIF. `loopProcessor.ts`/`loopStrategy.ts` son de GIF Studio, no de dual-studio.
 
-### Edit Studio (`/edit-studio`)
+### Edit Studio (`/edit-studio`) — 9:16 Shorts
 
-Montaje multiclip con timeline arrastrable, beats y transiciones. Librerías dedicadas:
-- `src/lib/editStudio.ts` — `EditProject`, `EditTimelineClip`, `EditTextCue`, beats (`buildBeatMarkers`, `snapEditTime`), presets rítmicos (`applyEditRhythmPreset`) y helpers geométricos en 9:16/16:9.
-- `src/lib/editStudioRender.ts` — `buildEditFrameConfig` traslada `EditMotion` a `CameraMovement`; `composeEditTransition` maneja `cut`/`crossfade`/`flash`/`whip`; `drawEditTextCue` renderiza texto con stroke+shadow+accent al estilo manga.
-- `src/lib/editStudioExport.ts` — `exportEditStudioVideo` decodifica assets secuencialmente (`samplesAtTimestamps` con drenaje pendiente y frames repetidos), pinta con `renderMangaMotionFrame` + composición de transición, mezcla música con fundidos de borde y SFX offline, añade watermark y codifica con mediabunny. Ruta de cancelación vía AbortSignal y barra de progreso.
+Montaje multiclip vertical al beat para Shorts (9:16 fijo, 1080×1920). Timeline arrastrable con rail de beat, 7 transiciones y 8 movimientos por toma + velocidad con curva. Librerías:
+- `src/lib/editStudio.ts` — `EditProject` (9:16 fijo, `fps 30|60`, BPM 128 default), `EditTimelineClip` con `transition` (`cut|punch|shake|zoom|flash|whip|crossfade`), `motion` (`static|push|drift|whip|vertigo|spiral|scan|impact`), `motionIntensity` 0..100, `playbackRate` 0.5..2.0 y `velocityCurve` (`linear|easeIn|easeOut|punch`); helpers `editSourceTimeAt`/`applyVelocityCurve` (warping 0→1 con rate), `normalizeEditClip`, `editClipAtTime`, `buildBeatMarkers`/`snapEditTime`, `applyEditRhythmPreset` (reference 18s + build→drop con mapping punch/shake/zoom y motion push/drift/whip/impact) y `editOutputSize`.
+- `src/lib/editStudioRender.ts` — `cameraForEditMotion` mapea 8 `EditMotion` a `CameraMovement`; `buildEditFrameConfig` usa `motionIntensity` por toma; `composeEditTransition` maneja 7 transiciones (cut/punch/zoom/shake/flash/whip/crossfade) con zoom punch + hitstop ghost, shake cromatismo leve, whip con trail y flash screen; `drawEditTextCue` con punch scale 0.82→1.06 + shake 2px en ventana 0.14s.
+- `src/lib/editStudioExport.ts` — `exportEditStudioVideo` usa `editSourceTimeAt` por frame (no lineal), congela 3 frames en `punch` para hitstop, decodifica secuencial con `samplesAtTimestamps` y fallback de frames faltantes, pinta `renderMangaMotionFrame` + transición + texto punch + watermark, mezcla música 48kHz con limiter -1dB y SFX offline; cancela vía AbortSignal.
 
-Particularidades: cada asset (vídeo/imagen) se cachea como `ClipFrameCache` (max 540px, 18 fps, 88 MB) para el preview RAF; el export re-decoodifica a resolución nativa. Transiciones whip/flash usan composición con canal alpha y modo screen. Los textos se renderizan en coordenadas normalizadas (0..1). El proyecto serializable a JSON (`.loop-edit.json`) para guardar/cargar sesiones.
+Particularidades: `ClipFrameCache` (540px, 18fps, 88MB) para preview RAF velocity-aware (`editSourceTimeAt`); export re-decoodifica a 1080×1920 nativo (siempre 9:16, `format` legacy migrado). Texto en coords 0..1, proyecto `.loop-edit.json` versionado con migración de `motionIntensity`/`playbackRate`/`velocityCurve`.
 
 Todos los archivos están trackeados en git. Las piezas core (`dual-studio/`, `edit-studio/`, componentes y librerías auxiliares) se commitean junto con la app.
 

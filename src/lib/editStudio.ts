@@ -7,8 +7,9 @@ import type {
 import type { WatermarkStyleOptions } from "./watermark";
 
 export type EditFormat = "9:16" | "16:9";
-export type EditTransition = "cut" | "crossfade" | "flash" | "whip";
-export type EditMotion = "static" | "push" | "drift" | "impact";
+export type EditTransition = "cut" | "crossfade" | "flash" | "whip" | "punch" | "zoom" | "shake";
+export type EditMotion = "static" | "push" | "drift" | "impact" | "whip" | "vertigo" | "spiral" | "scan";
+export type EditVelocityCurve = "linear" | "easeIn" | "easeOut" | "punch";
 export type EditRhythmPreset = "reference" | "build-drop" | "steady";
 
 export interface EditAssetMeta {
@@ -30,6 +31,9 @@ export interface EditTimelineClip {
   transition: EditTransition;
   transitionDuration: number;
   motion: EditMotion;
+  motionIntensity: number;
+  playbackRate: number;
+  velocityCurve: EditVelocityCurve;
   style: AestheticStyle | "inherit";
 }
 
@@ -86,7 +90,7 @@ export function createDefaultEditProject(): EditProject {
     name: "Edit manga 01",
     format: "9:16",
     fps: 60,
-    bpm: 120,
+    bpm: 128,
     clips: [],
     textCues: [],
     style: "original",
@@ -167,6 +171,39 @@ export function buildBeatMarkers(duration: number, bpm: number, division = 1): n
   return markers;
 }
 
+export function normalizeEditClip(clip: EditTimelineClip): EditTimelineClip {
+  return {
+    ...clip,
+    motionIntensity: Math.max(0, Math.min(100, clip.motionIntensity ?? (clip.motion === "impact" ? 55 : clip.motion === "static" ? 0 : 32))),
+    playbackRate: Math.max(0.5, Math.min(2, clip.playbackRate ?? 1)),
+    velocityCurve: (clip.velocityCurve as EditVelocityCurve) ?? "linear",
+  };
+}
+
+export function applyVelocityCurve(progress: number, curve: EditVelocityCurve, rate: number): number {
+  const p = Math.max(0, Math.min(1, progress));
+  const r = Math.max(0.5, Math.min(2, rate));
+  // Rate warps linear progress: 0.5x = slow start, 2x = fast start, but always 0→1 exactly
+  if (curve === "easeIn") return Math.pow(p, 1.8);
+  if (curve === "easeOut") return 1 - Math.pow(1 - p, 1.8);
+  if (curve === "punch") {
+    // fast in, settle — típico punch de edit
+    if (p < 0.45) return (p / 0.45) * 0.72;
+    return 0.72 + ((p - 0.45) / 0.55) * 0.28;
+  }
+  // linear with rate warp
+  if (Math.abs(r - 1) < 0.01) return p;
+  const exp = r < 1 ? 1 + (1 - r) * 1.2 : 1 / (1 + (r - 1) * 0.65);
+  return Math.pow(p, exp);
+}
+
+export function editSourceTimeAt(clip: EditTimelineClip, localTime: number): number {
+  const c = normalizeEditClip(clip);
+  const normalized = Math.max(0, Math.min(1, localTime / Math.max(0.001, c.duration)));
+  const warped = applyVelocityCurve(normalized, c.velocityCurve, c.playbackRate);
+  return c.sourceStart + warped * Math.max(0.001, c.sourceDuration);
+}
+
 export function applyEditRhythmPreset(
   clips: EditTimelineClip[],
   preset: EditRhythmPreset,
@@ -185,12 +222,33 @@ export function applyEditRhythmPreset(
       duration = beat * 2;
     }
     const snapped = snapEditTime(duration, bpm, 2);
+    const isDrop = index >= Math.min(5, Math.ceil(clips.length * 0.4));
+    let transition: EditTransition = "cut";
+    if (index === 0) transition = "cut";
+    else if (preset === "steady") transition = "crossfade";
+    else if (index % 5 === 0) transition = "flash";
+    else if (isDrop && index % 3 === 1) transition = "punch";
+    else if (isDrop && index % 4 === 2) transition = "shake";
+    else if (index % 4 === 0) transition = "zoom";
+    const motion: EditMotion = isDrop
+      ? (index % 3 === 0 ? "impact" : index % 3 === 1 ? "whip" : "push")
+      : (index % 2 === 0 ? "push" : "drift");
     return {
       ...clip,
       duration: snapped,
-      sourceDuration: clip.sourceDuration > 0 ? Math.min(clip.sourceDuration, snapped) : snapped,
-      transition: index === 0 ? "cut" : preset === "steady" ? "crossfade" : index % 4 === 0 ? "flash" : "cut",
-      transitionDuration: preset === "steady" ? Math.min(0.35, snapped * 0.3) : Math.min(0.14, snapped * 0.2),
+      sourceDuration: clip.sourceDuration > 0 ? Math.min(clip.sourceDuration, snapped * 1.1) : snapped,
+      transition,
+      transitionDuration: preset === "steady"
+        ? Math.min(0.35, snapped * 0.3)
+        : transition === "punch" || transition === "shake"
+          ? Math.min(0.18, snapped * 0.25)
+          : Math.min(0.14, snapped * 0.2),
+      motion,
+      motionIntensity: isDrop ? 52 : 28,
+      playbackRate: preset === "reference"
+        ? (index < 7 ? 0.88 : 1.05)
+        : isDrop ? 1.12 : 0.92,
+      velocityCurve: isDrop ? "punch" : "easeIn",
     };
   });
 }

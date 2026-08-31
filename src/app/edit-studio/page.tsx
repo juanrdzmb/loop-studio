@@ -21,6 +21,7 @@ import {
   createDefaultEditProject,
   editClipAtTime,
   editOutputSize,
+  editSourceTimeAt,
   editTimelineDuration,
   editTimelinePlacements,
   snapEditTime,
@@ -78,6 +79,27 @@ const EDIT_PARTICLES: Array<{ id: ParticleType; label: string }> = [
   { id: "dark_ink_fog", label: "Niebla de tinta" },
 ];
 
+const EDIT_TRANSITIONS: Array<{ id: EditTimelineClip["transition"]; label: string; desc: string }> = [
+  { id: "cut", label: "✂ Corte seco", desc: "Al beat" },
+  { id: "punch", label: "💥 Punch", desc: "Zoom + temblor" },
+  { id: "shake", label: "🫨 Shake", desc: "Vibración golpe" },
+  { id: "zoom", label: "🔍 Zoom", desc: "Entrada con zoom" },
+  { id: "flash", label: "⚡ Flash", desc: "Destello blanco" },
+  { id: "whip", label: "💨 Whip", desc: "Barrido lateral" },
+  { id: "crossfade", label: "🌫 Fundido", desc: "Suave" },
+];
+
+const EDIT_MOTIONS: Array<{ id: EditTimelineClip["motion"]; label: string }> = [
+  { id: "static", label: "Fijo" },
+  { id: "push", label: "Push suave" },
+  { id: "drift", label: "Deriva" },
+  { id: "whip", label: "Whip pan" },
+  { id: "vertigo", label: "Vertigo zoom" },
+  { id: "spiral", label: "Espiral" },
+  { id: "scan", label: "Scan" },
+  { id: "impact", label: "Impacto" },
+];
+
 function uid(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -96,13 +118,22 @@ function loadStoredProject(): EditProject {
     if (!raw) return fallback;
     const parsed = JSON.parse(raw) as Partial<EditProject>;
     if (parsed.version !== 1) return fallback;
+    const clips = Array.isArray(parsed.clips) ? (parsed.clips as EditTimelineClip[]).map((clip) => ({
+      ...clip,
+      motionIntensity: Math.max(0, Math.min(100, (clip as unknown as { motionIntensity?: number }).motionIntensity ?? (clip.motion === "impact" ? 55 : clip.motion === "static" ? 0 : 32))),
+      playbackRate: Math.max(0.5, Math.min(2, (clip as unknown as { playbackRate?: number }).playbackRate ?? 1)),
+      velocityCurve: ((clip as unknown as { velocityCurve?: string }).velocityCurve as EditTimelineClip["velocityCurve"]) ?? "linear",
+      transition: (clip.transition as EditTimelineClip["transition"]) ?? "cut",
+      motion: (clip.motion as EditTimelineClip["motion"]) ?? "push",
+    })) : [];
     return {
       ...fallback,
       ...parsed,
+      format: "9:16",
       colorGrade: { ...fallback.colorGrade, ...parsed.colorGrade },
       particleControls: { ...fallback.particleControls, ...parsed.particleControls },
       watermarkStyle: { ...fallback.watermarkStyle, ...parsed.watermarkStyle },
-      clips: Array.isArray(parsed.clips) ? parsed.clips : [],
+      clips,
       textCues: Array.isArray(parsed.textCues) ? parsed.textCues : [],
     };
   } catch {
@@ -125,6 +156,9 @@ function TimelineClipBlock({
   onSelect: () => void;
   onDropClip: (sourceId: string, targetId: string) => void;
 }) {
+  const motionLabel = EDIT_MOTIONS.find((m) => m.id === clip.motion)?.label ?? clip.motion;
+  const transLabel = EDIT_TRANSITIONS.find((t) => t.id === clip.transition)?.label ?? clip.transition;
+  const rateBadge = Math.abs((clip.playbackRate ?? 1) - 1) > 0.02 ? `${(clip.playbackRate ?? 1).toFixed(2)}×` : "";
   return (
     <button
       type="button"
@@ -142,11 +176,11 @@ function TimelineClipBlock({
         : index % 2 === 0
           ? "bg-zinc-800 text-zinc-200 hover:bg-zinc-700"
           : "bg-zinc-900 text-zinc-300 hover:bg-zinc-800"}`}
-      title="Arrastra para reordenar"
+      title={`${transLabel} · ${motionLabel}${rateBadge ? ` · ${rateBadge}` : ""} — Arrastra para reordenar`}
     >
       <span className="block truncate text-[10px] font-black uppercase tracking-wider">{clip.label}</span>
-      <span className="mt-1 block font-mono text-[10px] opacity-75">{clip.duration.toFixed(2)} s</span>
-      <span className="absolute bottom-1.5 left-2 text-[9px] font-semibold uppercase opacity-60">{clip.motion} · {clip.transition}</span>
+      <span className="mt-1 block font-mono text-[10px] opacity-75">{clip.duration.toFixed(2)} s{rateBadge ? ` · ${rateBadge}` : ""}</span>
+      <span className="absolute bottom-1.5 left-2 text-[8px] font-semibold uppercase opacity-60 truncate pr-6">{motionLabel} · {transLabel.split(" ")[0]}</span>
       <span className="absolute right-1.5 top-1.5 font-mono text-[9px] opacity-40">{index + 1}</span>
     </button>
   );
@@ -229,6 +263,9 @@ export default function EditStudioPage() {
       transition: "cut",
       transitionDuration: 0.12,
       motion: "push",
+      motionIntensity: 32,
+      playbackRate: 1,
+      velocityCurve: "linear",
       style: "inherit",
     };
     setProject((current) => ({ ...current, clips: [...current.clips, clip] }));
@@ -416,8 +453,8 @@ export default function EditStudioPage() {
       }
 
       if (canvas) {
-        const logical = editOutputSize(liveProject.format);
-        const width = liveProject.format === "9:16" ? 540 : 960;
+        const logical = editOutputSize("9:16");
+        const width = 540;
         const height = Math.round(width * logical.height / logical.width);
         if (canvas.width !== width || canvas.height !== height) {
           canvas.width = width;
@@ -433,9 +470,8 @@ export default function EditStudioPage() {
         if (ctx && sceneCtx && previousCtx) {
           const placement = editClipAtTime(liveProject.clips, timelineTimeRef.current);
           const asset = placement ? liveAssets.find((entry) => entry.id === placement.clip.assetId) : null;
-          const progress = placement ? placement.localTime / Math.max(0.001, placement.clip.duration) : 0;
           const sourceTime = placement
-            ? placement.clip.sourceStart + Math.min(1, progress) * placement.clip.sourceDuration
+            ? editSourceTimeAt(placement.clip, placement.localTime)
             : 0;
           const source = asset?.kind === "image"
             ? asset.image
@@ -503,7 +539,7 @@ export default function EditStudioPage() {
                 width,
                 height,
                 opacity: liveProject.watermarkOpacity,
-                shorts: liveProject.format === "9:16",
+                shorts: true,
                 style: liveProject.watermarkStyle,
               });
             }
@@ -597,9 +633,17 @@ export default function EditStudioPage() {
       const parsed = JSON.parse(await file.text()) as EditProject;
       if (parsed.version !== 1 || !Array.isArray(parsed.clips)) throw new Error("Proyecto incompatible");
       const fallback = createDefaultEditProject();
+      const migratedClips = (parsed.clips as EditTimelineClip[]).map((clip) => ({
+        ...clip,
+        motionIntensity: Math.max(0, Math.min(100, (clip as unknown as { motionIntensity?: number }).motionIntensity ?? 32)),
+        playbackRate: Math.max(0.5, Math.min(2, (clip as unknown as { playbackRate?: number }).playbackRate ?? 1)),
+        velocityCurve: ((clip as unknown as { velocityCurve?: string }).velocityCurve as EditTimelineClip["velocityCurve"]) ?? "linear",
+      }));
       setProject({
         ...fallback,
         ...parsed,
+        format: "9:16",
+        clips: migratedClips,
         colorGrade: { ...fallback.colorGrade, ...parsed.colorGrade },
         particleControls: { ...fallback.particleControls, ...parsed.particleControls },
         watermarkStyle: { ...fallback.watermarkStyle, ...parsed.watermarkStyle },
@@ -659,12 +703,12 @@ export default function EditStudioPage() {
       <section className="relative overflow-hidden border-y border-zinc-800 bg-zinc-950 px-4 py-7 sm:px-7">
         <div className="pointer-events-none absolute inset-y-0 left-0 w-1 bg-gradient-to-b from-fuchsia-500 via-amber-300 to-cyan-400" />
         <div className="pointer-events-none absolute -right-20 -top-24 h-64 w-64 rounded-full bg-fuchsia-700/10 blur-3xl" />
-        <p className="font-mono text-[10px] font-bold uppercase tracking-[0.32em] text-fuchsia-400">Loop Studio / montaje rítmico</p>
+        <p className="font-mono text-[10px] font-bold uppercase tracking-[0.32em] text-fuchsia-400">Loop Studio / montaje rítmico · 9:16 Shorts</p>
         <div className="mt-2 flex flex-col justify-between gap-4 md:flex-row md:items-end">
           <div>
             <h1 className="text-3xl font-black tracking-tight text-white sm:text-4xl">EDIT <span className="text-zinc-600">STUDIO</span></h1>
             <p className="mt-2 max-w-2xl text-sm leading-relaxed text-zinc-400">
-              Monta clips al beat, aplica movimiento manga, textos de impacto, partículas, SFX, música y tu firma. Dual Studio sigue intacto para loops largos.
+              Edits verticales 9:16 al beat con 7 transiciones, 8 movimientos de cámara y velocidad por toma. Sine loops — cortes limpios para cualquier anime. Dual Studio sigue intacto para loops largos.
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -689,9 +733,9 @@ export default function EditStudioPage() {
                 onChange={(event) => updateProject({ name: event.target.value })}
                 className="min-w-0 flex-1 bg-transparent text-sm font-black uppercase tracking-wider text-white outline-none"
               />
-              <span className="font-mono text-[10px] text-zinc-500">{project.format} · {project.fps} FPS · {formatTime(duration)}</span>
+              <span className="font-mono text-[10px] text-zinc-500">9:16 · {project.fps} FPS · {formatTime(duration)}</span>
             </div>
-            <div className={`mx-auto overflow-hidden border border-zinc-800 bg-zinc-950 ${project.format === "9:16" ? "max-w-[430px]" : "max-w-full"}`}>
+            <div className="mx-auto max-w-[430px] overflow-hidden border border-zinc-800 bg-zinc-950">
               <canvas
                 ref={canvasRef}
                 data-testid="edit-preview-canvas"
@@ -781,7 +825,7 @@ export default function EditStudioPage() {
                 onCuesChange={setSfxCues}
                 onSeekRequest={seekTo}
                 audioContextRef={audioContextRef}
-                activeFormatFilter={project.format === "9:16" ? "9x16" : "16x9"}
+                activeFormatFilter="9x16"
                 hasMedia={project.clips.length > 0}
               />
             </div>
@@ -837,8 +881,9 @@ export default function EditStudioPage() {
                 <h2 className="truncate text-xs font-black uppercase tracking-wider text-fuchsia-200">03 / Toma seleccionada</h2>
                 <span className="font-mono text-[9px] text-zinc-600">{selectedAsset?.kind ?? "missing"}</span>
               </div>
-              <input value={selectedClip.label} onChange={(event) => updateClip(selectedClip.id, { label: event.target.value })} className="mt-3 w-full border-b border-zinc-700 bg-transparent py-1 text-xs font-bold text-white outline-none" />
-              <div className="mt-3 grid grid-cols-2 gap-2 text-[9px] text-zinc-500">
+              <input value={selectedClip.label} onChange={(event) => updateClip(selectedClip.id, { label: event.target.value })} className="mt-3 w-full border-b border-zinc-700 bg-transparent py-1 text-xs font-bold text-white outline-none" aria-label="Nombre de toma" />
+              {/* Tiempo */}
+              <div className="mt-3 grid grid-cols-3 gap-2 text-[9px] text-zinc-500">
                 <label>Duración final
                   <input aria-label="Duración de toma" type="number" min="0.25" max="30" step="0.05" value={selectedClip.duration} onChange={(event) => updateClip(selectedClip.id, { duration: Math.max(0.25, Number(event.target.value) || 0.25) })} className="mt-1 w-full border border-zinc-800 bg-black px-2 py-1 font-mono text-zinc-200" />
                 </label>
@@ -848,25 +893,53 @@ export default function EditStudioPage() {
                 <label>Tramo fuente
                   <input type="number" min="0.05" max={selectedAsset?.duration ?? 30} step="0.05" value={selectedClip.sourceDuration} onChange={(event) => updateClip(selectedClip.id, { sourceDuration: Math.max(0.05, Number(event.target.value) || 0.05) })} className="mt-1 w-full border border-zinc-800 bg-black px-2 py-1 font-mono text-zinc-200" />
                 </label>
-                <label>Movimiento
-                  <select value={selectedClip.motion} onChange={(event) => updateClip(selectedClip.id, { motion: event.target.value as EditTimelineClip["motion"] })} className="mt-1 w-full border border-zinc-800 bg-black px-2 py-1 text-zinc-200">
-                    <option value="static">Fijo</option><option value="push">Push suave</option><option value="drift">Deriva</option><option value="impact">Impacto</option>
-                  </select>
-                </label>
-                <label>Entrada
-                  <select value={selectedClip.transition} onChange={(event) => updateClip(selectedClip.id, { transition: event.target.value as EditTimelineClip["transition"] })} className="mt-1 w-full border border-zinc-800 bg-black px-2 py-1 text-zinc-200">
-                    <option value="cut">Corte</option><option value="crossfade">Fundido</option><option value="flash">Flash</option><option value="whip">Whip</option>
-                  </select>
-                </label>
-                <label>Duración transición
-                  <input type="number" min="0" max="1" step="0.02" value={selectedClip.transitionDuration} onChange={(event) => updateClip(selectedClip.id, { transitionDuration: Math.max(0, Number(event.target.value) || 0) })} className="mt-1 w-full border border-zinc-800 bg-black px-2 py-1 font-mono text-zinc-200" />
-                </label>
-                <label className="col-span-2">Filtro de esta toma
-                  <select value={selectedClip.style} onChange={(event) => updateClip(selectedClip.id, { style: event.target.value as EditTimelineClip["style"] })} className="mt-1 w-full border border-zinc-800 bg-black px-2 py-1 text-zinc-200">
-                    <option value="inherit">Usar look global</option>{EDIT_STYLES.map((style) => <option key={style.id} value={style.id}>{style.label}</option>)}
+              </div>
+              {/* Velocidad */}
+              <div className="mt-3 rounded border border-zinc-800 bg-black/40 p-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[9px] font-black uppercase tracking-wider text-zinc-300">⚡ Velocidad</span>
+                  <span className="font-mono text-[10px] text-fuchsia-300">{(selectedClip.playbackRate ?? 1).toFixed(2)}×</span>
+                </div>
+                <input type="range" min="0.5" max="2" step="0.05" value={selectedClip.playbackRate ?? 1} onChange={(event) => updateClip(selectedClip.id, { playbackRate: Number(event.target.value) })} className="mt-2 w-full accent-fuchsia-500" />
+                <div className="mt-1 flex justify-between text-[8px] text-zinc-500"><span>0.5× lento</span><span>1×</span><span>2× rápido</span></div>
+                <label className="mt-2 block text-[9px] text-zinc-500">Curva
+                  <select value={selectedClip.velocityCurve ?? "linear"} onChange={(event) => updateClip(selectedClip.id, { velocityCurve: event.target.value as EditTimelineClip["velocityCurve"] })} className="mt-1 w-full border border-zinc-700 bg-zinc-900 px-2 py-1 text-zinc-200">
+                    <option value="linear">Lineal</option><option value="easeIn">Entrada suave</option><option value="easeOut">Salida suave</option><option value="punch">Punch (rápido→estable)</option>
                   </select>
                 </label>
               </div>
+              {/* Transición */}
+              <div className="mt-3">
+                <p className="text-[9px] font-black uppercase tracking-wider text-zinc-400">Entrada · transición al beat</p>
+                <div className="mt-1.5 grid grid-cols-2 gap-1.5">
+                  {EDIT_TRANSITIONS.map((tr) => (
+                    <button key={tr.id} type="button" onClick={() => updateClip(selectedClip.id, { transition: tr.id })} className={`border px-2 py-1.5 text-left text-[10px] leading-tight ${selectedClip.transition === tr.id ? "border-fuchsia-500 bg-fuchsia-600 text-white" : "border-zinc-700 bg-black text-zinc-300 hover:border-zinc-500"}`}>
+                      <span className="block font-bold">{tr.label}</span><span className="text-[8px] opacity-70">{tr.desc}</span>
+                    </button>
+                  ))}
+                </div>
+                <label className="mt-2 block text-[9px] text-zinc-500">Duración transición
+                  <input type="range" min="0" max="0.6" step="0.02" value={selectedClip.transitionDuration} onChange={(event) => updateClip(selectedClip.id, { transitionDuration: Number(event.target.value) })} className="mt-1 w-full accent-fuchsia-500" />
+                  <span className="float-right font-mono text-zinc-300">{selectedClip.transitionDuration.toFixed(2)}s</span>
+                </label>
+              </div>
+              {/* Cámara */}
+              <div className="mt-3">
+                <p className="text-[9px] font-black uppercase tracking-wider text-zinc-400">Cámara 2.5D</p>
+                <div className="mt-1.5 grid grid-cols-4 gap-1">
+                  {EDIT_MOTIONS.map((mo) => (
+                    <button key={mo.id} type="button" onClick={() => updateClip(selectedClip.id, { motion: mo.id })} className={`border px-1 py-1.5 text-[9px] font-bold ${selectedClip.motion === mo.id ? "border-cyan-400 bg-cyan-600 text-white" : "border-zinc-700 bg-black text-zinc-400 hover:border-zinc-500"}`}>{mo.label}</button>
+                  ))}
+                </div>
+                <label className="mt-2 block text-[9px] text-zinc-500">Intensidad cámara <span className="float-right font-mono text-zinc-300">{selectedClip.motionIntensity ?? 32}%</span>
+                  <input type="range" min="0" max="100" value={selectedClip.motionIntensity ?? 32} onChange={(event) => updateClip(selectedClip.id, { motionIntensity: Number(event.target.value) })} className="mt-1 w-full accent-cyan-400" />
+                </label>
+              </div>
+              <label className="mt-3 block text-[9px] text-zinc-500">Filtro de esta toma
+                <select value={selectedClip.style} onChange={(event) => updateClip(selectedClip.id, { style: event.target.value as EditTimelineClip["style"] })} className="mt-1 w-full border border-zinc-800 bg-black px-2 py-1 text-zinc-200">
+                  <option value="inherit">Usar look global</option>{EDIT_STYLES.map((style) => <option key={style.id} value={style.id}>{style.label}</option>)}
+                </select>
+              </label>
               <div className="mt-3 flex flex-wrap gap-1.5">
                 <button type="button" onClick={() => updateClip(selectedClip.id, { duration: snapEditTime(selectedClip.duration, project.bpm, 2) })} className="border border-zinc-700 px-2 py-1 text-[9px] font-bold text-zinc-300">Imán ½ beat</button>
                 <button type="button" onClick={() => {
@@ -883,14 +956,12 @@ export default function EditStudioPage() {
           )}
 
           <details open className="border border-zinc-800 bg-zinc-950 p-3">
-            <summary className="cursor-pointer text-xs font-black uppercase tracking-wider text-zinc-200">04 / Look global</summary>
+            <summary className="cursor-pointer text-xs font-black uppercase tracking-wider text-zinc-200">04 / Look global — 9:16 Short</summary>
             <div className="mt-3 grid grid-cols-2 gap-2 text-[9px] text-zinc-500">
-              <label>Formato
-                <select value={project.format} onChange={(event) => updateProject({ format: event.target.value as EditProject["format"] })} className="mt-1 w-full border border-zinc-800 bg-black px-2 py-1 text-zinc-200"><option value="9:16">9:16 Short</option><option value="16:9">16:9</option></select>
-              </label>
               <label>FPS
                 <select value={project.fps} onChange={(event) => updateProject({ fps: Number(event.target.value) as 30 | 60 })} className="mt-1 w-full border border-zinc-800 bg-black px-2 py-1 text-zinc-200"><option value="60">60 fps</option><option value="30">30 fps</option></select>
               </label>
+              <span className="flex items-end pb-1 font-mono text-[10px] text-zinc-500">9:16 · 1080×1920 · para Shorts</span>
               <label className="col-span-2">Filtro
                 <select value={project.style} onChange={(event) => updateProject({ style: event.target.value as AestheticStyle })} className="mt-1 w-full border border-zinc-800 bg-black px-2 py-1 text-zinc-200">{EDIT_STYLES.map((style) => <option key={style.id} value={style.id}>{style.label}</option>)}</select>
               </label>
@@ -944,7 +1015,7 @@ export default function EditStudioPage() {
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="text-xs font-black uppercase tracking-wider">07 / Exportar MP4</h2>
-                <p className="mt-1 text-[9px] text-zinc-600">1080p · {project.fps} fps · audio 48 kHz</p>
+                <p className="mt-1 text-[9px] text-zinc-600">1080×1920 · {project.fps} fps · audio 48 kHz · 9:16</p>
               </div>
               <span className="font-mono text-[10px]">{Math.round(exportProgress * 100)}%</span>
             </div>

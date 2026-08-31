@@ -19,6 +19,7 @@ import {
 } from "./mangaMotionEngine";
 import {
   editOutputSize,
+  editSourceTimeAt,
   editTimelineDuration,
   editTimelinePlacements,
   type EditAssetMeta,
@@ -217,7 +218,7 @@ export async function exportEditStudioVideo(opts: EditStudioExportOptions): Prom
         width,
         height,
         opacity: project.watermarkOpacity,
-        shorts: project.format === "9:16",
+        shorts: true,
         style: project.watermarkStyle,
       });
     }
@@ -256,10 +257,11 @@ export async function exportEditStudioVideo(opts: EditStudioExportOptions): Prom
           const trackDuration = await track.computeDuration();
           sourceCanvas.width = Math.max(2, track.displayWidth || asset.width || width);
           sourceCanvas.height = Math.max(2, track.displayHeight || asset.height || height);
-          const sourceSpan = Math.max(frameDuration, Math.min(clip.sourceDuration, trackDuration - clip.sourceStart));
           const timestamps = Array.from({ length: clipFrames }, (_, index) => {
-            const progress = clipFrames <= 1 ? 0 : index / (clipFrames - 1);
-            return Math.max(0, Math.min(trackDuration - 0.001, clip.sourceStart + sourceSpan * progress));
+            const isPunchHold = clip.transition === "punch" && index < Math.min(3, clipFrames);
+            const localTime = isPunchHold ? 0 : index * frameDuration;
+            const sourceTime = editSourceTimeAt(clip, localTime);
+            return Math.max(0, Math.min(trackDuration - 0.001, sourceTime));
           });
           const sink = new VideoSampleSink(track);
           const pendingBeforeFirst: number[] = [];
