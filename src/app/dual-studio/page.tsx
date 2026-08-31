@@ -29,6 +29,7 @@ import {
   DEFAULT_EXTEND_MIN_PLAYBACK_RATE,
   resolveExtendPlaybackPlan,
   resolveExtendPlaybackRate,
+  resolveOutputSize,
   ExportCancelledError,
 } from "@/lib/mangaMotionExport";
 import { getForwardLoopFrameState } from "@/lib/forwardLoop";
@@ -514,6 +515,24 @@ export default function DualStudioPage() {
     () => (audioBuffer ? (estimateBeatPeriodSec(audioBuffer) ?? undefined) : undefined),
     [audioBuffer]
   );
+
+  // Resolución real de export por formato: passthrough nativo del source
+  // (1080p→1080p, 2K→2K, 4K→4K). La UI la muestra para no prometer 1080p fijo.
+  const exportSizeFor = (format: "16x9" | "9x16") => {
+    const el = format === "16x9" ? video16x9El : video9x16El;
+    const isVideo = typeof HTMLVideoElement !== "undefined" && el instanceof HTMLVideoElement;
+    const isImage = typeof HTMLImageElement !== "undefined" && el instanceof HTMLImageElement;
+    const rawW = isVideo ? el.videoWidth : isImage ? el.naturalWidth : 0;
+    const rawH = isVideo ? el.videoHeight : isImage ? el.naturalHeight : 0;
+    return resolveOutputSize(
+      { aspectRatio: format === "16x9" ? "16:9" : "9:16" },
+      rawW || 1920,
+      rawH || 1080,
+      {}
+    );
+  };
+  const exportSize16 = exportSizeFor("16x9");
+  const exportSize9 = exportSizeFor("9x16");
 
   // Pre-export confirmation dialog
   const [confirmExport, setConfirmExport] = useState<null | "16x9" | "9x16" | "batch">(null);
@@ -4360,7 +4379,7 @@ export default function DualStudioPage() {
               <span>🚀</span> Exportación final
             </h3>
             <p className="text-xs text-zinc-400 mt-0.5">
-              Genera MP4 1080p a los FPS del original, con audio 48 kHz y los SFX colocados en la línea de tiempo.
+              Genera MP4 a la resolución nativa del vídeo (1080p, 2K o 4K), a los FPS del original, con audio 48 kHz y los SFX colocados en la línea de tiempo.
             </p>
           </div>
 
@@ -4763,7 +4782,9 @@ export default function DualStudioPage() {
               {confirmExport !== "batch" && (
                 <SummaryRow
                   label="Formato"
-                  value={confirmExport === "16x9" ? "🖥️ 16:9 · 1920×1080" : "📱 9:16 · 1080×1920"}
+                  value={confirmExport === "16x9"
+                    ? `🖥️ 16:9 · ${exportSize16.width}×${exportSize16.height}`
+                    : `📱 9:16 · ${exportSize9.width}×${exportSize9.height}`}
                 />
               )}
               {confirmExport === "batch" && (
@@ -4823,7 +4844,11 @@ export default function DualStudioPage() {
               />
               <SummaryRow
                 label="Calidad"
-                value="1080p nativa · FPS igual al video original"
+                value={confirmExport === "9x16"
+                  ? `Nativa ${exportSize9.width}×${exportSize9.height} · FPS igual al video original`
+                  : confirmExport === "batch"
+                    ? `Nativa ${exportSize16.width}×${exportSize16.height} + ${exportSize9.width}×${exportSize9.height} · FPS del original`
+                    : `Nativa ${exportSize16.width}×${exportSize16.height} · FPS igual al video original`}
               />
               <p className="text-[10px] text-zinc-500 pt-1">
                 El preview que viste arriba es exactamente lo que se renderizará. Este proceso corre en tu GPU; no cierres la pestaña.

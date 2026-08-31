@@ -166,8 +166,7 @@ export function sliceAudioBuffer(
   const startSample = Math.max(0, Math.min(buffer.length - 1, Math.floor(startTimeSec * sr)));
   const lengthSamples = Math.max(1, Math.min(buffer.length - startSample, Math.ceil(durationSec * sr)));
 
-  const ctx = new OfflineAudioContext(numCh, lengthSamples, sr);
-  const sliced = ctx.createBuffer(numCh, lengthSamples, sr);
+  const sliced = new AudioBuffer({ length: lengthSamples, numberOfChannels: numCh, sampleRate: sr });
 
   for (let c = 0; c < numCh; c++) {
     const srcData = buffer.getChannelData(c);
@@ -877,7 +876,13 @@ export async function buildProcessedOneShotBuffer(req: ProcessedOneShotRequest):
     sourceWindow,
     req.sourceBuffer.duration
   );
-  let processed = sliceAudioBuffer(req.sourceBuffer, window.start, window.duration);
+  // Cuando la ventana cubre toda la fuente (playlist en "Original"), saltarse el
+  // slice: copiar la canción completa dos veces no cambia el resultado y doblaba
+  // la memoria y el tiempo de procesado por pista.
+  const fullWindow = window.start <= 0 && window.duration >= req.sourceBuffer.duration - 1e-6;
+  let processed = fullWindow && !req.enableSlowedReverb
+    ? req.sourceBuffer
+    : sliceAudioBuffer(req.sourceBuffer, window.start, window.duration);
   if (req.enableSlowedReverb) {
     processed = await renderSlowedReverb(processed, req.reverbSettings);
   }
@@ -1003,7 +1008,9 @@ export async function decodeAudioDataAsync(arrayBuffer: ArrayBuffer): Promise<Au
   const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
   const ctx = new AudioContextClass();
   try {
-    const buffer = await ctx.decodeAudioData(arrayBuffer.slice(0));
+    // decodeAudioData no desacopla el buffer en navegadores modernos: copiarlo
+    // con slice(0) duplicaba archivos grandes en memoria sin necesidad.
+    const buffer = await ctx.decodeAudioData(arrayBuffer);
     return buffer;
   } finally {
     void ctx.close();

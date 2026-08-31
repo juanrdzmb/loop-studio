@@ -285,8 +285,8 @@ async function resolveSourceBlob(
   return null;
 }
 
-function resolveOutputSize(
-  config: MangaMotionConfig,
+export function resolveOutputSize(
+  config: Pick<MangaMotionConfig, "aspectRatio">,
   rawW: number,
   rawH: number,
   opts: { width?: number; height?: number }
@@ -295,14 +295,47 @@ function resolveOutputSize(
   let height = opts.height;
   if (!width || !height) {
     if (config.aspectRatio === "16:9") {
-      width = rawW >= 3840 ? 3840 : 1920;
-      height = rawW >= 3840 ? 2160 : 1080;
+      // Passthrough nativo: lo que se sube es lo que sale (1080p→1080p, 2K→2K, 4K→4K).
+      // La salida es el recorte nativo que el fit `cover` muestra del source en 16:9,
+      // así fuentes con otro aspecto recortan (nunca estiran) igual que antes.
+      // Suelo 1080p y techo 4K: los encoders HW no garantizan resoluciones mayores.
+      const cropW = Math.min(rawW, (rawH * 16) / 9);
+      const cropH = Math.min(rawH, (rawW * 9) / 16);
+      if (cropW >= 3840) {
+        width = 3840;
+        height = 2160;
+      } else if (cropW >= 2560) {
+        width = cropW;
+        height = cropH;
+      } else {
+        width = 1920;
+        height = 1080;
+      }
     } else if (config.aspectRatio === "9:16") {
-      width = 1080;
-      height = 1920;
+      const cropW = Math.min(rawW, (rawH * 9) / 16);
+      const cropH = Math.min(rawH, (rawW * 16) / 9);
+      if (cropH >= 3840) {
+        width = 2160;
+        height = 3840;
+      } else if (cropH >= 2560) {
+        width = cropW;
+        height = cropH;
+      } else {
+        width = 1080;
+        height = 1920;
+      }
     } else if (config.aspectRatio === "1:1") {
-      width = 1080;
-      height = 1080;
+      const side = Math.min(rawW, rawH);
+      if (side >= 3840) {
+        width = 2160;
+        height = 2160;
+      } else if (side >= 2560) {
+        width = side;
+        height = side;
+      } else {
+        width = 1080;
+        height = 1080;
+      }
     } else {
       width = Math.min(1920, Math.max(720, rawW));
       height = Math.min(1080, Math.max(720, rawH));
@@ -925,7 +958,7 @@ export async function exportMangaMotionVideo(
     }
   }
 
-  const videoCodec = await getFirstEncodableVideoCodec(["avc", "vp9", "av1", "hevc"]);
+  const videoCodec = await getFirstEncodableVideoCodec(["avc", "vp9", "av1", "hevc"], { width, height });
   if (!videoCodec) {
     throw new Error("El navegador no soporta codificación de video por hardware (WebCodecs).");
   }
@@ -1057,9 +1090,13 @@ export async function exportMangaMotionVideo(
   const pixels = width * height;
   const pixelRatio = pixels / (1920 * 1080);
   const reference1080 = fps > 30 ? 16_000_000 : 12_000_000;
+  // Tier 2K explícito (2560×1440 ≈ ratio 1.78): recomendación YouTube para 1440p.
+  // 1080p mantiene su referencia y ≥4K el techo flat ya existente.
   const scaledBitrate = pixelRatio >= 3.5
     ? (fps > 30 ? 60_000_000 : 45_000_000)
-    : pixelRatio * reference1080;
+    : pixelRatio >= 1.7
+      ? (fps > 30 ? 36_000_000 : 24_000_000)
+      : pixelRatio * reference1080;
   const targetBitrate = Math.round(
     Math.min(60_000_000, Math.max(7_000_000, scaledBitrate)) / 100_000
   ) * 100_000;
