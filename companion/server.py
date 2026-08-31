@@ -361,7 +361,7 @@ async def analyze_video(
         with contextlib.redirect_stderr(err_capture):
             from frame_analyzer import FrameAnalyzer
             from loop_detector import LoopDetector
-            from motion_loop import compute_motion_periodicity, evaluate_motion_loop
+            from motion_loop import compute_motion_periodicity, evaluate_motion_loop_v2
 
             motion_period, flows = compute_motion_periodicity(smalls, fps, stride)
 
@@ -384,7 +384,9 @@ async def analyze_video(
         for l in loops:
             start = float(l["start_time"])
             end = float(l["end_time"])
-            score, label = evaluate_motion_loop(start, end, smalls, flows, fps, stride, motion_period)
+            evaluation = evaluate_motion_loop_v2(start, end, smalls, flows, fps, stride, motion_period)
+            score = float(evaluation["score"])
+            label = str(evaluation["label"])
             # Crossfade cinemático: 0.25-1.0, recomendado 0.45-0.70; natural seam corto
             if score >= 85:
                 base_fade = 0.30
@@ -393,6 +395,14 @@ async def analyze_video(
             else:
                 base_fade = 0.70
             fade_sec = max(0.25, min(base_fade, (end - start) * 0.12, 1.0))
+            metrics = dict(evaluation["metrics"])
+            metrics["coverage"] = round(min(1.0, max(0.0, (end - start) / max(0.1, duration))), 3)
+            quality = str(evaluation["quality"])
+            reason = {
+                "excellent": "Inicio, final y dirección de movimiento coinciden con confianza alta.",
+                "good": "La unión es sólida; el fundido y la alineación ocultan la diferencia restante.",
+                "review": "Costura difícil: conviene escuchar la unión o probar otra alternativa.",
+            }.get(quality, "Costura analizada temporalmente.")
             cands.append({
                 "start": round(start, 3),
                 "end": round(end, 3),
@@ -401,11 +411,16 @@ async def analyze_video(
                 "label": label,
                 "kind": "detected",
                 "fade_sec": round(fade_sec, 3),
-                "reason": "LoopyCut alineó imagen y dirección de movimiento en la costura.",
+                "reason": reason,
+                "analysis_version": 2,
+                "quality": quality,
+                "metrics": metrics,
             })
-        full_score, full_label = evaluate_motion_loop(
+        full_evaluation = evaluate_motion_loop_v2(
             0.0, duration, smalls, flows, fps, stride, motion_period
         )
+        full_score = float(full_evaluation["score"])
+        full_label = str(full_evaluation["label"])
         # Fallback full-clip: fundido conservador forward-only 0.45-0.70
         full_fade = max(0.35, min(0.70, max(0.45, duration * 0.08)))
         full_fade = max(0.25, min(1.0, full_fade))
@@ -418,7 +433,37 @@ async def analyze_video(
             "kind": "full",
             "fade_sec": round(full_fade, 3),
             "reason": "Fallback que conserva el clip completo; la unión puede necesitar fundido.",
+            "analysis_version": 2,
+            "quality": str(full_evaluation["quality"]),
+            "metrics": {
+                **dict(full_evaluation["metrics"]),
+                "coverage": 1.0,
+            },
         }
+
+        # La alineación debe existir ANTES del ranking para que su confianza
+        # participe realmente en la decisión, no solo en la respuesta final.
+        try:
+            from alignment import estimate_global_alignment  # type: ignore
+
+            for cand in [*cands, full_cand]:
+                if cand["score"] < 30:
+                    continue
+                i = max(0, min(len(smalls) - 1, int(round(float(cand["start"]) * fps / stride))))
+                j = max(0, min(len(smalls) - 1, int(round(float(cand["end"]) * fps / stride))))
+                if i == j or i >= len(smalls) or j >= len(smalls):
+                    continue
+                alignment = estimate_global_alignment(smalls[i], smalls[j], orig_w, orig_h)
+                if alignment is not None:
+                    cand["alignment"] = alignment
+                    old_confidence = float(cand["metrics"].get("confidence", 0.0))
+                    align_confidence = float(alignment.get("confidence", 0.0))
+                    cand["metrics"]["confidence"] = round(
+                        max(0.0, min(1.0, old_confidence * 0.85 + align_confidence * 0.15)),
+                        3,
+                    )
+        except Exception:
+            pass
         # ── Smart Forward Loop — ranking equilibrado SEAM + COBERTURA + DURACIÓN ──
         # Filosofía §5-6: cobertura y duración son primer nivel, no pequeño bonus.
         # Full compite realmente; <5 s con baja cobertura se penaliza fuerte.
@@ -556,25 +601,6 @@ async def analyze_video(
             ranked = [c for _, c, _ in breakdowns[:7]]
 
         cands = ranked[:7] + [full_cand]
-        # ── Motion-compensated alignment (opcional, no rompe contrato) ──
-        try:
-            from alignment import estimate_global_alignment  # type: ignore
-            for cand in cands:
-                try:
-                    # Solo candidatos con algún potencial: evita computar para scores muy bajos
-                    if cand["score"] < 30:
-                        continue
-                    i = max(0, min(len(smalls) - 1, int(round(float(cand["start"]) * fps / stride))))
-                    j = max(0, min(len(smalls) - 1, int(round(float(cand["end"]) * fps / stride))))
-                    if i == j or i >= len(smalls) or j >= len(smalls):
-                        continue
-                    ali = estimate_global_alignment(smalls[i], smalls[j], orig_w, orig_h)
-                    if ali is not None:
-                        cand["alignment"] = ali
-                except Exception:
-                    continue
-        except Exception:
-            pass
         return {
             "candidates": cands,
             "duration": round(duration, 3),
@@ -583,6 +609,22 @@ async def analyze_video(
         }
     except Exception as e:
         return JSONResponse({"error": f"análisis falló: {e}"}, 500)
+    finally:
+        os.unlink(path)
+
+
+@app.post("/analyze/stabilization")
+async def analyze_stabilization_ep(
+    video: UploadFile = File(...),
+    max_samples: int = Form(360),
+):
+    path = _save_upload(video, os.path.splitext(video.filename or "v.mp4")[1] or ".mp4")
+    try:
+        from stabilization import analyze_stabilization
+
+        return analyze_stabilization(path, max_samples=max(24, min(720, int(max_samples))))
+    except Exception as exc:
+        return JSONResponse({"error": f"estabilización falló: {exc}"}, 500)
     finally:
         os.unlink(path)
 
@@ -740,6 +782,38 @@ def _file_response(out_path: str) -> StreamingResponse:
         media_type="video/mp4",
         headers={"Content-Disposition": 'attachment; filename="loop-perfecto.mp4"'},
     )
+
+
+@app.post("/transcode/browser")
+async def transcode_for_browser(video: UploadFile = File(...)):
+    """Convierte entradas que WebCodecs no puede abrir a MP4 H.264/AAC local."""
+    if not _which("ffmpeg"):
+        return JSONResponse({"error": "ffmpeg no está disponible"}, 503)
+    source_path = _save_upload(video, os.path.splitext(video.filename or "v.mov")[1] or ".mov")
+    fd, output_path = tempfile.mkstemp(suffix=".mp4")
+    os.close(fd)
+    try:
+        _run([
+            "ffmpeg", "-y", "-v", "error",
+            "-i", source_path,
+            "-map", "0:v:0", "-map", "0:a?",
+            "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+            "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+            "-c:a", "aac", "-b:a", "256k", "-ar", "48000",
+            output_path,
+        ], timeout=1800)
+        return _file_response(output_path)
+    except Exception as exc:
+        try:
+            os.unlink(output_path)
+        except OSError:
+            pass
+        return JSONResponse({"error": f"conversión falló: {exc}"}, 500)
+    finally:
+        try:
+            os.unlink(source_path)
+        except OSError:
+            pass
 
 
 def _execute_render(v_path: str, a_path: str, p: dict, on_progress=None) -> str:
@@ -1063,4 +1137,3 @@ async def export_media(
     data = await file.read()
     dest.write_bytes(data)
     return {"ok": True, "path": str(dest)}
-

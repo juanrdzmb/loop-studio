@@ -19,6 +19,8 @@ export interface VisualLoopSelection {
   reason: string;
   source: "loopycut" | "browser-fallback";
   alignment?: VisualAlignment | null;
+  quality?: "excellent" | "good" | "review";
+  metrics?: LoopCandidate["metrics"];
 }
 
 export interface VisualLoopRecommendation {
@@ -48,6 +50,8 @@ function toVisualSelection(candidate: LoopCandidate): VisualLoopSelection {
     reason: candidate.reason || "LoopyCut alineó imagen y movimiento en la costura.",
     source: "loopycut",
     alignment: candidate.alignment ?? null,
+    quality: candidate.quality,
+    metrics: candidate.metrics,
   };
 }
 

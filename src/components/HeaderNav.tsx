@@ -23,6 +23,12 @@ const NAV_ITEMS: NavItem[] = [
     highlight: true,
   },
   {
+    href: "/edit-studio",
+    label: "Edit Studio multiclip",
+    shortLabel: "Edit Studio",
+    icon: "✂️",
+  },
+  {
     href: "/",
     label: "GIF Studio",
     shortLabel: "GIF Studio",

@@ -83,17 +83,85 @@ def main() -> None:
                 text=True,
             )
             data = json.loads(response.stdout)
+            stabilization_response = subprocess.run(
+                [
+                    "curl",
+                    "-fsS",
+                    "-X",
+                    "POST",
+                    "-F",
+                    f"video=@{clip}",
+                    f"http://127.0.0.1:{port}/analyze/stabilization",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            stabilization = json.loads(stabilization_response.stdout)
+            transcoded = Path(tmp) / "browser.mp4"
+            subprocess.run(
+                [
+                    "curl",
+                    "-fsS",
+                    "-X",
+                    "POST",
+                    "-F",
+                    f"video=@{clip}",
+                    "-o",
+                    str(transcoded),
+                    f"http://127.0.0.1:{port}/transcode/browser",
+                ],
+                check=True,
+            )
         finally:
             server.terminate()
             server.wait(timeout=5)
         candidates = data["candidates"]
         assert candidates, data
         assert all(c.get("kind") in {"detected", "full"} for c in candidates), candidates
+        assert all(c.get("analysis_version") == 2 for c in candidates), candidates
+        assert all(c.get("quality") in {"excellent", "good", "review"} for c in candidates), candidates
+        assert all(
+            isinstance(c.get("metrics"), dict)
+            and 0.0 <= float(c["metrics"].get("seam_visual", -1)) <= 100.0
+            and 0.0 <= float(c["metrics"].get("motion_match", -1)) <= 100.0
+            and 0.0 <= float(c["metrics"].get("scene_cut_risk", -1)) <= 1.0
+            and 0.0 <= float(c["metrics"].get("confidence", -1)) <= 1.0
+            for c in candidates
+        ), candidates
         assert candidates[0]["kind"] == "detected", candidates
         assert abs(float(candidates[0]["duration"]) - 4.0) < 0.25, candidates[0]
         full = next(c for c in candidates if c["kind"] == "full")
         assert float(full["score"]) < 100.0, full
-        print("PASS companion visual-loop ranking and contract")
+        assert stabilization.get("version") == 2, stabilization
+        assert stabilization.get("source") == "companion-opencv"
+        assert isinstance(stabilization.get("keyframes"), list), stabilization
+        assert all(
+            {"time", "dx", "dy", "rotation", "scale", "confidence"}.issubset(frame)
+            for frame in stabilization["keyframes"]
+        ), stabilization
+        assert 1.0 <= float(stabilization.get("crop_scale", 0)) <= 1.02, stabilization
+        codec = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=codec_name,pix_fmt",
+                "-of",
+                "json",
+                str(transcoded),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        codec_data = json.loads(codec.stdout)["streams"][0]
+        assert codec_data["codec_name"] == "h264", codec_data
+        assert codec_data["pix_fmt"] == "yuv420p", codec_data
+        print("PASS companion visual-loop v2, stabilization and browser transcode contracts")
 
 
 if __name__ == "__main__":

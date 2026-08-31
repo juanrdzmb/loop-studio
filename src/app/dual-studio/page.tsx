@@ -5,6 +5,7 @@ import Link from "next/link";
 import FileDropzone from "@/components/FileDropzone";
 import SfxLoopTimeline from "@/components/SfxLoopTimeline";
 import AudioLoopPanel from "@/components/AudioLoopPanel";
+import AudioPlaylistPanel from "@/components/AudioPlaylistPanel";
 import TrimTimeline from "@/components/TrimTimeline";
 import { LoopSfxCue, preloadCuratedSfx, stopActiveSfxPreview } from "@/lib/seinenSfxLibrary";
 import {
@@ -12,8 +13,12 @@ import {
   PhysicsParticleSystem,
   AestheticStyle,
   CameraMovement,
+  ColorGradeConfig,
+  DEFAULT_COLOR_GRADE,
   DEFAULT_MANGA_CONFIG,
+  DEFAULT_PARTICLE_CONTROLS,
   MangaMotionConfig,
+  ParticleControlOptions,
   renderMangaMotionFrame,
 } from "@/lib/mangaMotionEngine";
 import {
@@ -21,11 +26,14 @@ import {
   sourceTimeForExport,
   computeVisualCycleDuration,
   computeVisualCrossfadeDuration,
+  DEFAULT_EXTEND_MIN_PLAYBACK_RATE,
+  resolveExtendPlaybackPlan,
   resolveExtendPlaybackRate,
   ExportCancelledError,
 } from "@/lib/mangaMotionExport";
 import { getForwardLoopFrameState } from "@/lib/forwardLoop";
 import { getSmoothPingPongFrameState } from "@/lib/pingPongLoop";
+import { resolveParticleRenderPlan } from "@/lib/particleLoop";
 import {
   buildClipFrameCache,
   disposeClipFrameCache,
@@ -37,8 +45,18 @@ import {
   sourceTransformAt,
   type ClipStabilization,
 } from "@/lib/videoStabilization";
-import { saveExportMediaResult, analyzeMusic, type LoopCandidate } from "@/lib/companion";
-import { drawThumbnailChannelMark, ensureWatermarkFont } from "@/lib/watermark";
+import {
+  saveExportMediaResult,
+  analyzeMusic,
+  analyzeVideoStabilization,
+  transcodeVideoForBrowser,
+  type LoopCandidate,
+} from "@/lib/companion";
+import {
+  drawThumbnailChannelMark,
+  ensureWatermarkFont,
+  type WatermarkStyleOptions,
+} from "@/lib/watermark";
 import {
   pickBestAudioLoop,
   recommendVisualLoopForClip,
@@ -62,6 +80,12 @@ import {
   DEFAULT_SETTINGS,
   LoopBufferPlayer,
 } from "@/lib/audioEngine";
+import {
+  buildAudioPlaylistMaster,
+  type AudioPlaylistTrack,
+  type PlaylistTimelineItem,
+  type PlaylistTrackEffect,
+} from "@/lib/audioPlaylist";
 import {
   generateOrganicYoutubePack,
   CHARACTER_DATABASE,
@@ -96,6 +120,9 @@ const PARTICLE_OPTIONS: { id: ParticleType; label: string; icon: string }[] = [
   { id: "golden_sparks", label: "✨ Chispas Doradas (Épico)", icon: "✨" },
   { id: "dark_ink_fog", label: "🌫️ Niebla de Tinta (Místico)", icon: "🌫️" },
   { id: "cinematic_rain", label: "🌧️ Lluvia Cinemática (Melancolía)", icon: "🌧️" },
+  { id: "cinematic_dust", label: "🎞️ Polvo de Lente (Cinemático)", icon: "🎞️" },
+  { id: "snow_ash", label: "❄️ Nieve y Ceniza (Atmosférico)", icon: "❄️" },
+  { id: "light_leaks", label: "🌤️ Fugas de Luz (Analógico)", icon: "🌤️" },
 ];
 
 const CREATIVE_PROFILES = [
@@ -120,6 +147,16 @@ const DURATION_9X16_PRESETS = [
   { label: "60s", seconds: 60 },
 ];
 
+const DEFAULT_WATERMARK_STYLE: WatermarkStyleOptions = {
+  position: "bottom-center",
+  scale: 1,
+  tracking: 1,
+  color: "#ffffff",
+  ruleScale: 1,
+  offsetX: 0,
+  offsetY: 0,
+};
+
 function formatDuration(seconds: number): string {
   if (seconds < 60) return `${seconds.toFixed(seconds % 1 === 0 ? 0 : 1)}s`;
   const minutes = Math.floor(seconds / 60);
@@ -140,6 +177,250 @@ function visualLoopSummary(mode: SeamMode, selection: VisualLoopSelection | null
   return selection ? `${seam} · ciclo ${selection.duration.toFixed(1)}s` : seam;
 }
 
+function particleControlsForPreview(
+  controls: ParticleControlOptions,
+  cycleDuration: number,
+  targetDuration: number,
+  particles: ParticleType
+): ParticleControlOptions {
+  const plan = resolveParticleRenderPlan(cycleDuration, targetDuration, particles !== "none");
+  return { ...controls, loopDuration: plan.particleLoopDuration };
+}
+
+function loopQualityMeta(selection: VisualLoopSelection) {
+  const quality = selection.quality
+    ?? (selection.score >= 85 ? "excellent" : selection.score >= 68 ? "good" : "review");
+  if (quality === "excellent") {
+    return { label: "Unión excelente", className: "border-emerald-700/60 bg-emerald-950/30 text-emerald-200" };
+  }
+  if (quality === "good") {
+    return { label: "Unión buena", className: "border-cyan-700/60 bg-cyan-950/30 text-cyan-200" };
+  }
+  return { label: "Revisar unión", className: "border-amber-700/60 bg-amber-950/30 text-amber-200" };
+}
+
+function VisualLoopQualityPanel({
+  selection,
+  candidates,
+  format,
+  onSelect,
+}: {
+  selection: VisualLoopSelection | null;
+  candidates: VisualLoopSelection[];
+  format: "16x9" | "9x16";
+  onSelect: (candidate: VisualLoopSelection) => void;
+}) {
+  if (!selection || selection.label === "Recorte manual") return null;
+  const meta = loopQualityMeta(selection);
+  const alternatives = candidates
+    .filter((candidate) => (
+      Math.abs(candidate.start - selection.start) > 0.02
+      || Math.abs(candidate.end - selection.end) > 0.02
+    ))
+    .slice(0, 3);
+  const metrics = selection.metrics;
+
+  return (
+    <div className={`rounded-lg border p-2.5 text-[10px] ${meta.className}`}>
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-bold">{meta.label}</span>
+        <span className="font-mono">{Math.round(selection.score)}%</span>
+      </div>
+      {metrics && (
+        <div className="mt-1 grid grid-cols-3 gap-1 text-zinc-400">
+          <span>Imagen {Math.round(metrics.seamVisual)}%</span>
+          <span>Movimiento {Math.round(metrics.motionMatch)}%</span>
+          <span>Corte {Math.round(metrics.sceneCutRisk * 100)}%</span>
+        </div>
+      )}
+      {format === "9x16" && alternatives.length > 0 && (
+        <p className="mt-1 text-zinc-400">El Short completo se conserva hasta que aceptes otra unión.</p>
+      )}
+      {alternatives.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {alternatives.map((candidate) => (
+            <button
+              key={`${candidate.start}-${candidate.end}`}
+              type="button"
+              onClick={() => onSelect(candidate)}
+              className="rounded-md border border-current/30 bg-black/20 px-2 py-1 font-semibold hover:bg-white/10"
+              title={candidate.reason}
+            >
+              Usar {candidate.start.toFixed(1)}–{candidate.end.toFixed(1)}s · {Math.round(candidate.score)}%
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const COLOR_GRADE_SLIDERS: Array<{
+  key: keyof ColorGradeConfig;
+  label: string;
+  min: number;
+  max: number;
+}> = [
+  { key: "exposure", label: "Exposición", min: -100, max: 100 },
+  { key: "contrast", label: "Contraste", min: -100, max: 100 },
+  { key: "saturation", label: "Saturación", min: -100, max: 100 },
+  { key: "temperature", label: "Temperatura", min: -100, max: 100 },
+  { key: "tint", label: "Tinte", min: -100, max: 100 },
+  { key: "fade", label: "Negros lavados", min: 0, max: 100 },
+  { key: "bloom", label: "Bloom", min: 0, max: 100 },
+  { key: "grain", label: "Grano fino", min: 0, max: 100 },
+];
+
+const COLOR_GRADE_PRESETS: Array<{ label: string; value: ColorGradeConfig }> = [
+  { label: "Limpio", value: { ...DEFAULT_COLOR_GRADE } },
+  { label: "Cine frío", value: { ...DEFAULT_COLOR_GRADE, exposure: -6, contrast: 16, saturation: -8, temperature: -18, tint: 5, fade: 8, bloom: 8, grain: 10 } },
+  { label: "Ámbar", value: { ...DEFAULT_COLOR_GRADE, exposure: 4, contrast: 10, saturation: 8, temperature: 24, tint: 2, fade: 6, bloom: 12, grain: 8 } },
+  { label: "Manga mate", value: { ...DEFAULT_COLOR_GRADE, exposure: -4, contrast: 22, saturation: -34, temperature: -5, tint: 4, fade: 14, bloom: 3, grain: 18 } },
+];
+
+function ColorGradeControls({
+  value,
+  onChange,
+  accentClass,
+  format,
+}: {
+  value: ColorGradeConfig;
+  onChange: (value: ColorGradeConfig) => void;
+  accentClass: string;
+  format: "16:9" | "9:16";
+}) {
+  return (
+    <details className="mt-3 rounded-lg border border-zinc-800 bg-black/20 p-2.5">
+      <summary className="cursor-pointer text-[11px] font-bold text-zinc-300">🎛️ Color grading profesional</summary>
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        {COLOR_GRADE_PRESETS.map((preset) => (
+          <button
+            key={preset.label}
+            type="button"
+            onClick={() => onChange({ ...preset.value })}
+            className="rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-[10px] font-semibold text-zinc-300 hover:border-zinc-500"
+          >
+            {preset.label}
+          </button>
+        ))}
+      </div>
+      <div className="mt-3 grid grid-cols-1 gap-x-4 gap-y-2 sm:grid-cols-2 lg:grid-cols-4">
+        {COLOR_GRADE_SLIDERS.map((control) => (
+          <label key={control.key} className="flex flex-col gap-1 text-[10px] text-zinc-500">
+            <span className="flex justify-between gap-2">
+              <span>{control.label}</span>
+              <span className="font-mono text-zinc-300">{value[control.key] > 0 && control.min < 0 ? "+" : ""}{value[control.key]}</span>
+            </span>
+            <input
+              aria-label={`${control.label} ${format}`}
+              type="range"
+              min={control.min}
+              max={control.max}
+              value={value[control.key]}
+              onChange={(event) => onChange({ ...value, [control.key]: Number(event.target.value) })}
+              className={`h-1.5 w-full cursor-pointer rounded-lg bg-zinc-800 ${accentClass}`}
+            />
+          </label>
+        ))}
+      </div>
+    </details>
+  );
+}
+
+function ParticleAdvancedControls({
+  value,
+  onChange,
+  accentClass,
+  format,
+}: {
+  value: ParticleControlOptions;
+  onChange: (value: ParticleControlOptions) => void;
+  accentClass: string;
+  format: "16:9" | "9:16";
+}) {
+  const sliders: Array<{ key: "size" | "opacity" | "wind" | "turbulence" | "blur"; label: string; min: number; max: number; suffix: string }> = [
+    { key: "size", label: "Tamaño", min: 40, max: 180, suffix: "%" },
+    { key: "opacity", label: "Opacidad", min: 0, max: 100, suffix: "%" },
+    { key: "wind", label: "Viento", min: -100, max: 100, suffix: "" },
+    { key: "turbulence", label: "Turbulencia", min: 0, max: 100, suffix: "%" },
+    { key: "blur", label: "Desenfoque", min: 0, max: 6, suffix: "px" },
+  ];
+
+  return (
+    <details className="rounded-lg border border-zinc-800 bg-black/20 p-2">
+      <summary className="cursor-pointer text-[10px] font-semibold text-zinc-400">Control avanzado</summary>
+      <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+        {sliders.map((control) => (
+          <label key={control.key} className="flex flex-col gap-0.5 text-[9px] text-zinc-500">
+            <span className="flex justify-between">
+              <span>{control.label}</span>
+              <span className="font-mono text-zinc-300">{value[control.key]}{control.suffix}</span>
+            </span>
+            <input
+              aria-label={`${control.label} de partículas ${format}`}
+              type="range"
+              min={control.min}
+              max={control.max}
+              value={value[control.key]}
+              onChange={(event) => onChange({ ...value, [control.key]: Number(event.target.value) })}
+              className={`h-1 w-full cursor-pointer ${accentClass}`}
+            />
+          </label>
+        ))}
+        <label className="flex items-center justify-between gap-2 text-[9px] text-zinc-500">
+          <span>Color</span>
+          <span className="flex items-center gap-1">
+            <input
+              aria-label={`Color de partículas ${format}`}
+              type="color"
+              value={value.color || "#ffffff"}
+              onChange={(event) => onChange({ ...value, color: event.target.value })}
+              className="h-6 w-8 cursor-pointer rounded border border-zinc-700 bg-transparent"
+            />
+            <button type="button" onClick={() => onChange({ ...value, color: "" })} className="rounded bg-zinc-800 px-1.5 py-1 text-zinc-400">Auto</button>
+          </span>
+        </label>
+        <label className="flex items-center justify-between gap-2 text-[9px] text-zinc-500">
+          <span>Mezcla</span>
+          <select
+            aria-label={`Mezcla de partículas ${format}`}
+            value={value.blendMode}
+            onChange={(event) => onChange({ ...value, blendMode: event.target.value as ParticleControlOptions["blendMode"] })}
+            className="rounded border border-zinc-700 bg-zinc-950 px-1.5 py-1 text-zinc-300"
+          >
+            <option value="source-over">Normal</option>
+            <option value="screen">Pantalla</option>
+            <option value="lighter">Aditivo</option>
+            <option value="soft-light">Luz suave</option>
+          </select>
+        </label>
+        <label className="flex items-center justify-between gap-2 text-[9px] text-zinc-500">
+          <span>Semilla</span>
+          <span className="flex items-center gap-1">
+            <input
+              aria-label={`Semilla de partículas ${format}`}
+              type="number"
+              min="1"
+              max="999999"
+              value={value.seed}
+              onChange={(event) => onChange({ ...value, seed: Math.max(1, Number(event.target.value) || 1) })}
+              className="w-20 rounded border border-zinc-700 bg-zinc-950 px-1.5 py-1 font-mono text-zinc-300"
+            />
+            <button type="button" onClick={() => onChange({ ...value, seed: (value.seed % 999999) + 1 })} className="rounded bg-zinc-800 px-1.5 py-1 text-zinc-300">Variar</button>
+          </span>
+        </label>
+        <button
+          type="button"
+          onClick={() => onChange({ ...DEFAULT_PARTICLE_CONTROLS })}
+          className="rounded border border-zinc-700 px-2 py-1 text-[9px] font-semibold text-zinc-400 hover:text-white"
+        >
+          Restablecer partículas
+        </button>
+      </div>
+    </details>
+  );
+}
+
 export default function DualStudioPage() {
   // View Layout
   const [viewLayout, setViewLayout] = useState<"16x9" | "9x16">("16x9");
@@ -150,7 +431,7 @@ export default function DualStudioPage() {
   const [video16x9Url, setVideo16x9Url] = useState<string | null>(null);
   const [video16x9Duration, setVideo16x9Duration] = useState<number>(0);
   const [visualLoop16, setVisualLoop16] = useState<VisualLoopSelection | null>(null);
-  const [, setVisualCandidates16] = useState<VisualLoopSelection[]>([]);
+  const [visualCandidates16, setVisualCandidates16] = useState<VisualLoopSelection[]>([]);
   const [analyzingVideo16, setAnalyzingVideo16] = useState(false);
 
   const [video9x16File, setVideo9x16File] = useState<File | null>(null);
@@ -158,7 +439,7 @@ export default function DualStudioPage() {
   const [video9x16Url, setVideo9x16Url] = useState<string | null>(null);
   const [video9x16Duration, setVideo9x16Duration] = useState<number>(0);
   const [visualLoop9, setVisualLoop9] = useState<VisualLoopSelection | null>(null);
-  const [, setVisualCandidates9] = useState<VisualLoopSelection[]>([]);
+  const [visualCandidates9, setVisualCandidates9] = useState<VisualLoopSelection[]>([]);
   const [analyzingVideo9, setAnalyzingVideo9] = useState(false);
 
   // 2.5D Manga Motion Camera States
@@ -174,6 +455,12 @@ export default function DualStudioPage() {
   const [audioFileName, setAudioFileName] = useState<string>("");
   const [songTitle, setSongTitle] = useState<string>("");
   const [audioAnalysis, setAudioAnalysis] = useState<AudioHighlightAnalysis | null>(null);
+  const [audioTracks, setAudioTracks] = useState<AudioPlaylistTrack[]>([]);
+  const [playlistTimeline, setPlaylistTimeline] = useState<PlaylistTimelineItem[]>([]);
+  const [playlistProcessing, setPlaylistProcessing] = useState(false);
+  const [playlistProgressLabel, setPlaylistProgressLabel] = useState("");
+  const playlistBuildRevisionRef = useRef(0);
+  const playlistHasSlowed = audioTracks.some((track) => track.effect !== "original");
 
   // Character & Metadata Generation State
   const [character, setCharacter] = useState<string>("guts");
@@ -184,6 +471,7 @@ export default function DualStudioPage() {
   const [watermarkEnabled, setWatermarkEnabled] = useState<boolean>(false);
   const [watermarkText, setWatermarkText] = useState<string>("SILENT VIGIL");
   const [watermarkOpacity, setWatermarkOpacity] = useState<number>(0.28);
+  const [watermarkStyle, setWatermarkStyle] = useState<WatermarkStyleOptions>(DEFAULT_WATERMARK_STYLE);
 
   // Audio trimming offsets & target durations
   const [target16x9Duration, setTarget16x9Duration] = useState<number>(60);
@@ -235,20 +523,28 @@ export default function DualStudioPage() {
   const [particles16x9, setParticles16x9] = useState<ParticleType>("none");
   const [particleIntensity16x9, setParticleIntensity16x9] = useState<number>(50);
   const [particleSpeed16x9, setParticleSpeed16x9] = useState<number>(1.0);
+  const [particleControls16x9, setParticleControls16x9] = useState<ParticleControlOptions>({ ...DEFAULT_PARTICLE_CONTROLS });
+  const [colorGrade16x9, setColorGrade16x9] = useState<ColorGradeConfig>({ ...DEFAULT_COLOR_GRADE });
   const [seamMode16x9, setSeamMode16x9] = useState<SeamMode>("cut");
   const [calmPlaybackRate16x9] = useState<number>(0.4);
+  const [extendMinRate16x9, setExtendMinRate16x9] = useState<number>(DEFAULT_EXTEND_MIN_PLAYBACK_RATE);
   const [stabilization16x9, setStabilization16x9] = useState<ClipStabilization | null>(null);
   const [stabilizationEnabled16x9, setStabilizationEnabled16x9] = useState(true);
+  const [stabilizationStrength16x9, setStabilizationStrength16x9] = useState(100);
 
   // Style & Effect Settings for 9:16 — inicial limpio, el usuario decide qué añadir
   const [style9x16, setStyle9x16] = useState<AestheticStyle>("original");
   const [particles9x16, setParticles9x16] = useState<ParticleType>("none");
   const [particleIntensity9x16, setParticleIntensity9x16] = useState<number>(50);
   const [particleSpeed9x16, setParticleSpeed9x16] = useState<number>(1.0);
+  const [particleControls9x16, setParticleControls9x16] = useState<ParticleControlOptions>({ ...DEFAULT_PARTICLE_CONTROLS });
+  const [colorGrade9x16, setColorGrade9x16] = useState<ColorGradeConfig>({ ...DEFAULT_COLOR_GRADE });
   const [seamMode9x16, setSeamMode9x16] = useState<SeamMode>("cut");
   const [calmPlaybackRate9x16] = useState<number>(0.4);
+  const [extendMinRate9x16, setExtendMinRate9x16] = useState<number>(DEFAULT_EXTEND_MIN_PLAYBACK_RATE);
   const [stabilization9x16, setStabilization9x16] = useState<ClipStabilization | null>(null);
   const [stabilizationEnabled9x16, setStabilizationEnabled9x16] = useState(true);
+  const [stabilizationStrength9x16, setStabilizationStrength9x16] = useState(100);
 
   // Slowed + Reverb Audio Studio State
   const [enableSlowedReverb, setEnableSlowedReverb] = useState<boolean>(false);
@@ -318,19 +614,27 @@ export default function DualStudioPage() {
   const particles16x9RefState = useRef(particles16x9);
   const particleIntensity16x9Ref = useRef(particleIntensity16x9);
   const particleSpeed16x9Ref = useRef(particleSpeed16x9);
+  const particleControls16x9Ref = useRef(particleControls16x9);
+  const colorGrade16x9Ref = useRef(colorGrade16x9);
   const seamMode16x9Ref = useRef(seamMode16x9);
   const calmPlaybackRate16x9Ref = useRef(calmPlaybackRate16x9);
+  const extendMinRate16x9Ref = useRef(extendMinRate16x9);
   const stabilization16x9Ref = useRef(stabilization16x9);
   const stabilizationEnabled16x9Ref = useRef(stabilizationEnabled16x9);
+  const stabilizationStrength16x9Ref = useRef(stabilizationStrength16x9);
 
   const style9x16Ref = useRef(style9x16);
   const particles9x16RefState = useRef(particles9x16);
   const particleIntensity9x16Ref = useRef(particleIntensity9x16);
   const particleSpeed9x16Ref = useRef(particleSpeed9x16);
+  const particleControls9x16Ref = useRef(particleControls9x16);
+  const colorGrade9x16Ref = useRef(colorGrade9x16);
   const seamMode9x16Ref = useRef(seamMode9x16);
   const calmPlaybackRate9x16Ref = useRef(calmPlaybackRate9x16);
+  const extendMinRate9x16Ref = useRef(extendMinRate9x16);
   const stabilization9x16Ref = useRef(stabilization9x16);
   const stabilizationEnabled9x16Ref = useRef(stabilizationEnabled9x16);
+  const stabilizationStrength9x16Ref = useRef(stabilizationStrength9x16);
 
   const isPlaying16x9Ref = useRef(isPlaying16x9);
   const isPlaying9x16Ref = useRef(isPlaying9x16);
@@ -338,6 +642,7 @@ export default function DualStudioPage() {
   const watermarkEnabledRef = useRef(watermarkEnabled);
   const watermarkTextRef = useRef(watermarkText);
   const watermarkOpacityRef = useRef(watermarkOpacity);
+  const watermarkStyleRef = useRef(watermarkStyle);
 
   const camera16x9Ref = useRef(camera16x9);
   const cameraIntensity16x9Ref = useRef(cameraIntensity16x9);
@@ -394,10 +699,14 @@ export default function DualStudioPage() {
   useEffect(() => { particles16x9RefState.current = particles16x9; }, [particles16x9]);
   useEffect(() => { particleIntensity16x9Ref.current = particleIntensity16x9; }, [particleIntensity16x9]);
   useEffect(() => { particleSpeed16x9Ref.current = particleSpeed16x9; }, [particleSpeed16x9]);
+  useEffect(() => { particleControls16x9Ref.current = particleControls16x9; }, [particleControls16x9]);
+  useEffect(() => { colorGrade16x9Ref.current = colorGrade16x9; }, [colorGrade16x9]);
   useEffect(() => { seamMode16x9Ref.current = seamMode16x9; }, [seamMode16x9]);
   useEffect(() => { calmPlaybackRate16x9Ref.current = calmPlaybackRate16x9; }, [calmPlaybackRate16x9]);
+  useEffect(() => { extendMinRate16x9Ref.current = extendMinRate16x9; }, [extendMinRate16x9]);
   useEffect(() => { stabilization16x9Ref.current = stabilization16x9; }, [stabilization16x9]);
   useEffect(() => { stabilizationEnabled16x9Ref.current = stabilizationEnabled16x9; }, [stabilizationEnabled16x9]);
+  useEffect(() => { stabilizationStrength16x9Ref.current = stabilizationStrength16x9; }, [stabilizationStrength16x9]);
   useEffect(() => { camera16x9Ref.current = camera16x9; }, [camera16x9]);
   useEffect(() => { cameraIntensity16x9Ref.current = cameraIntensity16x9; }, [cameraIntensity16x9]);
 
@@ -405,10 +714,14 @@ export default function DualStudioPage() {
   useEffect(() => { particles9x16RefState.current = particles9x16; }, [particles9x16]);
   useEffect(() => { particleIntensity9x16Ref.current = particleIntensity9x16; }, [particleIntensity9x16]);
   useEffect(() => { particleSpeed9x16Ref.current = particleSpeed9x16; }, [particleSpeed9x16]);
+  useEffect(() => { particleControls9x16Ref.current = particleControls9x16; }, [particleControls9x16]);
+  useEffect(() => { colorGrade9x16Ref.current = colorGrade9x16; }, [colorGrade9x16]);
   useEffect(() => { seamMode9x16Ref.current = seamMode9x16; }, [seamMode9x16]);
   useEffect(() => { calmPlaybackRate9x16Ref.current = calmPlaybackRate9x16; }, [calmPlaybackRate9x16]);
+  useEffect(() => { extendMinRate9x16Ref.current = extendMinRate9x16; }, [extendMinRate9x16]);
   useEffect(() => { stabilization9x16Ref.current = stabilization9x16; }, [stabilization9x16]);
   useEffect(() => { stabilizationEnabled9x16Ref.current = stabilizationEnabled9x16; }, [stabilizationEnabled9x16]);
+  useEffect(() => { stabilizationStrength9x16Ref.current = stabilizationStrength9x16; }, [stabilizationStrength9x16]);
   useEffect(() => { camera9x16Ref.current = camera9x16; }, [camera9x16]);
   useEffect(() => { cameraIntensity9x16Ref.current = cameraIntensity9x16; }, [cameraIntensity9x16]);
   useEffect(() => { target16x9DurationRef.current = target16x9Duration; }, [target16x9Duration]);
@@ -478,6 +791,7 @@ export default function DualStudioPage() {
   useEffect(() => { watermarkEnabledRef.current = watermarkEnabled; }, [watermarkEnabled]);
   useEffect(() => { watermarkTextRef.current = watermarkText; }, [watermarkText]);
   useEffect(() => { watermarkOpacityRef.current = watermarkOpacity; }, [watermarkOpacity]);
+  useEffect(() => { watermarkStyleRef.current = watermarkStyle; }, [watermarkStyle]);
 
   useEffect(() => {
     return () => {
@@ -546,18 +860,37 @@ export default function DualStudioPage() {
           clipCache16Ref.current = cache;
           setDraftReady16(true);
           draftKick16Ref.current += 1;
-          void analyzeClipFrameStabilization(cache).then((analysis) => {
-            if (clipCache16Ref.current === cache) setStabilization16x9(analysis);
-          }).catch((err) => console.warn("No se pudo medir la microvibración 16:9:", err));
         } else {
           disposeClipFrameCache(clipCache9Ref.current);
           clipCache9Ref.current = cache;
           setDraftReady9(true);
           draftKick9Ref.current += 1;
-          void analyzeClipFrameStabilization(cache).then((analysis) => {
-            if (clipCache9Ref.current === cache) setStabilization9x16(analysis);
-          }).catch((err) => console.warn("No se pudo medir la microvibración 9:16:", err));
         }
+
+        // Doble ruta local: el companion aporta rotación/escala/RANSAC cuando
+        // está disponible; LK en navegador conserva el funcionamiento autónomo.
+        void Promise.allSettled([
+          analyzeClipFrameStabilization(cache),
+          analyzeVideoStabilization(file),
+        ]).then(([localResult, companionResult]) => {
+          const cacheIsCurrent = is16
+            ? clipCache16Ref.current === cache
+            : clipCache9Ref.current === cache;
+          if (!cacheIsCurrent) return;
+
+          const local = localResult.status === "fulfilled" ? localResult.value : null;
+          const advanced = companionResult.status === "fulfilled" ? companionResult.value : null;
+          const advancedUsable = advanced
+            && advanced.keyframes.length >= 5
+            && (advanced.autoEnabled || advanced.confidence >= 0.58);
+          const analysis = advancedUsable ? advanced : local ?? advanced;
+          if (!analysis) {
+            console.warn(`No se pudo medir la microvibración ${which}`);
+            return;
+          }
+          if (is16) setStabilization16x9(analysis);
+          else setStabilization9x16(analysis);
+        });
       })
       .catch((err: unknown) => {
         console.error("No se pudo preparar el borrador del clip:", err);
@@ -578,9 +911,24 @@ export default function DualStudioPage() {
     setCandidates([]);
     void recommendVisualLoopForClip(file, duration)
       .then(({ selection, candidates }) => {
-        setSelection(selection);
-        setCandidates(candidates);
-        setHint(`${selection.label} · ${selection.duration.toFixed(1)}s · ${Math.round(selection.score)}%. ${selection.reason}`);
+        const keepsWholeShort = !is16
+          && selection.start <= 0.02
+          && Math.abs(selection.end - duration) <= 0.08;
+        if (is16 || keepsWholeShort) setSelection(selection);
+        const visibleCandidates = is16
+          ? candidates
+          : [selection, ...candidates].filter(
+              (candidate, index, list) => list.findIndex(
+                (other) => Math.abs(other.start - candidate.start) < 0.02
+                  && Math.abs(other.end - candidate.end) < 0.02
+              ) === index
+            );
+        setCandidates(visibleCandidates);
+        setHint(
+          is16 || keepsWholeShort
+            ? `${selection.label} · ${selection.duration.toFixed(1)}s · ${Math.round(selection.score)}%. ${selection.reason}`
+            : `Clip completo conservado · hay ${visibleCandidates.length} uniones analizadas para probar manualmente.`
+        );
         const selectedNaturalLoop = candidates.some(
           (candidate) =>
             Math.abs(candidate.start - selection.start) < 0.02
@@ -659,12 +1007,30 @@ export default function DualStudioPage() {
       && selection.start <= 0.02
       && Math.abs(selection.end - sourceDuration) <= 0.05
       && selection.label !== "Recorte manual";
-    if (is16 && file && isFullClip && file.type.startsWith("video/")) {
+    if (file && isFullClip && file.type.startsWith("video/")) {
       analyzeVisualLoop(file, which, sourceDuration);
     } else {
       const message = "Loop natural aplicado al recorte exacto, sin modificar sus puntos de inicio y fin.";
       if (is16) setSeamHint16(message);
       else setSeamHint9(message);
+    }
+  };
+
+  const applyVisualCandidate = (which: "16x9" | "9x16", candidate: VisualLoopSelection) => {
+    if (which === "16x9") {
+      setVisualLoop16(candidate);
+      setSeamMode16x9("smooth");
+      setSeamHint16(`${candidate.label} · ${candidate.duration.toFixed(1)}s. ${candidate.reason}`);
+      setIsPlaying16x9(false);
+      elapsed16Ref.current = 0;
+      draftKick16Ref.current += 1;
+    } else {
+      setVisualLoop9(candidate);
+      setSeamMode9x16("smooth");
+      setSeamHint9(`${candidate.label} · ${candidate.duration.toFixed(1)}s. ${candidate.reason}`);
+      setIsPlaying9x16(false);
+      elapsed9Ref.current = 0;
+      draftKick9Ref.current += 1;
     }
   };
 
@@ -699,7 +1065,7 @@ export default function DualStudioPage() {
     );
   };
 
-  const handleVideo16x9 = (file: File) => {
+  const handleVideo16x9 = (file: File, allowCompanionTranscode = true) => {
     setError(null);
     seamLocked16Ref.current = false;
     setVisualLoop16(null);
@@ -714,9 +1080,13 @@ export default function DualStudioPage() {
     // Resetear efectos a limpio: el usuario decide qué añadir
     setStyle16x9("original");
     setParticles16x9("none");
+    setParticleControls16x9({ ...DEFAULT_PARTICLE_CONTROLS });
+    setColorGrade16x9({ ...DEFAULT_COLOR_GRADE });
     setSeamMode16x9("cut");
+    setExtendMinRate16x9(DEFAULT_EXTEND_MIN_PLAYBACK_RATE);
     setCamera16x9("static");
     setStabilizationEnabled16x9(true);
+    setStabilizationStrength16x9(100);
     setWatermarkEnabled(false);
     setIsPlaying16x9(false);
     draftKick16Ref.current += 1;
@@ -740,7 +1110,20 @@ export default function DualStudioPage() {
       vid.loop = false;
       vid.playsInline = true;
       vid.autoplay = false;
-      vid.onerror = () => showUnsupportedVideoError(file);
+      vid.onerror = () => {
+        vid.onerror = null;
+        if (!allowCompanionTranscode) {
+          showUnsupportedVideoError(file);
+          return;
+        }
+        setError("El navegador no puede abrir este formato. Convirtiendo localmente con el companion…");
+        void transcodeVideoForBrowser(file)
+          .then((converted) => handleVideo16x9(converted, false))
+          .catch((transcodeError) => {
+            console.warn("Conversión local 16:9 no disponible:", transcodeError);
+            showUnsupportedVideoError(file);
+          });
+      };
       vid.onloadedmetadata = () => {
         setVideo16x9El(vid);
         const duration = Math.max(0.25, vid.duration || 5);
@@ -762,7 +1145,7 @@ export default function DualStudioPage() {
   };
 
   // Handle 9:16 Media Upload (Video or Image)
-  const handleVideo9x16 = (file: File) => {
+  const handleVideo9x16 = (file: File, allowCompanionTranscode = true) => {
     setError(null);
     seamLocked9Ref.current = false;
     setVisualLoop9(null);
@@ -777,9 +1160,13 @@ export default function DualStudioPage() {
     // Resetear efectos a limpio: el usuario decide qué añadir
     setStyle9x16("original");
     setParticles9x16("none");
+    setParticleControls9x16({ ...DEFAULT_PARTICLE_CONTROLS });
+    setColorGrade9x16({ ...DEFAULT_COLOR_GRADE });
     setSeamMode9x16("cut");
+    setExtendMinRate9x16(DEFAULT_EXTEND_MIN_PLAYBACK_RATE);
     setCamera9x16("static");
     setStabilizationEnabled9x16(true);
+    setStabilizationStrength9x16(100);
     setWatermarkEnabled(false);
     setIsPlaying9x16(false);
     draftKick9Ref.current += 1;
@@ -803,7 +1190,20 @@ export default function DualStudioPage() {
       vid.loop = false;
       vid.playsInline = true;
       vid.autoplay = false;
-      vid.onerror = () => showUnsupportedVideoError(file);
+      vid.onerror = () => {
+        vid.onerror = null;
+        if (!allowCompanionTranscode) {
+          showUnsupportedVideoError(file);
+          return;
+        }
+        setError("El navegador no puede abrir este formato. Convirtiendo localmente con el companion…");
+        void transcodeVideoForBrowser(file)
+          .then((converted) => handleVideo9x16(converted, false))
+          .catch((transcodeError) => {
+            console.warn("Conversión local 9:16 no disponible:", transcodeError);
+            showUnsupportedVideoError(file);
+          });
+      };
       vid.onloadedmetadata = () => {
         const duration = Math.max(0.25, vid.duration || 5);
         setVideo9x16El(vid);
@@ -831,135 +1231,137 @@ export default function DualStudioPage() {
     }
   };
 
-  // Handle Master Audio Upload
-  const handleAudioUpload = async (file: File) => {
+  // Las canciones se decodifican de una en una y el master se reconstruye en un
+  // effect separado. Así el botón vuelve a responder entre archivos grandes.
+  const handleAudioFiles = async (files: File[]) => {
+    if (!files.length) return;
     setError(null);
-    setAudioFile(file);
-    setAudioFileName(file.name);
-    setSongTitle(cleanSongName(file.name));
-    // Don't blast the song on upload: previews stay paused until the user presses Play
+    setAudioError(null);
     setIsPlaying16x9(false);
     setIsPlaying9x16(false);
-    // Limpiar ciclos procesados de la canción anterior (evento, no effect)
     setProcessedLoop16(null);
     setProcessedLoop9(null);
-    setProcessingLoop16(false);
-    setProcessingLoop9(false);
+    setPlaylistProcessing(true);
+    setPlaylistProgressLabel(`Decodificando 1/${files.length}…`);
+
+    // Nacen dentro del gesto del selector para cumplir la política de autoplay.
     try {
-      const arr = await file.arrayBuffer();
-      const buf = await decodeAudioDataAsync(arr);
-      setAudioBuffer(buf);
+      if (!audioPlayer16x9Ref.current) audioPlayer16x9Ref.current = new LoopBufferPlayer();
+      if (!audioPlayer9x16Ref.current) audioPlayer9x16Ref.current = new LoopBufferPlayer();
+    } catch (playerErr) {
+      console.error("No se pudo preparar el reproductor de música:", playerErr);
+      setAudioError("No se pudo preparar el reproductor de música.");
+    }
 
-      // Crear los reproductores DENTRO del gesto del usuario: el AudioContext nace
-      // con gesto y luego puede resumirse sin quedar mudo (quirk de autoplay).
-      try {
-        if (!audioPlayer16x9Ref.current) audioPlayer16x9Ref.current = new LoopBufferPlayer();
-        if (!audioPlayer9x16Ref.current) audioPlayer9x16Ref.current = new LoopBufferPlayer();
-        setAudioError(null);
-      } catch (playerErr) {
-        console.error("No se pudo preparar el reproductor de música:", playerErr);
-        setAudioError("No se pudo preparar el reproductor de música.");
+    const decoded: AudioPlaylistTrack[] = [];
+    try {
+      for (let index = 0; index < files.length; index++) {
+        const file = files[index]!;
+        setPlaylistProgressLabel(`Decodificando ${index + 1}/${files.length}: ${file.name}`);
+        const buffer = await decodeAudioDataAsync(await file.arrayBuffer());
+        decoded.push({
+          id: typeof crypto !== "undefined" && "randomUUID" in crypto
+            ? crypto.randomUUID()
+            : `${Date.now()}-${index}-${Math.random().toString(36).slice(2)}`,
+          file,
+          name: file.name,
+          buffer,
+          effect: "original",
+        });
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
       }
-
-      const analysis = analyzeAudioHighlights(buf);
-      setAudioAnalysis(analysis);
-
-      const full: LoopCandidate = {
-        start: 0,
-        end: buf.duration,
-        duration: buf.duration,
-        score: 0,
-        label: "Canción completa",
-      };
-      const sourceWindow = sourceWindowForOutput(
-        target9x16Duration,
-        enableSlowedReverb,
-        reverbSettings
-      );
-      const fromDropStart = Math.max(0, analysis.dropTime - Math.min(4, sourceWindow * 0.2));
-      const fromDropWindow = clampOneShotWindow(fromDropStart, sourceWindow, buf.duration);
-      const fromDrop: LoopCandidate = analysis.dropTime > 0
-        ? {
-            ...fromDropWindow,
-            score: 0,
-            label: "Drop con entrada",
-          }
-        : { ...full, ...clampOneShotWindow(0, sourceWindow, buf.duration) };
-      setAudioLoop16(full);
-      setAudioLoop9(fromDrop);
-      // Análisis primero: no se muestran recortes recomendados hasta que termine
-      setAudioCandidates([]);
-      setCandidatesSource(null);
-
-      setAnalyzingAudio(true);
-      void analyzeMusic(file, {
-        minDuration: 8,
-        // Proporcional a la canción: en videos 16:9 largos conviene poder elegir
-        // loops de hasta ~2,5 min (menos costuras); pymusiclooper los soporta.
-        maxDuration: Math.min(150, buf.duration / 2),
-        candidates: 10,
-      })
-        .then((cands) => {
-          setAudioCandidates(cands);
-          setCandidatesSource("companion");
-          if (!cands.length) return;
-          const best9 = pickBestAudioLoop(cands, {
-            songDuration: buf.duration,
-            targetSec: target9x16Duration,
-            preferTime: analysis.dropTime,
-          });
-          // 16:9 siempre conserva la canción completa. El análisis solo sugiere el
-          // punto de inicio del Short; su ventana mantiene exactamente 25/30 s.
-          setAudioLoop9({
-            ...best9,
-            ...clampOneShotWindow(best9.start, sourceWindow, buf.duration),
-          });
-        })
-        .catch(async () => {
-          // Sin companion: análisis local en el navegador (alineado a ritmo + similitud
-          // de costura). Si también falla, recortes aproximados por energía.
-          try {
-            const local = analyzeLocalLoops(buf, {
-              minDuration: 8,
-              maxDuration: Math.min(150, buf.duration / 2),
-              candidates: 4,
-            });
-            const merged: LoopCandidate[] = [...local, fromDrop];
-            setAudioCandidates(merged);
-            setCandidatesSource(local.length ? "local" : "heuristic");
-            if (local.length) {
-              const best9 = pickBestAudioLoop(local, {
-                songDuration: buf.duration,
-                targetSec: target9x16Duration,
-                preferTime: analysis.dropTime,
-              });
-              setAudioLoop9({
-                ...best9,
-                ...clampOneShotWindow(best9.start, sourceWindow, buf.duration),
-              });
-            }
-          } catch (localErr) {
-            console.warn("Análisis local de loop falló:", localErr);
-            const heur: LoopCandidate[] = [fromDrop];
-            if (analysis.buildupTime > 0) {
-              heur.push({
-                start: analysis.buildupTime,
-                end: Math.min(buf.duration, analysis.buildupTime + 45),
-                duration: Math.min(45, buf.duration - analysis.buildupTime),
-                score: 0,
-                label: "Desde la subida",
-              });
-            }
-            setAudioCandidates(heur);
-            setCandidatesSource("heuristic");
-          }
-        })
-        .finally(() => setAnalyzingAudio(false));
+      setAudioTracks((current) => [...current, ...decoded]);
     } catch (err) {
-      setError("No se pudo decodificar el archivo de audio.");
       console.error(err);
+      setPlaylistProcessing(false);
+      setError("No se pudo decodificar una de las canciones seleccionadas.");
     }
   };
+
+  const updatePlaylistEffect = (id: string, effect: PlaylistTrackEffect) => {
+    setAudioTracks((current) => current.map((track) => track.id === id ? { ...track, effect } : track));
+  };
+
+  const movePlaylistTrack = (id: string, direction: -1 | 1) => {
+    setAudioTracks((current) => {
+      const index = current.findIndex((track) => track.id === id);
+      const target = index + direction;
+      if (index < 0 || target < 0 || target >= current.length) return current;
+      const next = [...current];
+      [next[index], next[target]] = [next[target]!, next[index]!];
+      return next;
+    });
+  };
+
+  const removePlaylistTrack = (id: string) => {
+    setAudioTracks((current) => current.filter((track) => track.id !== id));
+  };
+
+  useEffect(() => {
+    const revision = ++playlistBuildRevisionRef.current;
+    if (!audioTracks.length) {
+      const clearTimer = window.setTimeout(() => {
+        setAudioFile(null);
+        setAudioBuffer(null);
+        setAudioFileName("");
+        setSongTitle("");
+        setPlaylistTimeline([]);
+        setPlaylistProcessing(false);
+        setPlaylistProgressLabel("");
+      }, 0);
+      return () => window.clearTimeout(clearTimer);
+    }
+    const timer = window.setTimeout(() => {
+      setPlaylistProcessing(true);
+      setPlaylistProgressLabel("Procesando efectos por canción…");
+      void buildAudioPlaylistMaster(audioTracks, {
+        transitionSeconds: 0.75,
+        onProgress: (completed, total) => {
+          if (revision === playlistBuildRevisionRef.current) {
+            setPlaylistProgressLabel(`Procesando efectos ${completed}/${total}…`);
+          }
+        },
+      }).then(({ buffer, timeline }) => {
+        if (revision !== playlistBuildRevisionRef.current) return;
+        const analysis = analyzeAudioHighlights(buffer);
+        const full: LoopCandidate = {
+          start: 0,
+          end: buffer.duration,
+          duration: buffer.duration,
+          score: 0,
+          label: audioTracks.length > 1 ? "Playlist completa" : "Canción completa",
+        };
+        const sourceWindow = sourceWindowForOutput(30, false, DEFAULT_SETTINGS);
+        const fromDropStart = Math.max(0, analysis.dropTime - Math.min(4, sourceWindow * 0.2));
+        const fromDrop: LoopCandidate = {
+          ...clampOneShotWindow(fromDropStart, sourceWindow, buffer.duration),
+          score: 0,
+          label: analysis.dropTime > 0 ? "Drop con entrada" : "Desde el inicio",
+        };
+        setAudioFile(audioTracks[0]!.file);
+        setAudioBuffer(buffer);
+        setAudioFileName(audioTracks.length === 1 ? audioTracks[0]!.name : `${audioTracks.length} canciones`);
+        setSongTitle(audioTracks.map((track) => cleanSongName(track.name)).join(" + "));
+        setAudioAnalysis(analysis);
+        setAudioLoop16(full);
+        setAudioLoop9(fromDrop);
+        setAudioCandidates([fromDrop]);
+        setCandidatesSource("heuristic");
+        setPlaylistTimeline(timeline);
+        setEnableSlowedReverb(false);
+      }).catch((err) => {
+        if (revision !== playlistBuildRevisionRef.current) return;
+        console.error("Error preparando la playlist:", err);
+        setAudioError("No se pudo preparar la playlist. Prueba con menos canciones o un preset más suave.");
+      }).finally(() => {
+        if (revision === playlistBuildRevisionRef.current) {
+          setPlaylistProcessing(false);
+          setPlaylistProgressLabel("");
+        }
+      });
+    }, 120);
+    return () => window.clearTimeout(timer);
+  }, [audioTracks]);
 
   // ── Masters procesados (preview = export) ────────────────────────────────────
   // 16:9 procesa el tema entero una sola vez. 9:16 procesa una ventana de salida
@@ -969,11 +1371,14 @@ export default function DualStudioPage() {
     let cancelled = false;
     const timer = window.setTimeout(() => {
       setProcessingLoop16(true);
-      buildProcessedOneShotBuffer({
-        sourceBuffer: audioBuffer,
-        enableSlowedReverb,
-        reverbSettings,
-      })
+      const masterPromise = audioTracks.length > 0
+        ? Promise.resolve(audioBuffer)
+        : buildProcessedOneShotBuffer({
+            sourceBuffer: audioBuffer,
+            enableSlowedReverb,
+            reverbSettings,
+          });
+      masterPromise
         .then((buffer) => {
           const master = longFormAudioMode === "repeat"
             ? repeatOneShotMasterWithCrossfade(buffer, longFormRepeatCount)
@@ -995,7 +1400,7 @@ export default function DualStudioPage() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [audioBuffer, enableSlowedReverb, reverbSettings, longFormAudioMode, longFormRepeatCount]);
+  }, [audioBuffer, audioTracks.length, enableSlowedReverb, reverbSettings, longFormAudioMode, longFormRepeatCount]);
 
   useEffect(() => {
     if (!audioBuffer) return;
@@ -1044,10 +1449,15 @@ export default function DualStudioPage() {
     const audible = viewLayout === "16x9";
     const effVolume = muted16x9 ? 0 : previewVolume16x9;
 
+    let cancelled = false;
     if (isPlaying16x9 && effVolume > 0 && audible && processedLoop16) {
       player.setVolume(effVolume);
       if (player.decodedBuffer !== processedLoop16) {
-        void player.setBuffer(processedLoop16);
+        void player.setBuffer(processedLoop16).then(() => {
+          if (cancelled || player.decodedBuffer !== processedLoop16 || player.isPlaying) return;
+          const dur = Math.max(0.1, processedLoop16.duration);
+          return player.play(elapsed16Ref.current % dur);
+        });
       } else if (!player.isPlaying) {
         const dur = Math.max(0.1, processedLoop16.duration);
         void player.play(elapsed16Ref.current % dur);
@@ -1055,6 +1465,7 @@ export default function DualStudioPage() {
     } else {
       player.pause();
     }
+    return () => { cancelled = true; };
   }, [isPlaying16x9, audioFile, audioBuffer, processedLoop16, previewVolume16x9, muted16x9, viewLayout, activePreviewFormat, isExporting]);
 
   // Transporte 9:16 (simétrico al 16:9)
@@ -1071,10 +1482,15 @@ export default function DualStudioPage() {
     const audible = viewLayout === "9x16";
     const effVolume = muted9x16 ? 0 : previewVolume9x16;
 
+    let cancelled = false;
     if (isPlaying9x16 && effVolume > 0 && audible && processedLoop9) {
       player.setVolume(effVolume);
       if (player.decodedBuffer !== processedLoop9) {
-        void player.setBuffer(processedLoop9);
+        void player.setBuffer(processedLoop9).then(() => {
+          if (cancelled || player.decodedBuffer !== processedLoop9 || player.isPlaying) return;
+          const dur = Math.max(0.1, processedLoop9.duration);
+          return player.play(elapsed9Ref.current % dur);
+        });
       } else if (!player.isPlaying) {
         const dur = Math.max(0.1, processedLoop9.duration);
         void player.play(elapsed9Ref.current % dur);
@@ -1082,6 +1498,7 @@ export default function DualStudioPage() {
     } else {
       player.pause();
     }
+    return () => { cancelled = true; };
   }, [isPlaying9x16, audioFile, audioBuffer, processedLoop9, previewVolume9x16, muted9x16, viewLayout, activePreviewFormat, isExporting]);
 
   const handleUpdateReverbPreset = (key: string) => {
@@ -1114,7 +1531,8 @@ export default function DualStudioPage() {
             seamMode16x9Ref.current,
             selection?.start ?? 0,
             calmPlaybackRate16x9Ref.current,
-            target16x9DurationRef.current
+            target16x9DurationRef.current,
+            extendMinRate16x9Ref.current
           )
         : exportT;
       media.currentTime = vidT;
@@ -1144,7 +1562,8 @@ export default function DualStudioPage() {
             seamMode9x16Ref.current,
             selection?.start ?? 0,
             calmPlaybackRate9x16Ref.current,
-            target9x16DurationRef.current
+            target9x16DurationRef.current,
+            extendMinRate9x16Ref.current
           )
         : exportT;
       media.currentTime = vidT;
@@ -1182,6 +1601,32 @@ export default function DualStudioPage() {
     if (!audioFile || !audioBuffer) return;
     setAnalyzingAudio(true);
     setCandidatesSource(null);
+    if (audioTracks.length > 1) {
+      window.setTimeout(() => {
+        try {
+          const local = analyzeLocalLoops(audioBuffer, {
+            minDuration: 8,
+            maxDuration: Math.min(150, audioBuffer.duration / 2),
+            candidates: 6,
+          });
+          setAudioCandidates(local);
+          setCandidatesSource("local");
+          if (local.length) {
+            selectShortAudioCandidate(pickBestAudioLoop(local, {
+              songDuration: audioBuffer.duration,
+              targetSec: target9x16Duration,
+              preferTime: audioAnalysis?.dropTime,
+            }));
+          }
+        } catch (error) {
+          console.warn("No se pudo analizar la playlist localmente:", error);
+          setCandidatesSource("heuristic");
+        } finally {
+          setAnalyzingAudio(false);
+        }
+      }, 0);
+      return;
+    }
     void analyzeMusic(audioFile, {
       minDuration: 8,
       maxDuration: Math.min(150, audioBuffer.duration / 2),
@@ -1322,26 +1767,37 @@ export default function DualStudioPage() {
       0.5,
       visual?.duration ?? ((is16 ? video16x9Duration : video9x16Duration) || 10)
     );
+    const thumbnailSeamMode = is16 ? seamMode16x9 : seamMode9x16;
+    const thumbnailParticles = is16 ? particles16x9 : particles9x16;
+    const thumbnailTargetDuration = is16 ? target16x9Duration : target9x16Duration;
+    const thumbnailCycle = computeVisualCycleDuration(
+      {
+        seamMode: thumbnailSeamMode,
+        enableSeamlessLoop: true,
+        duration: sourceDuration,
+        calmPlaybackRate: is16 ? calmPlaybackRate16x9 : calmPlaybackRate9x16,
+      },
+      sourceDuration,
+      media instanceof HTMLVideoElement
+    );
     const config: MangaMotionConfig = {
       ...DEFAULT_MANGA_CONFIG,
       aspectRatio: is16 ? "16:9" : "9:16",
-      duration: computeVisualCycleDuration(
-        {
-          seamMode: is16 ? seamMode16x9 : seamMode9x16,
-          enableSeamlessLoop: true,
-          duration: sourceDuration,
-          calmPlaybackRate: is16 ? calmPlaybackRate16x9 : calmPlaybackRate9x16,
-        },
-        sourceDuration,
-        media instanceof HTMLVideoElement
-      ),
+      duration: thumbnailCycle,
       cameraMove: is16 ? camera16x9 : camera9x16,
       cameraIntensity: is16 ? cameraIntensity16x9 : cameraIntensity9x16,
       aestheticStyle: is16 ? style16x9 : style9x16,
-      particles: is16 ? particles16x9 : particles9x16,
+      colorGrade: is16 ? colorGrade16x9 : colorGrade9x16,
+      particles: thumbnailParticles,
       particleIntensity: is16 ? particleIntensity16x9 : particleIntensity9x16,
       particleSpeed: is16 ? particleSpeed16x9 : particleSpeed9x16,
-      seamMode: is16 ? seamMode16x9 : seamMode9x16,
+      particleControls: particleControlsForPreview(
+        is16 ? particleControls16x9 : particleControls9x16,
+        thumbnailCycle,
+        thumbnailTargetDuration,
+        thumbnailParticles
+      ),
+      seamMode: thumbnailSeamMode,
       calmPlaybackRate: is16 ? calmPlaybackRate16x9 : calmPlaybackRate9x16,
       // La portada siempre lleva la firma mínima de canal en esquina. No replica
       // la marca de agua central opcional del vídeo.
@@ -1452,14 +1908,17 @@ export default function DualStudioPage() {
 
           const seam16 = seamMode16x9Ref.current;
           const calmRate16 = calmPlaybackRate16x9Ref.current;
-          // Extender: velocidad derivada (clip/target), la misma que usa el export.
-          const rate16 = seam16 === "extend" ? resolveExtendPlaybackRate(vidDur16, targetDur16) : calmRate16;
+          const extendMin16 = extendMinRate16x9Ref.current;
+          const rate16 = seam16 === "extend"
+            ? resolveExtendPlaybackRate(vidDur16, targetDur16, extendMin16)
+            : calmRate16;
           const cycle16 = computeVisualCycleDuration(
             {
               seamMode: seam16,
               enableSeamlessLoop: true,
               duration: targetDur16,
               calmPlaybackRate: calmRate16,
+              extendMinPlaybackRate: extendMin16,
             },
             vidDur16,
             media16 instanceof HTMLVideoElement
@@ -1471,15 +1930,24 @@ export default function DualStudioPage() {
             cameraMove: camera16x9Ref.current,
             cameraIntensity: cameraIntensity16x9Ref.current,
             aestheticStyle: style16x9Ref.current,
+            colorGrade: colorGrade16x9Ref.current,
             particles: particles16x9RefState.current,
             particleIntensity: particleIntensity16x9Ref.current,
             particleSpeed: particleSpeed16x9Ref.current,
+            particleControls: particleControlsForPreview(
+              particleControls16x9Ref.current,
+              cycle16,
+              targetDur16,
+              particles16x9RefState.current
+            ),
             seamMode: seam16,
             calmPlaybackRate: calmRate16,
+            extendMinPlaybackRate: extendMin16,
             loopCrossfadeDuration: visual16?.fadeSec ?? DEFAULT_MANGA_CONFIG.loopCrossfadeDuration,
             watermarkEnabled: watermarkEnabledRef.current,
             watermarkText: watermarkTextRef.current,
             watermarkOpacity: watermarkOpacityRef.current,
+            watermarkStyle: watermarkStyleRef.current,
           };
 
           const cache16 = clipCache16Ref.current;
@@ -1489,7 +1957,8 @@ export default function DualStudioPage() {
             seam16,
             sourceStart16,
             calmRate16,
-            targetDur16
+            targetDur16,
+            extendMin16
           );
           const frame16 = cache16 ? clipFrameAt(cache16, srcT16) : null;
           const previewSource16 = frame16
@@ -1507,7 +1976,8 @@ export default function DualStudioPage() {
                 sourceTransform: sourceTransformAt(
                   stabilization16x9Ref.current,
                   srcT16,
-                  stabilizationEnabled16x9Ref.current
+                  stabilizationEnabled16x9Ref.current,
+                  stabilizationStrength16x9Ref.current / 100
                 ),
               },
               W,
@@ -1542,7 +2012,8 @@ export default function DualStudioPage() {
                     sourceTransform: sourceTransformAt(
                       stabilization16x9Ref.current,
                       pingState.endpointTime,
-                      stabilizationEnabled16x9Ref.current
+                      stabilizationEnabled16x9Ref.current,
+                      stabilizationStrength16x9Ref.current / 100
                     ),
                   },
                   W,
@@ -1633,7 +2104,9 @@ export default function DualStudioPage() {
                   ? "fundido"
                   : seam16 === "calm"
                     ? `continuo ${calmRate16.toFixed(2)}x`
-                    : "corte"
+                    : seam16 === "extend"
+                      ? `extender ${rate16.toFixed(2)}x`
+                      : "corte"
             }${cache16 ? "" : " · cargando clip…"}`,
             28,
             50
@@ -1680,14 +2153,17 @@ export default function DualStudioPage() {
 
           const seam9 = seamMode9x16Ref.current;
           const calmRate9 = calmPlaybackRate9x16Ref.current;
-          // Extender: velocidad derivada (clip/target), la misma que usa el export.
-          const rate9 = seam9 === "extend" ? resolveExtendPlaybackRate(vidDur9, targetDur9) : calmRate9;
+          const extendMin9 = extendMinRate9x16Ref.current;
+          const rate9 = seam9 === "extend"
+            ? resolveExtendPlaybackRate(vidDur9, targetDur9, extendMin9)
+            : calmRate9;
           const cycle9 = computeVisualCycleDuration(
             {
               seamMode: seam9,
               enableSeamlessLoop: true,
               duration: targetDur9,
               calmPlaybackRate: calmRate9,
+              extendMinPlaybackRate: extendMin9,
             },
             vidDur9,
             media9 instanceof HTMLVideoElement
@@ -1699,15 +2175,24 @@ export default function DualStudioPage() {
             cameraMove: camera9x16Ref.current,
             cameraIntensity: cameraIntensity9x16Ref.current,
             aestheticStyle: style9x16Ref.current,
+            colorGrade: colorGrade9x16Ref.current,
             particles: particles9x16RefState.current,
             particleIntensity: particleIntensity9x16Ref.current,
             particleSpeed: particleSpeed9x16Ref.current,
+            particleControls: particleControlsForPreview(
+              particleControls9x16Ref.current,
+              cycle9,
+              targetDur9,
+              particles9x16RefState.current
+            ),
             seamMode: seam9,
             calmPlaybackRate: calmRate9,
+            extendMinPlaybackRate: extendMin9,
             loopCrossfadeDuration: visual9?.fadeSec ?? DEFAULT_MANGA_CONFIG.loopCrossfadeDuration,
             watermarkEnabled: watermarkEnabledRef.current,
             watermarkText: watermarkTextRef.current,
             watermarkOpacity: watermarkOpacityRef.current,
+            watermarkStyle: watermarkStyleRef.current,
           };
 
           const cache9 = clipCache9Ref.current;
@@ -1717,7 +2202,8 @@ export default function DualStudioPage() {
             seam9,
             sourceStart9,
             calmRate9,
-            targetDur9
+            targetDur9,
+            extendMin9
           );
           const frame9 = cache9 ? clipFrameAt(cache9, srcT9) : null;
           const previewSource9 = frame9
@@ -1733,7 +2219,8 @@ export default function DualStudioPage() {
                 sourceTransform: sourceTransformAt(
                   stabilization9x16Ref.current,
                   srcT9,
-                  stabilizationEnabled9x16Ref.current
+                  stabilizationEnabled9x16Ref.current,
+                  stabilizationStrength9x16Ref.current / 100
                 ),
               },
               W,
@@ -1768,7 +2255,8 @@ export default function DualStudioPage() {
                     sourceTransform: sourceTransformAt(
                       stabilization9x16Ref.current,
                       pingState.endpointTime,
-                      stabilizationEnabled9x16Ref.current
+                      stabilizationEnabled9x16Ref.current,
+                      stabilizationStrength9x16Ref.current / 100
                     ),
                   },
                   W,
@@ -1859,7 +2347,9 @@ export default function DualStudioPage() {
                   ? "fundido"
                   : seam9 === "calm"
                     ? `continuo ${calmRate9.toFixed(2)}x`
-                    : "corte"
+                    : seam9 === "extend"
+                      ? `extender ${rate9.toFixed(2)}x`
+                      : "corte"
             }${cache9 ? "" : " · cargando clip…"}`,
             28,
             54
@@ -1895,16 +2385,20 @@ export default function DualStudioPage() {
           cameraMove: camera16x9,
           cameraIntensity: cameraIntensity16x9,
           aestheticStyle: style16x9,
+          colorGrade: colorGrade16x9,
           particles: particles16x9,
           particleIntensity: particleIntensity16x9,
           particleSpeed: particleSpeed16x9,
+          particleControls: particleControls16x9,
           seamMode: seamMode16x9,
           calmPlaybackRate: calmPlaybackRate16x9,
+          extendMinPlaybackRate: extendMinRate16x9,
           enableSeamlessLoop: true,
           loopCrossfadeDuration: visualLoop16?.fadeSec ?? 0.4,
           watermarkEnabled: watermarkEnabled,
           watermarkText: watermarkText,
           watermarkOpacity: watermarkOpacity,
+          watermarkStyle,
         }
       : {
           ...DEFAULT_MANGA_CONFIG,
@@ -1913,16 +2407,20 @@ export default function DualStudioPage() {
           cameraMove: camera9x16,
           cameraIntensity: cameraIntensity9x16,
           aestheticStyle: style9x16,
+          colorGrade: colorGrade9x16,
           particles: particles9x16,
           particleIntensity: particleIntensity9x16,
           particleSpeed: particleSpeed9x16,
+          particleControls: particleControls9x16,
           seamMode: seamMode9x16,
           calmPlaybackRate: calmPlaybackRate9x16,
+          extendMinPlaybackRate: extendMinRate9x16,
           enableSeamlessLoop: true,
           loopCrossfadeDuration: visualLoop9?.fadeSec ?? 0.4,
           watermarkEnabled: watermarkEnabled,
           watermarkText: watermarkText,
           watermarkOpacity: watermarkOpacity,
+          watermarkStyle,
         };
 
   // Master audio por formato, usando el mismo pipeline one-shot del preview.
@@ -2013,6 +2511,7 @@ export default function DualStudioPage() {
         sourceAlignment: visualLoop16?.alignment ?? null,
         sourceStabilization: stabilization16x9,
         stabilizationEnabled: stabilizationEnabled16x9,
+        stabilizationStrength: stabilizationStrength16x9 / 100,
         config: config16,
         audioBuffer: audio16x9Buffer,
         sfxCues: sfx16x9Cues,
@@ -2094,6 +2593,7 @@ export default function DualStudioPage() {
         sourceAlignment: visualLoop9?.alignment ?? null,
         sourceStabilization: stabilization9x16,
         stabilizationEnabled: stabilizationEnabled9x16,
+        stabilizationStrength: stabilizationStrength9x16 / 100,
         config: config9,
         audioBuffer: audio9x16Buffer,
         sfxCues: sfx9x16Cues,
@@ -2180,6 +2680,7 @@ export default function DualStudioPage() {
           sourceAlignment: visualLoop16?.alignment ?? null,
           sourceStabilization: stabilization16x9,
           stabilizationEnabled: stabilizationEnabled16x9,
+          stabilizationStrength: stabilizationStrength16x9 / 100,
           config: config16,
           audioBuffer: audio16x9Buffer,
           sfxCues: sfx16x9Cues,
@@ -2222,6 +2723,7 @@ export default function DualStudioPage() {
           sourceAlignment: visualLoop9?.alignment ?? null,
           sourceStabilization: stabilization9x16,
           stabilizationEnabled: stabilizationEnabled9x16,
+          stabilizationStrength: stabilizationStrength9x16 / 100,
           config: config9,
           audioBuffer: audio9x16Buffer,
           sfxCues: sfx9x16Cues,
@@ -2268,11 +2770,11 @@ export default function DualStudioPage() {
       generateOrganicYoutubePack({
         songFileName: songTitle || audioFileName,
         characterId: character,
-        isSlowedReverb: enableSlowedReverb,
+        isSlowedReverb: enableSlowedReverb || playlistHasSlowed,
         targetDurationMinutes: target16x9Duration / 60,
         seedOffset,
       }),
-    [audioFileName, songTitle, character, enableSlowedReverb, target16x9Duration, seedOffset]
+    [audioFileName, songTitle, character, enableSlowedReverb, playlistHasSlowed, target16x9Duration, seedOffset]
   );
 
   return (
@@ -2394,26 +2896,19 @@ export default function DualStudioPage() {
           />
         </div>}
 
-        {/* Slot 3: Master Song */}
-        <div className="p-4 rounded-2xl bg-zinc-900/70 border border-zinc-800 flex flex-col gap-2.5 shadow-md">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-cyan-400 flex items-center gap-1.5">
-              <span>🎵</span> Canción Master Común
-            </span>
-            {audioBuffer && (
-              <span className="text-[10px] font-mono bg-cyan-950/80 text-cyan-300 px-2 py-0.5 rounded border border-cyan-800/50">
-                {audioBuffer.duration.toFixed(1)}s
-              </span>
-            )}
-          </div>
-          <FileDropzone
-            onFile={handleAudioUpload}
-            accept="audio/*"
-            label={audioFileName ? `✅ ${audioFileName}` : "Arrastra la canción aquí"}
-            compact
+        <div className="md:col-span-2">
+          <AudioPlaylistPanel
+            tracks={audioTracks}
+            timeline={playlistTimeline}
+            processing={playlistProcessing}
+            progressLabel={playlistProgressLabel}
+            onAdd={(files) => void handleAudioFiles(files)}
+            onEffectChange={updatePlaylistEffect}
+            onMove={movePlaylistTrack}
+            onRemove={removePlaylistTrack}
           />
           {audioBuffer && (
-            <label className="flex flex-col gap-1 text-[10px] text-zinc-400">
+            <label className="mt-3 flex flex-col gap-1 text-[10px] text-zinc-400">
               Nombre de la canción para títulos
               <input
                 type="text"
@@ -2423,18 +2918,6 @@ export default function DualStudioPage() {
                 placeholder="Artista — Canción"
               />
             </label>
-          )}
-          {audioBuffer && (
-            <div className="flex items-center justify-between flex-wrap gap-2 text-[10px]">
-              <span className="text-zinc-500">
-                16:9 reproduce el tema completo; 9:16 reproduce solo el fragmento fijo elegido.
-              </span>
-              <div className="flex items-center gap-1.5">
-                <span className="font-bold text-zinc-300">
-                  Editando {viewLayout === "16x9" ? "🖥️ 16:9" : "📱 Short"}
-                </span>
-              </div>
-            </div>
           )}
         </div>
       </div>
@@ -2559,8 +3042,114 @@ export default function DualStudioPage() {
               />
             </div>
           </div>
+          <div className="grid grid-cols-2 gap-3 border-t border-zinc-800 pt-2 text-[10px] sm:grid-cols-4">
+            <label className="flex flex-col gap-1 text-zinc-400">
+              Posición
+              <select
+                aria-label="Posición de la marca de agua"
+                value={watermarkStyle.position ?? "bottom-center"}
+                disabled={!watermarkEnabled}
+                onChange={(event) => setWatermarkStyle((current) => ({
+                  ...current,
+                  position: event.target.value as NonNullable<WatermarkStyleOptions["position"]>,
+                }))}
+                className="rounded-lg border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-white"
+              >
+                <option value="bottom-center">Abajo · centro</option>
+                <option value="bottom-left">Abajo · izquierda</option>
+                <option value="bottom-right">Abajo · derecha</option>
+                <option value="top-center">Arriba · centro</option>
+              </select>
+            </label>
+            <label className="flex flex-col gap-1 text-zinc-400">
+              <span className="flex justify-between"><span>Tamaño</span><b>{Math.round((watermarkStyle.scale ?? 1) * 100)}%</b></span>
+              <input
+                aria-label="Tamaño de la marca de agua"
+                type="range"
+                min="60"
+                max="180"
+                step="5"
+                value={Math.round((watermarkStyle.scale ?? 1) * 100)}
+                disabled={!watermarkEnabled}
+                onChange={(event) => setWatermarkStyle((current) => ({ ...current, scale: Number(event.target.value) / 100 }))}
+                className="accent-fuchsia-500"
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-zinc-400">
+              <span className="flex justify-between"><span>Espaciado</span><b>{Math.round((watermarkStyle.tracking ?? 1) * 100)}%</b></span>
+              <input
+                aria-label="Espaciado de la marca de agua"
+                type="range"
+                min="50"
+                max="180"
+                step="5"
+                value={Math.round((watermarkStyle.tracking ?? 1) * 100)}
+                disabled={!watermarkEnabled}
+                onChange={(event) => setWatermarkStyle((current) => ({ ...current, tracking: Number(event.target.value) / 100 }))}
+                className="accent-fuchsia-500"
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-zinc-400">
+              Color
+              <input
+                aria-label="Color de la marca de agua"
+                type="color"
+                value={watermarkStyle.color ?? "#ffffff"}
+                disabled={!watermarkEnabled}
+                onChange={(event) => setWatermarkStyle((current) => ({ ...current, color: event.target.value }))}
+                className="h-7 w-full cursor-pointer rounded border border-zinc-700 bg-zinc-950"
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-zinc-400">
+              <span className="flex justify-between"><span>Línea</span><b>{Math.round((watermarkStyle.ruleScale ?? 1) * 100)}%</b></span>
+              <input
+                aria-label="Longitud de línea de la marca de agua"
+                type="range"
+                min="50"
+                max="180"
+                step="5"
+                value={Math.round((watermarkStyle.ruleScale ?? 1) * 100)}
+                disabled={!watermarkEnabled}
+                onChange={(event) => setWatermarkStyle((current) => ({ ...current, ruleScale: Number(event.target.value) / 100 }))}
+                className="accent-fuchsia-500"
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-zinc-400">
+              <span className="flex justify-between"><span>Horizontal</span><b>{Math.round((watermarkStyle.offsetX ?? 0) * 100)}%</b></span>
+              <input
+                aria-label="Desplazamiento horizontal de la marca de agua"
+                type="range"
+                min="-20"
+                max="20"
+                value={Math.round((watermarkStyle.offsetX ?? 0) * 100)}
+                disabled={!watermarkEnabled}
+                onChange={(event) => setWatermarkStyle((current) => ({ ...current, offsetX: Number(event.target.value) / 100 }))}
+                className="accent-fuchsia-500"
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-zinc-400">
+              <span className="flex justify-between"><span>Vertical</span><b>{Math.round((watermarkStyle.offsetY ?? 0) * 100)}%</b></span>
+              <input
+                aria-label="Desplazamiento vertical de la marca de agua"
+                type="range"
+                min="-20"
+                max="20"
+                value={Math.round((watermarkStyle.offsetY ?? 0) * 100)}
+                disabled={!watermarkEnabled}
+                onChange={(event) => setWatermarkStyle((current) => ({ ...current, offsetY: Number(event.target.value) / 100 }))}
+                className="accent-fuchsia-500"
+              />
+            </label>
+            <button
+              type="button"
+              onClick={() => setWatermarkStyle({ ...DEFAULT_WATERMARK_STYLE })}
+              className="self-end rounded-lg border border-zinc-700 bg-zinc-950 px-2 py-1.5 font-semibold text-zinc-300 hover:border-fuchsia-600 hover:text-white"
+            >
+              Restablecer Silent Vigil
+            </button>
+          </div>
           <p className="text-[10px] text-zinc-500">
-            Wordmark editorial abajo al centro (Montserrat Light, tracking). No tapa la cara del personaje.
+            El preset original sigue siendo el valor inicial; los cambios se ven igual en preview y exportación.
           </p>
         </div>
       </div>
@@ -2572,26 +3161,16 @@ export default function DualStudioPage() {
         <div className="p-5 rounded-2xl bg-zinc-900/80 border border-cyan-900/40 shadow-xl flex flex-col gap-4">
           <div className="flex items-center justify-between flex-wrap gap-3 border-b border-zinc-800 pb-3">
             <div className="flex items-center gap-3">
-              <label className="relative inline-flex items-center cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={enableSlowedReverb}
-                  onChange={(e) => setEnableSlowedReverb(e.target.checked)}
-                  className="sr-only peer"
-                />
-                <div className="w-11 h-6 bg-zinc-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-zinc-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-cyan-500"></div>
-              </label>
+              <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-cyan-950 text-lg">🎛️</span>
               <div>
                 <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                  <span>🎵</span> Sonido de la canción
-                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono border ${enableSlowedReverb ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40' : 'bg-zinc-800 text-zinc-400 border-zinc-700'}`}>
-                    {enableSlowedReverb ? REVERB_PRESETS[activeReverbPreset]?.label.toUpperCase() : "ORIGINAL"}
+                  Estudio del master
+                  <span className="rounded-full border border-cyan-800/60 bg-cyan-950/50 px-2 py-0.5 font-mono text-[10px] text-cyan-300">
+                    {audioTracks.length} {audioTracks.length === 1 ? "CANCIÓN" : "CANCIONES"}
                   </span>
                 </h3>
                 <p className="text-[11px] text-zinc-400">
-                  {enableSlowedReverb
-                    ? "Preset estable de slowed + reverb. Cambiar de preset hace un fundido corto sin clicks."
-                    : "Canción original, sin slowed, reverb ni textura añadida."}
+                  Selecciona Original, Suave, Clásico o Profundo en cada pista de la playlist. Preview y export usan el mismo master.
                 </p>
               </div>
             </div>
@@ -2622,6 +3201,7 @@ export default function DualStudioPage() {
             selectionMode={musicIs16 ? "full-song" : "fixed-window"}
             sourceWindowSeconds={shortSourceWindowSec}
             fullSongRepetitions={musicIs16 && longFormAudioMode === "repeat" ? longFormRepeatCount : 1}
+            fullMasterLabel={audioTracks.length > 1 ? "Playlist completa" : "Canción completa"}
             sourceHint={
               analyzingAudio
                 ? "Analizando la canción para sugerir buenos puntos de entrada…"
@@ -2634,6 +3214,47 @@ export default function DualStudioPage() {
                       : "Elige dónde empieza el Short; la salida conserva su duración exacta."
             }
           />
+
+          <div className="flex flex-wrap items-center gap-2 rounded-xl border border-cyan-900/40 bg-zinc-950/70 p-3">
+            <button
+              type="button"
+              onClick={musicTogglePlay}
+              disabled={playlistProcessing || (musicIs16 ? processingLoop16 : processingLoop9)}
+              className={`rounded-xl px-4 py-2 text-xs font-black transition disabled:cursor-wait disabled:opacity-40 ${musicPlaying
+                ? "bg-zinc-700 text-white hover:bg-zinc-600"
+                : "bg-cyan-400 text-zinc-950 hover:bg-cyan-300"}`}
+            >
+              {musicPlaying ? "⏸ Pausar" : "▶ Reproducir"}
+            </button>
+            <button
+              type="button"
+              onClick={() => musicSeek(0)}
+              className="rounded-xl border border-zinc-800 px-3 py-2 text-xs font-bold text-zinc-300 hover:border-zinc-600 hover:text-white"
+            >
+              ⏮ Inicio
+            </button>
+            <label className="flex min-w-[220px] flex-1 items-center gap-2">
+              <span className="sr-only">Posición del master</span>
+              <input
+                aria-label="Posición del master"
+                type="range"
+                min={0}
+                max={Math.max(0.1, activeLoopDur)}
+                step={0.05}
+                value={Math.min(musicLoopPos, Math.max(0.1, activeLoopDur))}
+                onChange={(event) => musicSeek(Number(event.target.value))}
+                className="w-full accent-cyan-400"
+              />
+              <span className="shrink-0 font-mono text-[10px] text-cyan-300">
+                {formatDuration(musicLoopPos)} / {formatDuration(activeLoopDur)}
+              </span>
+            </label>
+            <span className="text-[10px] text-zinc-500">
+              {playlistProcessing || (musicIs16 ? processingLoop16 : processingLoop9)
+                ? "Preparando master…"
+                : `Escuchando ${musicIs16 ? "16:9" : "Short"}`}
+            </span>
+          </div>
 
           {enableSlowedReverb && (
             <div className="flex flex-col gap-4 animate-in fade-in">
@@ -3006,12 +3627,32 @@ export default function DualStudioPage() {
                   <option value="cut">■ Sin loop · corte directo</option>
                   <option value="smooth">✨ Natural · recomendado</option>
                   <option value="pingpong">↔ Boomerang suave · ida y vuelta</option>
-                  <option value="extend">⏳ Extender · cámara lenta continua</option>
+                  <option value="extend">⏳ Extender fluido · sin cámara lenta extrema</option>
                 </select>
                 {seamMode16x9 === "extend" && video16x9Duration > 0 && (() => {
                   const clipDur = visualLoop16?.duration ?? video16x9Duration;
-                  const rate = resolveExtendPlaybackRate(clipDur, target16x9Duration);
-                  return <p className="text-[10px] text-cyan-200">{rate.toFixed(2)}× · el clip se extiende sin rebobinar.</p>;
+                  const plan = resolveExtendPlaybackPlan(clipDur, target16x9Duration, extendMinRate16x9);
+                  return (
+                    <div className="rounded-lg border border-cyan-900/60 bg-cyan-950/20 p-2">
+                      <div className="flex items-center justify-between text-[10px] text-cyan-100">
+                        <span>Velocidad mínima</span>
+                        <span className="font-mono font-bold text-cyan-300">{extendMinRate16x9.toFixed(2)}×</span>
+                      </div>
+                      <input
+                        aria-label="Velocidad mínima de Extender 16:9"
+                        type="range"
+                        min="65"
+                        max="100"
+                        step="5"
+                        value={Math.round(extendMinRate16x9 * 100)}
+                        onChange={(event) => setExtendMinRate16x9(Number(event.target.value) / 100)}
+                        className="mt-1 w-full accent-cyan-400"
+                      />
+                      <p className="mt-1 text-[10px] text-cyan-200">
+                        {plan.rate.toFixed(2)}× · {plan.repeatCount} {plan.repeatCount === 1 ? "pasada" : "pasadas"} con unión Natural.
+                      </p>
+                    </div>
+                  );
                 })()}
                 {stabilization16x9 && (
                   <p data-testid="stabilization-status-16x9" className={stabilization16x9.autoEnabled ? "text-[10px] text-emerald-300" : "text-[10px] text-zinc-500"}>
@@ -3022,6 +3663,16 @@ export default function DualStudioPage() {
               <p className="mt-2 text-[11px] leading-relaxed text-zinc-400">
                 {analyzingVideo16 ? "Buscando una unión natural…" : seamHint16 || "El vídeo empieza limpio. Recorta y activa un loop cuando quieras."}
               </p>
+              {!analyzingVideo16 && seamMode16x9 === "smooth" && (
+                <div className="mt-2">
+                  <VisualLoopQualityPanel
+                    selection={visualLoop16}
+                    candidates={visualCandidates16}
+                    format="16x9"
+                    onSelect={(candidate) => applyVisualCandidate("16x9", candidate)}
+                  />
+                </div>
+              )}
             </div>
 
             {/* 16:9 Visual Controls */}
@@ -3104,6 +3755,12 @@ export default function DualStudioPage() {
                         className="w-full accent-fuchsia-500 h-1.5 bg-zinc-800 rounded-lg cursor-pointer"
                       />
                     </div>
+                    <ParticleAdvancedControls
+                      value={particleControls16x9}
+                      onChange={setParticleControls16x9}
+                      accentClass="accent-fuchsia-500"
+                      format="16:9"
+                    />
                   </div>
                 )}
               </div>
@@ -3120,9 +3777,38 @@ export default function DualStudioPage() {
                   />
                   {stabilization16x9?.autoEnabled ? "Aplicar corrección conservadora" : "Sin corrección necesaria"}
                 </label>
+                {stabilization16x9?.autoEnabled && stabilizationEnabled16x9 && (
+                  <label className="flex flex-col gap-1 text-[10px] text-zinc-500">
+                    <span className="flex justify-between">
+                      <span>Intensidad</span>
+                      <span className="font-mono text-emerald-300">{stabilizationStrength16x9}%</span>
+                    </span>
+                    <input
+                      aria-label="Intensidad de estabilización 16:9"
+                      type="range"
+                      min="25"
+                      max="100"
+                      step="5"
+                      value={stabilizationStrength16x9}
+                      onChange={(event) => setStabilizationStrength16x9(Number(event.target.value))}
+                      className="w-full accent-emerald-500"
+                    />
+                  </label>
+                )}
+                {stabilization16x9 && (
+                  <span className="text-[9px] font-semibold uppercase tracking-wider text-zinc-600">
+                    {stabilization16x9.source === "companion-opencv" ? "Análisis avanzado · LK + RANSAC" : "Análisis básico en navegador"}
+                  </span>
+                )}
                 <p className="text-[10px] leading-snug text-zinc-500">{stabilization16x9?.reason ?? "Se analiza al preparar el vídeo."}</p>
               </div>
             </div>
+            <ColorGradeControls
+              value={colorGrade16x9}
+              onChange={setColorGrade16x9}
+              accentClass="accent-fuchsia-500"
+              format="16:9"
+            />
             </details>
 
             {/* 16:9 DURATION SELECTOR PRESETS */}
@@ -3145,14 +3831,14 @@ export default function DualStudioPage() {
                       onClick={() => setLongFormAudioMode("once")}
                       className={`px-2.5 py-1 rounded-lg font-bold ${longFormAudioMode === "once" ? "bg-fuchsia-600 text-white" : "bg-zinc-800 text-zinc-300"}`}
                     >
-                      Canción completa
+                      {audioTracks.length > 1 ? "Playlist completa" : "Canción completa"}
                     </button>
                     <button
                       type="button"
                       onClick={() => setLongFormAudioMode("repeat")}
                       className={`px-2.5 py-1 rounded-lg font-bold ${longFormAudioMode === "repeat" ? "bg-fuchsia-600 text-white" : "bg-zinc-800 text-zinc-300"}`}
                     >
-                      Repetir canción
+                      {audioTracks.length > 1 ? "Repetir playlist" : "Repetir canción"}
                     </button>
                     {longFormAudioMode === "repeat" && (
                       <select
@@ -3400,12 +4086,32 @@ export default function DualStudioPage() {
                   <option value="cut">■ Sin loop · corte directo</option>
                   <option value="smooth">✨ Natural · recomendado</option>
                   <option value="pingpong">↔ Boomerang suave · ida y vuelta</option>
-                  <option value="extend">⏳ Extender · cámara lenta continua</option>
+                  <option value="extend">⏳ Extender fluido · sin cámara lenta extrema</option>
                 </select>
                 {seamMode9x16 === "extend" && video9x16Duration > 0 && (() => {
                   const clipDur = visualLoop9?.duration ?? video9x16Duration;
-                  const rate = resolveExtendPlaybackRate(clipDur, target9x16Duration);
-                  return <p className="text-[10px] text-cyan-200">{rate.toFixed(2)}× · el clip cubre el Short sin rebobinar.</p>;
+                  const plan = resolveExtendPlaybackPlan(clipDur, target9x16Duration, extendMinRate9x16);
+                  return (
+                    <div className="rounded-lg border border-cyan-900/60 bg-cyan-950/20 p-2">
+                      <div className="flex items-center justify-between text-[10px] text-cyan-100">
+                        <span>Velocidad mínima</span>
+                        <span className="font-mono font-bold text-cyan-300">{extendMinRate9x16.toFixed(2)}×</span>
+                      </div>
+                      <input
+                        aria-label="Velocidad mínima de Extender 9:16"
+                        type="range"
+                        min="65"
+                        max="100"
+                        step="5"
+                        value={Math.round(extendMinRate9x16 * 100)}
+                        onChange={(event) => setExtendMinRate9x16(Number(event.target.value) / 100)}
+                        className="mt-1 w-full accent-cyan-400"
+                      />
+                      <p className="mt-1 text-[10px] text-cyan-200">
+                        {plan.rate.toFixed(2)}× · {plan.repeatCount} {plan.repeatCount === 1 ? "pasada" : "pasadas"} con unión Natural.
+                      </p>
+                    </div>
+                  );
                 })()}
                 {stabilization9x16 && (
                   <p data-testid="stabilization-status-9x16" className={stabilization9x16.autoEnabled ? "text-[10px] text-emerald-300" : "text-[10px] text-zinc-500"}>
@@ -3416,6 +4122,16 @@ export default function DualStudioPage() {
               <p className="mt-2 text-[11px] leading-relaxed text-zinc-400">
                 {analyzingVideo9 ? "Buscando una unión natural…" : seamHint9 || "El vídeo empieza limpio. Recorta y activa un loop cuando quieras."}
               </p>
+              {!analyzingVideo9 && seamMode9x16 === "smooth" && (
+                <div className="mt-2">
+                  <VisualLoopQualityPanel
+                    selection={visualLoop9}
+                    candidates={visualCandidates9}
+                    format="9x16"
+                    onSelect={(candidate) => applyVisualCandidate("9x16", candidate)}
+                  />
+                </div>
+              )}
             </div>
 
             {/* 9:16 Visual Controls */}
@@ -3498,6 +4214,12 @@ export default function DualStudioPage() {
                         className="w-full accent-amber-500 h-1.5 bg-zinc-800 rounded-lg cursor-pointer"
                       />
                     </div>
+                    <ParticleAdvancedControls
+                      value={particleControls9x16}
+                      onChange={setParticleControls9x16}
+                      accentClass="accent-amber-500"
+                      format="9:16"
+                    />
                   </div>
                 )}
               </div>
@@ -3514,9 +4236,38 @@ export default function DualStudioPage() {
                   />
                   {stabilization9x16?.autoEnabled ? "Aplicar corrección conservadora" : "Sin corrección necesaria"}
                 </label>
+                {stabilization9x16?.autoEnabled && stabilizationEnabled9x16 && (
+                  <label className="flex flex-col gap-1 text-[10px] text-zinc-500">
+                    <span className="flex justify-between">
+                      <span>Intensidad</span>
+                      <span className="font-mono text-emerald-300">{stabilizationStrength9x16}%</span>
+                    </span>
+                    <input
+                      aria-label="Intensidad de estabilización 9:16"
+                      type="range"
+                      min="25"
+                      max="100"
+                      step="5"
+                      value={stabilizationStrength9x16}
+                      onChange={(event) => setStabilizationStrength9x16(Number(event.target.value))}
+                      className="w-full accent-emerald-500"
+                    />
+                  </label>
+                )}
+                {stabilization9x16 && (
+                  <span className="text-[9px] font-semibold uppercase tracking-wider text-zinc-600">
+                    {stabilization9x16.source === "companion-opencv" ? "Análisis avanzado · LK + RANSAC" : "Análisis básico en navegador"}
+                  </span>
+                )}
                 <p className="text-[10px] leading-snug text-zinc-500">{stabilization9x16?.reason ?? "Se analiza al preparar el vídeo."}</p>
               </div>
             </div>
+            <ColorGradeControls
+              value={colorGrade9x16}
+              onChange={setColorGrade9x16}
+              accentClass="accent-amber-500"
+              format="9:16"
+            />
             </details>
 
             {/* 9:16 DURATION SELECTOR PRESETS */}
@@ -3778,8 +4529,8 @@ export default function DualStudioPage() {
             <div>
               <h3 className="text-sm font-bold text-white flex items-center gap-2">
                 Pack de YouTube & Shorts Orgánico (SEO & Algoritmo)
-                <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono border ${enableSlowedReverb ? 'bg-red-500/20 text-red-300 border-red-500/40' : 'bg-zinc-800 text-zinc-400 border-zinc-700'}`}>
-                  {enableSlowedReverb ? "Slowed + Reverb" : "Normal Audio"}
+                <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono border ${enableSlowedReverb || playlistHasSlowed ? 'bg-red-500/20 text-red-300 border-red-500/40' : 'bg-zinc-800 text-zinc-400 border-zinc-700'}`}>
+                  {enableSlowedReverb || playlistHasSlowed ? "Slowed + Reverb" : "Normal Audio"}
                 </span>
               </h3>
               <p className="text-[11px] text-zinc-400">
@@ -4044,10 +4795,10 @@ export default function DualStudioPage() {
                     label="Música"
                     value={
                       confirmExport === "batch"
-                        ? `16:9 canción completa · 9:16 ${shortAudioSelection?.start.toFixed(1) ?? "0.0"}s → ${shortAudioSelection?.end.toFixed(1) ?? target9x16Duration.toFixed(1)}s${enableSlowedReverb ? " · slowed+reverb" : ""}`
+                        ? `16:9 ${audioTracks.length > 1 ? "playlist completa" : "canción completa"} · 9:16 ${shortAudioSelection?.start.toFixed(1) ?? "0.0"}s → ${shortAudioSelection?.end.toFixed(1) ?? target9x16Duration.toFixed(1)}s${enableSlowedReverb || playlistHasSlowed ? " · slowed+reverb" : ""}`
                         : confirmExport === "9x16"
-                        ? `${shortAudioSelection?.start.toFixed(1) ?? "0.0"}s → ${shortAudioSelection?.end.toFixed(1) ?? target9x16Duration.toFixed(1)}s · una toma${enableSlowedReverb ? " · slowed+reverb" : ""}`
-                        : `canción completa · una toma${enableSlowedReverb ? " · slowed+reverb" : ""}`
+                        ? `${shortAudioSelection?.start.toFixed(1) ?? "0.0"}s → ${shortAudioSelection?.end.toFixed(1) ?? target9x16Duration.toFixed(1)}s · una toma${enableSlowedReverb || playlistHasSlowed ? " · slowed+reverb" : ""}`
+                        : `${audioTracks.length > 1 ? "playlist completa" : "canción completa"} · una toma${enableSlowedReverb || playlistHasSlowed ? " · slowed+reverb" : ""}`
                     }
                   />
                   <SummaryRow

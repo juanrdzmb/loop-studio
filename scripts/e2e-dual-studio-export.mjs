@@ -45,7 +45,7 @@ const page = await browser.newPage();
 page.on("pageerror", (e) => pageErrors.push(e.message));
 
 await page.goto(BASE + "/dual-studio", { waitUntil: "networkidle" });
-const hasStudio = await page.isVisible("text=Canción Master Común");
+const hasStudio = await page.isVisible("text=Playlist del edit");
 ok("Dual Studio carga", hasStudio);
 
 // Upload the clip into the 16:9 slot (first file input on the page)

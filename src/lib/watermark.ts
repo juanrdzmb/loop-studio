@@ -7,6 +7,21 @@ let fontLoad: Promise<void> | null = null;
 export const WATERMARK_MARK = "SILENT VIGIL";
 export const WATERMARK_SUB = "MUSIC";
 
+export type WatermarkPosition = "bottom-center" | "bottom-left" | "bottom-right" | "top-center";
+
+export type WatermarkStyleOptions = {
+  position?: WatermarkPosition;
+  /** Escala relativa al wordmark vigente. */
+  scale?: number;
+  /** Multiplicador del tracking vigente. */
+  tracking?: number;
+  color?: string;
+  ruleScale?: number;
+  /** Desplazamientos normalizados respecto al ancho/alto. */
+  offsetX?: number;
+  offsetY?: number;
+};
+
 export function ensureWatermarkFont(): Promise<void> {
   if (typeof document === "undefined") return Promise.resolve();
   if (fontLoad) return fontLoad;
@@ -60,6 +75,7 @@ export function drawProfessionalWatermark(
     height: number;
     opacity?: number;
     shorts?: boolean;
+    style?: WatermarkStyleOptions;
   }
 ) {
   const raw = (opts.text || WATERMARK_MARK).trim();
@@ -69,16 +85,27 @@ export function drawProfessionalWatermark(
 
   const shorts = opts.shorts ?? opts.height > opts.width;
   const minSide = Math.min(opts.width, opts.height);
+  const style = opts.style ?? {};
+  const scaleFactor = Math.max(0.6, Math.min(1.8, style.scale ?? 1));
+  const trackingFactor = Math.max(0.5, Math.min(1.8, style.tracking ?? 1));
+  const ruleScale = Math.max(0.5, Math.min(1.8, style.ruleScale ?? 1));
   const mark = raw.toUpperCase();
   const isBrand = mark === WATERMARK_MARK || mark === "SILENT VM" || mark === "SILENT VIGIL MUSIC";
   const line = isBrand ? WATERMARK_MARK : mark;
   const showSub = isBrand;
 
-  const fontSize = Math.max(13, Math.round(minSide * (shorts ? 0.018 : 0.022)));
-  const tracking = fontSize * 0.28;
+  const baseFontSize = Math.max(13, Math.round(minSide * (shorts ? 0.018 : 0.022)));
+  const fontSize = Math.max(9, Math.round(baseFontSize * scaleFactor));
+  const tracking = fontSize * 0.28 * trackingFactor;
   const subSize = Math.max(8, Math.round(fontSize * 0.42));
-  const cx = opts.width / 2;
-  const baseline = shorts ? opts.height * 0.875 : opts.height - Math.max(36, opts.height * 0.055);
+  const position = style.position ?? "bottom-center";
+  const offsetX = Math.max(-0.2, Math.min(0.2, style.offsetX ?? 0)) * opts.width;
+  const offsetY = Math.max(-0.2, Math.min(0.2, style.offsetY ?? 0)) * opts.height;
+
+  const color = /^#[0-9a-f]{6}$/i.test(style.color ?? "") ? style.color! : "#ffffff";
+  const red = Number.parseInt(color.slice(1, 3), 16);
+  const green = Number.parseInt(color.slice(3, 5), 16);
+  const blue = Number.parseInt(color.slice(5, 7), 16);
 
   ctx.save();
   ctx.textBaseline = "middle";
@@ -87,9 +114,21 @@ export function drawProfessionalWatermark(
   const widths = Array.from(line).map((c) => ctx.measureText(c).width);
   const markW =
     widths.reduce((a, b) => a + b, 0) + tracking * Math.max(0, line.length - 1);
-  const ruleW = Math.min(opts.width * 0.22, Math.max(markW * 0.55, fontSize * 6));
+  const ruleW = Math.min(opts.width * 0.36, Math.max(markW * 0.55, fontSize * 6) * ruleScale);
+  const sideMargin = Math.max(fontSize * 1.8, minSide * 0.035);
+  const cx = (
+    position === "bottom-left"
+      ? sideMargin + markW / 2
+      : position === "bottom-right"
+        ? opts.width - sideMargin - markW / 2
+        : opts.width / 2
+  ) + offsetX;
+  const defaultBottom = shorts
+    ? opts.height * 0.875
+    : opts.height - Math.max(36, opts.height * 0.055);
+  const baseline = (position === "top-center" ? Math.max(fontSize * 2.3, opts.height * 0.08) : defaultBottom) + offsetY;
 
-  ctx.strokeStyle = `rgba(255,255,255,${opacity * 0.55})`;
+  ctx.strokeStyle = `rgba(${red},${green},${blue},${opacity * 0.55})`;
   ctx.lineWidth = Math.max(1, fontSize * 0.045);
   ctx.beginPath();
   ctx.moveTo(cx - ruleW / 2, baseline - fontSize * 0.95);
@@ -99,13 +138,13 @@ export function drawProfessionalWatermark(
   ctx.shadowColor = "rgba(0,0,0,0.72)";
   ctx.shadowBlur = Math.round(fontSize * 0.35);
   ctx.shadowOffsetY = 1;
-  ctx.fillStyle = `rgba(255,255,255,${opacity})`;
+  ctx.fillStyle = `rgba(${red},${green},${blue},${opacity})`;
   drawTracked(ctx, line, cx, baseline, tracking);
 
   if (showSub) {
     ctx.shadowBlur = Math.round(subSize * 0.3);
     ctx.font = `500 ${subSize}px "SilentVigil", Montserrat, "Segoe UI", sans-serif`;
-    ctx.fillStyle = `rgba(255,255,255,${opacity * 0.78})`;
+    ctx.fillStyle = `rgba(${red},${green},${blue},${opacity * 0.78})`;
     drawTracked(ctx, WATERMARK_SUB, cx, baseline + fontSize * 0.72, subSize * 0.55);
   }
 

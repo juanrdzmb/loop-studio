@@ -27,6 +27,8 @@ interface Props {
   sourceWindowSeconds?: number;
   /** Vueltas del tema en 16:9; 1 conserva la reproducción única. */
   fullSongRepetitions?: number;
+  /** Nombre del master completo cuando contiene una playlist. */
+  fullMasterLabel?: string;
 }
 
 function fmt(t: number): string {
@@ -59,6 +61,7 @@ export default function AudioLoopPanel({
   selectionMode,
   sourceWindowSeconds,
   fullSongRepetitions = 1,
+  fullMasterLabel = "Canción completa",
 }: Props) {
   const [mode, setMode] = useState<EditorMode>("recommend");
   const targetLabel =
@@ -115,7 +118,7 @@ export default function AudioLoopPanel({
       {isFullSong ? (
         <div className="rounded-xl border border-fuchsia-500/30 bg-fuchsia-950/20 p-4">
           <p className="text-sm font-bold text-white">
-            🖥️ {fullSongRepetitions > 1 ? `Canción completa · ${fullSongRepetitions} vueltas` : "Canción completa, una sola reproducción"}
+            🖥️ {fullSongRepetitions > 1 ? `${fullMasterLabel} · ${fullSongRepetitions} vueltas` : `${fullMasterLabel}, una sola reproducción`}
           </p>
           <p className="mt-1 text-[11px] leading-relaxed text-zinc-400">
             {fullSongRepetitions > 1

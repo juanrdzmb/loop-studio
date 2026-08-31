@@ -52,7 +52,7 @@ page.on("console", (message) => {
 });
 
 await page.goto(BASE + "/dual-studio", { waitUntil: "networkidle" });
-const hasStudio = await page.isVisible("text=Canción Master Común");
+const hasStudio = await page.isVisible("text=Playlist del edit");
 ok("Dual Studio carga", hasStudio);
 
 await page.getByRole("button", { name: /📱 Short 9:16/ }).click();

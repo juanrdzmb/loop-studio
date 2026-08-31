@@ -46,7 +46,7 @@ page.on("console", (m) => {
 });
 
 await page.goto(BASE + "/dual-studio", { waitUntil: "networkidle" });
-ok("Dual Studio carga", await page.isVisible("text=Canción Master Común"));
+ok("Dual Studio carga", await page.isVisible("text=Playlist del edit"));
 
 // Video en slot 16:9 y canción en slot 3
 await page.locator('input[type="file"]').nth(0).setInputFiles(VIDEO);

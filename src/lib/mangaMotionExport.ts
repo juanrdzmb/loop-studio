@@ -38,6 +38,20 @@ import {
   sourceTransformAt,
   type ClipStabilization,
 } from "./videoStabilization";
+import {
+  resolveExtendPlaybackPlan,
+  resolveExtendPlaybackRate,
+} from "./extendPlayback";
+import { resolveParticleRenderPlan } from "./particleLoop";
+
+export {
+  DEFAULT_EXTEND_MIN_PLAYBACK_RATE,
+  MIN_EXTEND_PLAYBACK_RATE,
+  clampExtendMinPlaybackRate,
+  resolveExtendPlaybackPlan,
+  resolveExtendPlaybackRate,
+  type ExtendPlaybackPlan,
+} from "./extendPlayback";
 
 export interface MangaExportOptions {
   image: HTMLImageElement | HTMLVideoElement | HTMLCanvasElement;
@@ -63,6 +77,8 @@ export interface MangaExportOptions {
   /** Trayectoria local de microestabilización compartida con el preview. */
   sourceStabilization?: ClipStabilization | null;
   stabilizationEnabled?: boolean;
+  /** Intensidad de la corrección compartida con preview (0..1). */
+  stabilizationStrength?: number;
 }
 
 export class ExportCancelledError extends Error {
@@ -168,31 +184,11 @@ export function clampCalmPlaybackRate(rate?: number): number {
   return Math.min(0.75, Math.max(0.25, value));
 }
 
-/** Piso del modo Extender: cámara lenta profunda sin congelar el movimiento. */
-export const MIN_EXTEND_PLAYBACK_RATE = 0.15;
-
-export function clampExtendPlaybackRate(rate: number): number {
-  const value = Number.isFinite(rate) ? Number(rate) : 1;
-  return Math.min(1, Math.max(MIN_EXTEND_PLAYBACK_RATE, value));
-}
-
-/**
- * Velocidad del modo Extender: el ciclo cubre la duración objetivo (canción
- * completa o N vueltas) reproduciendo el clip SIEMPRE hacia delante, como una
- * toma continua ralentizada. Si el clip ya cubre el target, queda a 1× y el
- * comportamiento es idéntico al fundido smooth.
- */
-export function resolveExtendPlaybackRate(sourceDuration: number, targetDuration: number): number {
-  const clip = Math.max(0.25, sourceDuration);
-  const target = Math.max(
-    clip,
-    Number.isFinite(targetDuration) && targetDuration > 0 ? targetDuration : clip
-  );
-  return clampExtendPlaybackRate(clip / target);
-}
-
 export function computeVisualCycleDuration(
-  config: Pick<MangaMotionConfig, "seamMode" | "enableSeamlessLoop" | "duration" | "calmPlaybackRate">,
+  config: Pick<
+    MangaMotionConfig,
+    "seamMode" | "enableSeamlessLoop" | "duration" | "calmPlaybackRate" | "extendMinPlaybackRate"
+  >,
   sourceDuration: number,
   isVideo: boolean
 ): number {
@@ -204,9 +200,11 @@ export function computeVisualCycleDuration(
   const seam = config.seamMode || (config.enableSeamlessLoop ? "smooth" : "cut");
   if (seam === "pingpong") return clip * 2;
   if (seam === "extend") {
-    // config.duration es la duración objetivo del video final (en preview RAF y
-    // export llega igual): el ciclo se estira para cubrirla a cámara lenta.
-    return clip / resolveExtendPlaybackRate(clip, config.duration);
+    return resolveExtendPlaybackPlan(
+      clip,
+      config.duration,
+      config.extendMinPlaybackRate
+    ).cycleDuration;
   }
   if (seam === "calm") return clip / clampCalmPlaybackRate(config.calmPlaybackRate);
   return clip;
@@ -218,7 +216,8 @@ export function sourceTimeForExport(
   seamMode: MangaMotionConfig["seamMode"],
   sourceStart: number = 0,
   calmPlaybackRate: number = DEFAULT_CALM_PLAYBACK_RATE,
-  targetDuration?: number
+  targetDuration?: number,
+  extendMinPlaybackRate?: number
 ): number {
   if (sourceDuration <= 0.05) return sourceStart;
   if (seamMode === "pingpong") {
@@ -228,9 +227,11 @@ export function sourceTimeForExport(
   if (seamMode === "calm") {
     sourceClock = t * clampCalmPlaybackRate(calmPlaybackRate);
   } else if (seamMode === "extend") {
-    // Sin target conocido, rate 1× (equivale a smooth). Preview/export siempre
-    // pasan la duración objetivo para compartir la misma rate derivada.
-    sourceClock = t * resolveExtendPlaybackRate(sourceDuration, targetDuration ?? sourceDuration);
+    sourceClock = t * resolveExtendPlaybackRate(
+      sourceDuration,
+      targetDuration ?? sourceDuration,
+      extendMinPlaybackRate
+    );
   } else {
     sourceClock = t;
   }
@@ -915,7 +916,8 @@ export async function exportMangaMotionVideo(
         seamMode,
         sourceStart,
         config.calmPlaybackRate,
-        targetDuration
+        targetDuration,
+        config.extendMinPlaybackRate
       );
       srcTimes.push(Math.min(sourceEnd - 0.001, Math.max(sourceStart, raw)));
     } else {
@@ -967,9 +969,35 @@ export async function exportMangaMotionVideo(
   srcCtx.imageSmoothingEnabled = true;
   srcCtx.imageSmoothingQuality = "high";
 
-  const cycleConfig: MangaMotionConfig = { ...config, duration: cycleDuration };
+  const particlesEnabled = (config.particles ?? "none") !== "none";
+  const particleRenderPlan = resolveParticleRenderPlan(
+    cycleDuration,
+    targetDuration,
+    particlesEnabled
+  );
+  const totalFrames = Math.max(
+    cycleFrames,
+    Math.floor(particleRenderPlan.renderDuration / frameDur + 1e-6)
+  );
+  const renderedCycleDuration = totalFrames * frameDur;
+  const particlesContinuous = particlesEnabled && totalFrames > cycleFrames;
+  const totalCycles = particlesContinuous ? Math.ceil(totalFrames / cycleFrames) : 1;
+  const cycleConfig: MangaMotionConfig = {
+    ...config,
+    duration: cycleDuration,
+    particleControls: {
+      ...config.particleControls,
+      loopDuration: renderedCycleDuration,
+    },
+  };
   const particleSys = opts.particleSystem ?? globalParticles;
-  particleSys.init(cycleConfig.particles, width, height, cycleConfig.particleIntensity);
+  particleSys.init(
+    cycleConfig.particles,
+    width,
+    height,
+    cycleConfig.particleIntensity,
+    cycleConfig.particleControls
+  );
   const turnParticleSys = new PhysicsParticleSystem();
   turnParticleSys.init("none", width, height, 0);
   await ensureWatermarkFont();
@@ -998,7 +1026,11 @@ export async function exportMangaMotionVideo(
     seamMode === "calm"
       ? clampCalmPlaybackRate(config.calmPlaybackRate)
       : seamMode === "extend"
-        ? resolveExtendPlaybackRate(sourceDuration, targetDuration)
+        ? resolveExtendPlaybackRate(
+            sourceDuration,
+            targetDuration,
+            config.extendMinPlaybackRate
+          )
         : 1;
   // Seam crossfade: conservar únicamente el primer frame compuesto como JPEG.
   // El final del ciclo funde hacia ESE frame exacto, por lo que el siguiente tile
@@ -1038,6 +1070,12 @@ export async function exportMangaMotionVideo(
     av1: 84,
   };
 
+  // ── Superciclo de partículas ──
+  // Se pintan como máximo tres vueltas visuales (y 30 s) antes del remux. Así una
+  // lluvia no reinicia en cada loop corto, pero exportar 10 min sigue costando lo
+  // mismo que un superciclo acotado, no 10 min de composición Canvas.
+  let cycleBase = 0;
+
   // Factory del encoder del ciclo: el reintento tras un atasco necesita uno limpio
   // (el intento fallido dejó frames parciales en el Output anterior)
   const createCycleEncoder = () => {
@@ -1064,6 +1102,7 @@ export async function exportMangaMotionVideo(
   let cycleOutput: Output<Mp4OutputFormat, BufferTarget> = enc.output;
   await cycleOutput.start();
 
+  const noopParticles = new PhysicsParticleSystem();
   const drawComposited = (
     source: CanvasImageSource,
     t: number,
@@ -1074,11 +1113,29 @@ export async function exportMangaMotionVideo(
       sourceTransform: sourceTransformAt(
         opts.sourceStabilization,
         sourceTime,
-        opts.stabilizationEnabled !== false
+        opts.stabilizationEnabled !== false,
+        opts.stabilizationStrength ?? 1
       ),
     };
-    // dtScale = fps/60: las partículas avanzan en tiempo real igual que en el preview
-    renderMangaMotionFrame(ctx, source, frameConfig, width, height, t, null, particleSys, fps / 60);
+    if (particlesContinuous) {
+      // Modo por capas: el video (y su crossfade de ciclo) se compone SIN
+      // partículas; las partículas vivas se dibujan encima en finishFrame para
+      // que el fundido final→inicio no las arrastre de vuelta ni las apague.
+      renderMangaMotionFrame(
+        ctx,
+        source,
+        { ...frameConfig, particles: "none" },
+        width,
+        height,
+        t,
+        null,
+        noopParticles,
+        0
+      );
+    } else {
+      // dtScale = fps/60: las partículas avanzan en tiempo real igual que en el preview
+      renderMangaMotionFrame(ctx, source, frameConfig, width, height, t, null, particleSys, fps / 60);
+    }
 
     if (seamMode === "pingpong") {
       const state = getSmoothPingPongFrameState(t, sourceDuration, sourceStart);
@@ -1093,7 +1150,8 @@ export async function exportMangaMotionVideo(
             sourceTransform: sourceTransformAt(
               opts.sourceStabilization,
               Math.min(sourceEnd - frameDur, Math.max(sourceStart, state.endpointTime)),
-              opts.stabilizationEnabled !== false
+              opts.stabilizationEnabled !== false,
+              opts.stabilizationStrength ?? 1
             ),
           },
           width,
@@ -1113,7 +1171,8 @@ export async function exportMangaMotionVideo(
 
   const finishFrame = async (i: number) => {
     shouldCancel();
-    if (fadeFrames > 0 && i === 0) {
+    const globalIndex = cycleBase + i;
+    if (fadeFrames > 0 && i === 0 && cycleBase === 0) {
       const shot = await captureHeadShot();
       // Validación: un JPEG de 1080p con contenido real pesa ≥ 10 KB.
       // Un frame negro/vacío comprime a < 5 KB. Si el headshot es sospechoso,
@@ -1124,7 +1183,7 @@ export async function exportMangaMotionVideo(
         console.warn("Headshot frame 0 descartado (" + (shot?.size ?? "nulo") + " bytes) — se capturará en frame 1");
       }
     }
-    if (fadeFrames > 0 && i === 1 && headShots.length === 0) {
+    if (fadeFrames > 0 && i === 1 && cycleBase === 0 && headShots.length === 0) {
       headShots.push(await captureHeadShot());
     }
     if (fadeFrames > 0 && i >= cycleFrames - fadeFrames && headShots.length > 0) {
@@ -1175,17 +1234,41 @@ export async function exportMangaMotionVideo(
         }
       }
     }
-    const addPromise = videoSource.add(i * frameDur, frameDur);
+    if (particlesContinuous) {
+      // Capa viva de partículas ENCIMA del crossfade: avanzan con su propio reloj
+      // continuo (globalIndex) y nunca reinician aunque el video repita el ciclo.
+      particleSys.update(
+        cycleConfig.particles,
+        cycleConfig.particleIntensity,
+        width,
+        height,
+        globalIndex * frameDur,
+        cycleConfig.particleSpeed || 1.0,
+        fps / 60,
+        cycleConfig.particleControls
+      );
+      particleSys.draw(ctx, cycleConfig.particles, cycleConfig.particleControls);
+    }
+    const addPromise = videoSource.add(globalIndex * frameDur, frameDur);
     await gate(addPromise, PAINT_WATCHDOG_TIMEOUT_MS);
     if (onProgress && i % 4 === 0) {
-      onProgress(0.12 + ((i + 1) / cycleFrames) * 0.62, `Pintando ciclo ${((i + 1) / fps).toFixed(1)}s / ${cycleDuration.toFixed(1)}s`);
+      onProgress(
+        0.08 + ((globalIndex + 1) / totalFrames) * 0.66,
+        particlesContinuous
+          ? `Pintando ${(Math.min(totalFrames, globalIndex + 1) / fps).toFixed(0)}s / ${(totalFrames / fps).toFixed(0)}s (ciclo ${Math.floor(globalIndex / cycleFrames) + 1}/${totalCycles})`
+          : `Pintando ciclo ${((i + 1) / fps).toFixed(1)}s / ${cycleDuration.toFixed(1)}s`
+      );
     }
     if (i % 8 === 0) await tick();
   };
 
   // Ruta alternativa con seek por frame (HTMLVideoElement): lenta pero inmune a los
   // atascos del decodificador WebCodecs en segmentos reversos del pingpong.
-  const renderCycleSeekBased = async (): Promise<void> => {
+  const renderCycleSeekBased = async (
+    times: number[],
+    cycles: number[],
+    count: number
+  ): Promise<void> => {
     const video = document.createElement("video");
     video.muted = true;
     video.playsInline = true;
@@ -1231,18 +1314,18 @@ export async function exportMangaMotionVideo(
       // frame negro/vacío porque el navegador dispara "seeked" antes de decodificar
       // el fotograma. El headshot capturado en finishFrame(0) sería negro → el
       // crossfade de cada ciclo desvanece a negro → pantallazo en cada repetición.
-      await seekTo(video, srcTimes[0]!);
+      await seekTo(video, times[0]!);
       // Doble RAF: "seeked" puede adelantarse a la decodificación real del frame.
       await new Promise<void>(r => {
         requestAnimationFrame(() => requestAnimationFrame(() => r()));
       });
       srcCtx.drawImage(video, 0, 0, rawW, rawH);
 
-      for (let i = 0; i < cycleFrames; i++) {
+      for (let i = 0; i < count; i++) {
         shouldCancel();
-        await seekTo(video, srcTimes[i]!);
+        await seekTo(video, times[i]!);
         srcCtx.drawImage(video, 0, 0, rawW, rawH);
-        drawComposited(srcCanvas, cycleTimes[i]!, srcTimes[i]!);
+        drawComposited(srcCanvas, cycles[i]!, times[i]!);
         await finishFrame(i);
       }
     } finally {
@@ -1252,40 +1335,52 @@ export async function exportMangaMotionVideo(
     }
   };
 
-  try {
-    onProgress?.(0.08, isVideo ? "Decodificando clip a resolución completa…" : "Renderizando ciclo visual…");
-
-    if (isVideo && sourceBlob && typeof VideoDecoder !== "undefined") {
-      try {
-        // Progreso granular: actualiza cada frame (no cada 4) para que la barra
-        // no salte 43% de golpe; el watchdog ve latido continuo en el tramo inverso.
-        let lastStage = "";
+  const renderAllCycles = async (mode: "streaming" | "seek"): Promise<void> => {
+    if (mode === "streaming" && !sourceBlob) {
+      throw new Error("El export continuo necesita el blob del clip original");
+    }
+    let base = 0;
+    for (let c = 0; c < totalCycles; c++) {
+      cycleBase = base;
+      const framesLeft = Math.min(cycleFrames, totalFrames - base);
+      const timesSlice = srcTimes.slice(0, framesLeft);
+      const cycleSlice = cycleTimes.slice(0, framesLeft);
+      if (mode === "streaming") {
+        if (!sourceBlob) throw new Error("El export continuo necesita el blob del clip original");
         await renderCycleStreaming(
           sourceBlob,
-          srcTimes,
-          cycleTimes,
+          timesSlice,
+          cycleSlice,
           width,
           height,
           drawComposited,
           finishFrame,
-          (painted, total, phase) => {
+          (painted, _total, phase) => {
             if (!onProgress) return;
             const seg = Math.min(cycleDuration, painted / fps).toFixed(1);
             const stage =
               phase === "decode"
                 ? `Preparando tramo inverso… ${seg}s / ${cycleDuration.toFixed(1)}s`
                 : `Pintando ${seg}s / ${cycleDuration.toFixed(1)}s`;
-            // Evita spam idéntico pero no filtra por %4: el progreso ahora es real y continuo
-            if (stage !== lastStage || painted % 2 === 0) {
-              lastStage = stage;
-              onProgress(0.08 + (painted / total) * 0.66, stage);
-            } else {
-              onProgress(0.08 + (painted / total) * 0.66, stage);
-            }
+            // Progreso global: painted es local al ciclo actual.
+            onProgress(0.08 + ((base + painted) / totalFrames) * 0.66, stage);
           },
           gate,
           shouldCancel
         );
+      } else {
+        await renderCycleSeekBased(timesSlice, cycleSlice, framesLeft);
+      }
+      base += framesLeft;
+    }
+  };
+
+  try {
+    onProgress?.(0.08, isVideo ? "Decodificando clip a resolución completa…" : "Renderizando ciclo visual…");
+
+    if (isVideo && sourceBlob && typeof VideoDecoder !== "undefined") {
+      try {
+        await renderAllCycles("streaming");
       } catch (err) {
         // Atasco del decodificador WebCodecs (típico en el giro del pingpong): un reintento
         // automático con la ruta de seeks salva el export en vez de dejarlo a medias.
@@ -1296,9 +1391,14 @@ export async function exportMangaMotionVideo(
         if (isStall) {
           onProgress?.(0.1, "Decodificador atascado: reintentando con método alternativo…");
           // El reintento repinta desde el frame 0: reiniciar el estado de partículas y
-          // descartar las cabezas del crossfade del intento anterior para que el ciclo
-          // quede idéntico al original (las partículas venían a mitad de ciclo).
-          particleSys.init(cycleConfig.particles, width, height, cycleConfig.particleIntensity);
+          // descartar las cabezas del crossfade del intento anterior.
+          particleSys.init(
+            cycleConfig.particles,
+            width,
+            height,
+            cycleConfig.particleIntensity,
+            cycleConfig.particleControls
+          );
           headShots.length = 0;
           // Descartar el encoder con frames parciales y arrancar uno limpio
           try {
@@ -1311,17 +1411,23 @@ export async function exportMangaMotionVideo(
           videoSource = enc.source;
           cycleOutput = enc.output;
           await cycleOutput.start();
-          await renderCycleSeekBased();
+          await renderAllCycles("seek");
         } else {
           throw err;
         }
       }
     } else if (isVideo) {
-      await renderCycleSeekBased();
+      await renderAllCycles("seek");
     } else {
-      for (let i = 0; i < cycleFrames; i++) {
-        drawComposited(image, cycleTimes[i]!, srcTimes[i]!);
-        await finishFrame(i);
+      let base = 0;
+      for (let c = 0; c < totalCycles; c++) {
+        cycleBase = base;
+        const framesLeft = Math.min(cycleFrames, totalFrames - base);
+        for (let i = 0; i < framesLeft; i++) {
+          drawComposited(image, cycleTimes[i]!, srcTimes[i]!);
+          await finishFrame(i);
+        }
+        base += framesLeft;
       }
     }
 
@@ -1334,13 +1440,13 @@ export async function exportMangaMotionVideo(
     onProgress?.(0.76, `Montando video de ${targetDuration >= 60 ? `${Math.round(targetDuration / 60)} min` : `${targetDuration}s`}…`);
 
     let finalBlob: Blob;
-    if (targetDuration <= cycleDuration + 0.05 && !masterAudioBuffer) {
+    if (targetDuration <= renderedCycleDuration + 0.05 && !masterAudioBuffer) {
       finalBlob = cycleBlob;
     } else {
       try {
         finalBlob = await tileCycleWithAudio(
           cycleBlob,
-          cycleDuration,
+          renderedCycleDuration,
           targetDuration,
           videoCodec,
           masterAudioBuffer,
@@ -1352,7 +1458,7 @@ export async function exportMangaMotionVideo(
       } catch (err) {
         console.warn("Remux del ciclo falló, se reintenta mux simple:", err);
         shouldCancel();
-        if (targetDuration <= cycleDuration + 0.08 && masterAudioBuffer && audioCodec) {
+        if (targetDuration <= renderedCycleDuration + 0.08 && masterAudioBuffer && audioCodec) {
           const fallback = new Output({
             format: new Mp4OutputFormat(),
             target: new BufferTarget(),

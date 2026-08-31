@@ -6,6 +6,9 @@ export type ClipFrameCache = {
   frames: ImageBitmap[];
   width: number;
   height: number;
+  /** Dimensiones reales del vídeo original (los frames van reescalados). */
+  sourceWidth: number;
+  sourceHeight: number;
 };
 
 export function clipFrameAt(cache: ClipFrameCache, sourceTime: number): ImageBitmap | null {
@@ -114,7 +117,7 @@ export async function buildClipFrameCache(
       frames.push(await createImageBitmap(lastBmp));
     }
     opts?.onProgress?.(1);
-    return { duration, fps, frames, width, height };
+    return { duration, fps, frames, width, height, sourceWidth: srcW, sourceHeight: srcH };
   } finally {
     input.dispose();
   }

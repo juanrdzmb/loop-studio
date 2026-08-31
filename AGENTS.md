@@ -23,6 +23,7 @@ npm run lint           # eslint — estado actual: 0 errores (los warnings son d
 node scripts/e2e-dual-studio-export.mjs   # e2e de calidad de export 16:9 (requiere server arriba)
 node scripts/e2e-dual-studio-export-vertical.mjs   # e2e export 9:16 pingpong + botón Cancelar
 node scripts/e2e-audio-smoke.mjs   # smoke sin companion (tema completo + Short 25/30 + metadatos/SFX)
+node scripts/e2e-audio-playlist.mjs   # playlist múltiple, efecto por pista y play fiable a un clic
 node scripts/e2e-audio-sfx-export.mjs   # e2e Short one-shot + master 48 kHz + SFX a 10 s
 node scripts/e2e-visual-loop-auto.mjs   # e2e LoopyCut sourceStart/sourceEnd (requiere companion)
 node scripts/e2e-extend-loop.mjs   # e2e modo Extender 9:16 (clip 6s estirado a Short 15s, rate 0.4x)
@@ -30,8 +31,12 @@ node scripts/e2e-landscape-to-vertical.mjs   # e2e fuente 1920x1080 → Short 9:
 node scripts/test_extend_rate.mjs   # tests puros de la matemática del modo Extender
 node scripts/test_pingpong_loop.mjs   # tests puros del boomerang suave (cadencia, transición, ciclo exacto)
 node scripts/test_video_stabilization.mjs   # tests puros de la estabilización de microvibración
+node scripts/e2e-particles-continuous.mjs   # e2e partículas continuas en el tiling + estabilización (requiere server :3210)
 node scripts/test_audio_repetitions.mjs   # tests puros de N vueltas de audio (duración exacta, −1 dBFS)
+node scripts/test_audio_playlist.mjs   # orden, resampling 48 kHz, fundidos y duración de playlist
 node scripts/test_youtube_pack.mjs   # tests puros del copy de publicación
+node scripts/e2e-real-sample-export.mjs   # export Natural del ejemplo real Prueba.mp4
+node scripts/e2e-edit-studio.mjs   # multiclip, beat, capas de efecto, música y export de Edit Studio
 companion/.venv/bin/python scripts/test_companion_video_loop.py   # ranking/contrato LoopyCut
 ```
 
@@ -39,12 +44,22 @@ Orden de verificación: `npx tsc --noEmit` → `npm run lint` → `npm run build
 
 ## Páginas (src/app/)
 
-- **`/dual-studio`** — el estudio principal que usa el dueño del proyecto: slots 16:9 + 9:16, continuidad LoopyCut, música slowed+reverb one-shot, SFX por formato, export individual o batch. Es el archivo más activo (~3300 líneas).
+- **`/dual-studio`** — el estudio principal que usa el dueño del proyecto: slots 16:9 + 9:16, continuidad LoopyCut, playlist con slowed+reverb por pista, SFX por formato, export individual o batch. Es el archivo más activo (~4900 líneas).
+- **`/edit-studio`** — montaje multiclip al beat: timeline, transiciones, textos, música, SFX, partículas y export MP4. Complementa a dual-studio para edits con varias tomas.
 - `/manga-motion` — estudio alternativo (textos manga, katana). Comparte el mismo motor de export.
 - `/video-loop` — legacy, depende 100% del companion Python; solo tocar si se pide explícitamente.
 - `/combinar`, `/slowed-reverb` — utilidades del flujo GIF. `loopProcessor.ts`/`loopStrategy.ts` son de GIF Studio, no de dual-studio.
 
-Todos los archivos están trackeados en git. Las piezas core (`dual-studio/`, componentes y librerías auxiliares) se commitean junto con la app.
+### Edit Studio (`/edit-studio`)
+
+Montaje multiclip con timeline arrastrable, beats y transiciones. Librerías dedicadas:
+- `src/lib/editStudio.ts` — `EditProject`, `EditTimelineClip`, `EditTextCue`, beats (`buildBeatMarkers`, `snapEditTime`), presets rítmicos (`applyEditRhythmPreset`) y helpers geométricos en 9:16/16:9.
+- `src/lib/editStudioRender.ts` — `buildEditFrameConfig` traslada `EditMotion` a `CameraMovement`; `composeEditTransition` maneja `cut`/`crossfade`/`flash`/`whip`; `drawEditTextCue` renderiza texto con stroke+shadow+accent al estilo manga.
+- `src/lib/editStudioExport.ts` — `exportEditStudioVideo` decodifica assets secuencialmente (`samplesAtTimestamps` con drenaje pendiente y frames repetidos), pinta con `renderMangaMotionFrame` + composición de transición, mezcla música con fundidos de borde y SFX offline, añade watermark y codifica con mediabunny. Ruta de cancelación vía AbortSignal y barra de progreso.
+
+Particularidades: cada asset (vídeo/imagen) se cachea como `ClipFrameCache` (max 540px, 18 fps, 88 MB) para el preview RAF; el export re-decoodifica a resolución nativa. Transiciones whip/flash usan composición con canal alpha y modo screen. Los textos se renderizan en coordenadas normalizadas (0..1). El proyecto serializable a JSON (`.loop-edit.json`) para guardar/cargar sesiones.
+
+Todos los archivos están trackeados en git. Las piezas core (`dual-studio/`, `edit-studio/`, componentes y librerías auxiliares) se commitean junto con la app.
 
 ## Motor de export (`src/lib/mangaMotionExport.ts`) — invariantes
 
@@ -61,9 +76,33 @@ Pipeline: decodifica el clip en streaming con WebCodecs → pinta UN ciclo con `
 - **FPS fraccional conservado**: `detectSourceFps` mide la rate real por paquetes y la ancla a rates comunes (23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60) si está a ≤1.5 de una; nunca redondear a entero ni hardcodear 30.
 - **Canvas fuente a resolución nativa**: el canvas intermedio usa `rawW/rawH` del vídeo (no el tamaño de salida); el recorte horizontal→9:16 se hace UNA sola vez por `cover` al pintar. Poner el canvas fuente a 9:16 antes de recortar deforma la imagen. Regresión: `e2e-landscape-to-vertical.mjs`.
 - **Boomerang suave (`src/lib/pingPongLoop.ts`)**: velocidad constante en ambos tramos — la fuente NUNCA acelera ni se pausa. `getSmoothPingPongFrameState` centraliza tiempo/mezcla/dirección para preview y export; cerca de cada extremo se mezcla cosenoidalmente el frame estable del giro (`endpointMix` ≤0.55, 0.42 con movimiento alto) decodificado aparte (`decodePingPongEndpointFrames`, cerrados en `finally`). Transición adaptativa: 0.32 s movimiento bajo / 0.24 medio / 0.18 alto. `computeVisualCrossfadeDuration` devuelve 0 para pingpong (el giro ya está amortiguado; un segundo fundido sería doble transición). `calculateOrganicPingPongTime` se conserva por compatibilidad pero delega en la nueva función. Tests: `test_pingpong_loop.mjs`.
-- **Estabilización de microvibración (`src/lib/videoStabilization.ts`)**: al cargar un clip se analiza con flujo óptico Lucas–Kanade sobre el cache del preview (`analyzeClipFrameStabilization`); separa jitter rápido de paneos con suavizado gaussiano (±0.35 s) y corrige solo la diferencia. Se activa si confianza ≥umbral, recorte ≤2 % (`cropScale` ≤1.02) y corrección ≤1.25 % por eje; preview y export comparten `sourceTransformAt`. El usuario puede desactivarla por formato (panel "Corrección de microvibración"). Tests: `test_video_stabilization.mjs`.
+- **Estabilización de microvibración (`src/lib/videoStabilization.ts`)**: al cargar un clip se analiza con flujo óptico Lucas–Kanade sobre el cache del preview (`analyzeClipFrameStabilization`); separa jitter rápido de paneos con suavizado gaussiano (±0.35 s) y corrige solo la diferencia. La confianza por frame es el **condicionamiento del sistema LK** (`det/(xx·yy)`): la isotropía `4·det/(xx+yy)²` penalizaba bordes axis-aligned (testsrc2 → 0.66) y el `fit` (residual/diferencia temporal) colapsa a 0 con movimiento interno real, así que ninguno de los dos sirve como puerta; el `fit` se conserva solo como diagnóstico. Se activa si confianza ≥0.75, recorte ≤2 % (`cropScale` ≤1.02) y corrección ≤1.25 % por eje; preview y export comparten `sourceTransformAt`. El usuario puede desactivarla por formato (panel "Corrección de microvibración"). Tests: `test_video_stabilization.mjs`; e2e con fixture sintético ±2 px @6 Hz: `e2e-particles-continuous.mjs`.
 - FPS del export = fps real del source vía `track.computePacketStats().averagePacketRate` (no hardcodear 30).
 - El audio master se procesa fuera con `buildProcessedOneShotBuffer` y entra con la duración final exacta; los SFX se mezclan a 48 kHz en `OfflineAudioContext` (`renderSfxCuesToOffline`) respetando `LoopSfxCue.targetFormat`. Un peak guard reduce todo el master si música+SFX superarían 0 dBFS y mediabunny codifica a 384 kbps.
+
+### Color grading y film grain (`mangaMotionEngine.ts`)
+
+`ColorGradeConfig` expone 8 parámetros (−100..100): `exposure`, `contrast`, `saturation`, `temperature`, `tint`, `fade` (negros lavados), `bloom`, `grain`. Se aplican en el pipeline del canvas como operaciones de píxel directas (nunca CSS) para que export y preview sean idénticos. El grain usa un patrón procedural de ruido (Seed 0x51f15e, 96×96) repetido (`getFilmGrainPattern`) que se escala con el parámetro `grain`. `DEFAULT_COLOR_GRADE` tiene todos a 0. Los presets visuales (Dark Fantasy, Retro 90s, Golden hour…) ahora se implementan como `ColorGradeConfig` en lugar de cadenas separadas; los contrastes se suavizaron ≤135 % y se eliminó `hue-rotate` de Dark Fantasy.
+
+### Sistema de partículas (`mangaMotionEngine.ts`)
+
+Tres nuevos tipos: `cinematic_dust` (polvo de lente), `snow_ash` (nieve y ceniza), `light_leaks` (fugas de luz). `ParticleControlOptions` expone 8 parámetros (tamaño, opacidad, viento, turbulencia, color, blendMode, blur, seed + loopDuration) que la UI puede manipular sin re-inicializar el sistema. El blend mode acepta `source-over`, `screen`, `lighter` y `soft-light`.
+
+Particularidades cinemáticas:
+- `cinematic_rain` fija velocidad al spawn (`vx0/vy0`) sin `Math.random()` por frame; streak alineado al vector real; densidad ligada a intensidad (48-120 gotas).
+- `dark_ink_fog` / `cinematic_dust` / `light_leaks` usan movimiento en Lissajous (sin/cos lento) con opacidad permanente para nubes de tinta/polvo/luz.
+- `snow_ash` (nieve) usa parábola descendente con deriva por viento.
+- `embers_fire` / `golden_sparks` ascienden con onda senoidal lateral.
+
+Cada canvas/slot tiene su propia instancia de `PhysicsParticleSystem`. El parámetro `dtScale` en `update()` normaliza las velocidades de streak al framerate real (1.0 = 60 fps, 0.5 = 30 fps) para que el export coincida con el preview. `resolveParticleRenderPlan` (`src/lib/particleLoop.ts`) decide cuántas copias visuales renderizar antes de remuxear (max 3 superciclos, 30 s tope) para que las partículas no reinicien en cada frontera de tiling corto.
+
+### Watermark (`watermark.ts`)
+
+`WatermarkStyleOptions` permite controlar posición (`bottom-center` | `bottom-left` | `bottom-right` | `top-center`), escala, tracking, color, ruleScale y offsetX/Y. `drawProfessionalWatermark` renderiza la firma en el canvas con sombreado y alineación tipográfica. `drawThumbnailChannelMark` se conserva para previsualizaciones rápidas. La fuente se precarga con `ensureWatermarkFont`.
+
+### Extend Playback híbrido (`extendPlayback.ts`)
+
+`resolveExtendPlaybackPlan` calcula el rate, ciclo y repeticiones. `DEFAULT_EXTEND_MIN_PLAYBACK_RATE = 0.65` es el suelo configurable (antes era piso fijo 0.15 global). El plan incluye `sourceDuration`, `targetDuration`, `minRate`, `rate`, `cycleDuration` y `repeatCount`. Tests: `test_extend_rate.mjs` validan el suelo por defecto y la transición a smooth cuando target ≤ clip.
 
 ## Continuidad visual automática (LoopyCut) — Smart Forward Loop
 
@@ -75,6 +114,8 @@ Pipeline: decodifica el clip en streaming con WebCodecs → pinta UN ciclo con `
 - Tests de ranking: `node scripts/test_visual_loop_ranking.mjs` y `companion/.venv/bin/python scripts/test_visual_loop_ranking.py` cubren A-D (16 s vs 4.5 s, cola roja 9 s, micro-loop 3 s). Contrato LoopyCut: `companion/.venv/bin/python scripts/test_companion_video_loop.py`. E2E de integración y exclusión de frames fuera del rango: `node scripts/e2e-visual-loop-auto.mjs` (requiere companion en :8787).
 
 ## Música por formato (one-shot, sin loops internos)
+
+- **Playlist secuencial (`src/lib/audioPlaylist.ts`)**: dual-studio acepta varias canciones de una vez, permite reordenar/eliminar y aplica Original/Suave/Clásico/Profundo por pista. Cada preset se cachea por `AudioBuffer`; `audioPlaylistMix.ts` remuestrea el master a 48 kHz, une con fundidos de potencia constante de hasta 0.75 s y limita a −1 dBFS. El vídeo dura exactamente el master combinado y repite sólo la imagen. El transporte invalida `resume()` obsoletos y, tras cambiar de buffer, hace `setBuffer → play` en el mismo comando lógico: un clic siempre debe sonar. Tests: `test_audio_playlist.mjs`, `e2e-audio-playlist.mjs`.
 
 - **Editor ÚNICO (`AudioLoopPanel`, sección 3 de dual-studio)**: el toggle 🖥️/📱 llama `switchAudibleFormat` y edita lo que se oye. En 9:16 ofrece **✨ Recomendar** y **✂️ Recortar** sobre una ventana de 5–60 s; el drag usa imán a medio beat (`snapSec` de `estimateBeatPeriodSec`). La duración mínima cubre siempre el clip visual completo.
 - **Audio simplificado a presets**: dual-studio arranca en audio Original y solo expone Suave, Clásico y Profundo; los sliders avanzados ya no forman parte del flujo visible. Valores actuales (en `REVERB_PRESETS`, `audioEngine.ts`): Suave 0.92×/reverb 14 %/decay 1.4 s/pre-delay 18 ms/low-pass 16 kHz; Clásico 0.87×/22 %/2.0 s/24 ms/14 kHz; Profundo 0.82×/30 %/2.7 s/30 ms/12 kHz. `ReverbSettings` acepta `preDelayMs` y `damping` (opcionales, compatibilidad preservada); el worklet Dattorro mezcla dry/wet en potencia constante y tras el master hay un limitador a −1 dBFS (threshold −1, ratio 20) antes del panner. El cambio de master en preview usa crossfade por fuente para no introducir clicks.
@@ -119,3 +160,19 @@ Pipeline: decodifica el clip en streaming con WebCodecs → pinta UN ciclo con `
 ## Companion (opcional, `companion/`)
 
 Servidor FastAPI en :8787 (`./companion/start.sh` o `./iniciar.sh`). Lo usan `/video-loop`, LoopyCut visual (`/analyze/video`), sugerencias musicales (`analyzeMusic` → pymusiclooper) y el guardado automático en `~/Vídeos/Dark/`. Sin companion, dual-studio sigue exportando: usa el clip visual completo con fundido conservador, genera puntos musicales locales y descarga el resultado, pero no lo guarda automáticamente en `~/Vídeos/Dark/`.
+
+### Nuevos endpoints
+
+- **`POST /analyze/stabilization`** — análisis avanzado de microvibración con esquinas Shi–Tomasi, LK piramidal con validación forward/backward, transformación de similitud robusta por RANSAC y suavizado gaussiano de trayectoria. Devuelve `keyframes[]`, `crop_scale`, `jitter_rms_px`, `confidence`, `auto_enabled`. Implementación en `companion/stabilization.py`.
+- **`POST /transcode/browser`** — convierte vídeos que WebCodecs no puede abrir (MOV, AVI, etc.) a MP4 H.264/AAC local con ffmpeg. Devuelve el archivo transcodificado como respuesta binaria.
+
+### LoopyCut v2 (`motion_loop.py`)
+
+`evaluate_motion_loop_v2` reemplaza `evaluate_motion_loop` con un cálculo más robusto:
+- **Flujo óptico**: mediana en vez de media global, flujo backward para medir consistencia temporal (`fb_error`), añadiendo `flow_consistency` al tuple.
+- **Similitud visual**: combinación ponderada MAD (78 %) + correlación de histogramas (22 %) para resistir cambios de iluminación.
+- **Movimiento**: ventana de ±0.25 s alrededor del punto de costura (mediana del vector), evitando outliers de un solo frame.
+- **Riesgo de corte**: `scene_cut_risk` mide MAD entre frames adyacentes en los bordes del candidato; si supera `baseline_diff * 1.8` se penaliza fuerte (−22 puntos en score final).
+- **Confianza**: integra visual + motion + flow_consistency, modulada por `(1 - scene_cut_risk * 0.72)`.
+- **Quality tiers**: `excellent` (≥85, confidence ≥0.78, cut_risk <0.25), `good` (≥68, ≥0.52, <0.60), `review`.
+- La alineación (phaseCorrelate + ECC) se estima ahora ANTES del ranking y su confianza contribuye (15 %) a la métrica final, no solo como metadato.

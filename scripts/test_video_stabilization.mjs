@@ -40,4 +40,27 @@ const uncertain = buildStabilizationFromPath(
 );
 assert.equal(uncertain.autoEnabled, false, "no se corrige una estimación sin confianza");
 
-console.log("✓ estabilización: elimina microjitter sin cancelar paneos ni forzar análisis dudosos");
+const advanced = {
+  version: 2,
+  source: "companion-opencv",
+  autoEnabled: true,
+  confidence: 0.9,
+  cropScale: 1.01,
+  jitterRmsPx: 1.2,
+  reason: "fixture v2",
+  keyframes: [
+    { time: 0, dx: -0.002, dy: 0.001, rotation: -0.4, scale: 0.998, confidence: 0.9 },
+    { time: 1, dx: 0.002, dy: -0.001, rotation: 0.4, scale: 1.002, confidence: 0.9 },
+  ],
+};
+const advancedHalf = sourceTransformAt(advanced, 0.25, true, 0.5);
+assert.ok(advancedHalf.dx < 0 && advancedHalf.dy > 0, "v2 interpola traslación");
+assert.ok(advancedHalf.rotation < 0 && advancedHalf.rotation > -0.21, "la intensidad escala la rotación");
+assert.ok(advancedHalf.scale > 1 && advancedHalf.scale < advanced.cropScale, "crop y escala local se combinan gradualmente");
+assert.deepEqual(
+  sourceTransformAt(advanced, 0.25, true, 0),
+  { dx: 0, dy: 0, scale: 1, rotation: 0 },
+  "intensidad 0 conserva identidad"
+);
+
+console.log("✓ estabilización: elimina microjitter, interpola v2 y respeta intensidad/paneos");

@@ -1,0 +1,57 @@
+/* E2E del camino principal de Edit Studio: multiclip, ritmo, preview, atmósfera,
+ * texto, audio y export. Requiere servidor en :3210. */
+import { chromium } from "playwright-core";
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+
+const BASE = process.env.LOOP_STUDIO_URL || "http://localhost:3210";
+const EXE = `${process.env.HOME}/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome`;
+const WORK = "/tmp/opencode/loopstudio-edit-e2e";
+fs.mkdirSync(WORK, { recursive: true });
+const A = `${WORK}/plano-a.jpg`;
+const B = `${WORK}/plano-b.jpg`;
+const SONG = `${WORK}/edit-song.wav`;
+const OUT = `${WORK}/edit-studio.mp4`;
+execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=0x3b143f:s=1080x1920", "-frames:v", "1", A]);
+execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=0x102f42:s=1080x1920", "-frames:v", "1", B]);
+execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=220:sample_rate=48000:duration=4", SONG]);
+
+const browser = await chromium.launch({ executablePath: fs.existsSync(EXE) ? EXE : undefined, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
+const page = await browser.newPage();
+const errors = [];
+page.on("pageerror", (error) => errors.push(error.message));
+await page.goto(`${BASE}/edit-studio`, { waitUntil: "networkidle" });
+await page.locator('label:has-text("+ Importar") input[type="file"]').setInputFiles([A, B]);
+await page.getByText("plano-a.jpg", { exact: true }).waitFor();
+await page.getByText("plano-b.jpg", { exact: true }).waitFor();
+await page.getByRole("button", { name: "Referencia 18 s" }).click();
+await page.getByRole("button", { name: "▶ PLAY" }).click();
+await page.getByRole("button", { name: "❚❚ PAUSA" }).waitFor();
+await page.getByRole("button", { name: "❚❚ PAUSA" }).click();
+
+await page.getByText("05 / Atmósfera").click();
+await page.locator("details").filter({ hasText: "05 / Atmósfera" }).locator("select").first().selectOption("cinematic_dust");
+await page.getByText("06 / Textos y firma").click();
+await page.getByRole("button", { name: "+ Texto en el cabezal" }).click();
+await page.locator('label:has-text("Seleccionar canción") input[type="file"]').setInputFiles(SONG);
+await page.getByText("edit-song.wav", { exact: true }).waitFor();
+
+await page.getByRole("button", { name: "EXPORTAR EDIT" }).click();
+await page.getByText("Descargar de nuevo").waitFor({ timeout: 300_000 });
+const b64 = await page.evaluate(async () => {
+  const anchor = Array.from(document.querySelectorAll("a")).find((item) => item.textContent?.includes("Descargar de nuevo"));
+  const response = await fetch(anchor.href);
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += 0x8000) binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+  return btoa(binary);
+});
+fs.writeFileSync(OUT, Buffer.from(b64, "base64"));
+const probe = JSON.parse(execFileSync("ffprobe", ["-v", "quiet", "-print_format", "json", "-show_streams", "-show_format", OUT]));
+const video = probe.streams.find((stream) => stream.codec_type === "video");
+if (video.width !== 1080 || video.height !== 1920) throw new Error(`Resolución inesperada ${video.width}x${video.height}`);
+if (!probe.streams.some((stream) => stream.codec_type === "audio")) throw new Error("El edit salió sin audio");
+if (errors.length) throw new Error(errors.join(" | "));
+
+console.log(`✓ Edit Studio: multiclip, beat, play/pausa, partículas, texto, audio y export ${probe.format.duration}s`);
+await browser.close();

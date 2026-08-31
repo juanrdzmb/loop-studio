@@ -2,6 +2,8 @@
 
 /** Cliente del companion local (PyMusicLooper + LoopyCut + ffmpeg + capas) */
 
+import type { ClipStabilization, StabilizationKeyframe } from "./videoStabilization";
+
 export const COMPANION_URL = "http://localhost:8787";
 
 export interface VisualAlignment {
@@ -26,6 +28,16 @@ export interface LoopCandidate {
   reason?: string;
   /** Alineación global opcional IN->OUT para crossfade compensado. */
   alignment?: VisualAlignment | null;
+  analysisVersion?: number;
+  quality?: "excellent" | "good" | "review";
+  metrics?: {
+    seamVisual: number;
+    motionMatch: number;
+    sceneCutRisk: number;
+    confidence: number;
+    flowConsistency?: number;
+    coverage?: number;
+  };
 }
 
 export interface CompanionHealth {
@@ -190,6 +202,17 @@ export async function analyzeVideoLook(
         alignment = { dx, dy, scale, rotation, confidence };
       }
     }
+    const rawMetrics = candidate.metrics as Record<string, unknown> | undefined;
+    const metrics = rawMetrics
+      ? {
+          seamVisual: Number(rawMetrics.seam_visual ?? rawMetrics.seamVisual) || 0,
+          motionMatch: Number(rawMetrics.motion_match ?? rawMetrics.motionMatch) || 0,
+          sceneCutRisk: Number(rawMetrics.scene_cut_risk ?? rawMetrics.sceneCutRisk) || 0,
+          confidence: Number(rawMetrics.confidence) || 0,
+          flowConsistency: Number(rawMetrics.flow_consistency ?? rawMetrics.flowConsistency) || undefined,
+          coverage: Number(rawMetrics.coverage) || undefined,
+        }
+      : undefined;
     return {
       start: Number(candidate.start) || 0,
       end: Number(candidate.end) || 0,
@@ -200,6 +223,11 @@ export async function analyzeVideoLook(
       fadeSec: Number(candidate.fade_sec ?? candidate.fadeSec) || undefined,
       reason: typeof candidate.reason === "string" ? candidate.reason : undefined,
       alignment,
+      analysisVersion: Number(candidate.analysis_version ?? candidate.analysisVersion) || undefined,
+      quality: candidate.quality === "excellent" || candidate.quality === "good" || candidate.quality === "review"
+        ? candidate.quality
+        : undefined,
+      metrics,
     };
   }) as LoopCandidate[];
   return {
@@ -207,6 +235,71 @@ export async function analyzeVideoLook(
     duration: Number(data.duration) || 0,
     motionPeriod: Number(data.motion_period) || 0,
   };
+}
+
+export async function analyzeVideoStabilization(video: File): Promise<ClipStabilization> {
+  const form = new FormData();
+  form.append("video", video);
+  form.append("max_samples", "360");
+  const response = await fetch(`${COMPANION_URL}/analyze/stabilization`, {
+    method: "POST",
+    body: form,
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "Error analizando la estabilización");
+
+  const rawFrames = Array.isArray(data.keyframes) ? data.keyframes : [];
+  const keyframes = rawFrames
+    .map((raw: Record<string, unknown>): StabilizationKeyframe | null => {
+      const time = Number(raw.time);
+      const dx = Number(raw.dx);
+      const dy = Number(raw.dy);
+      const rotation = Number(raw.rotation ?? 0);
+      const scale = Number(raw.scale ?? 1);
+      const confidence = Number(raw.confidence ?? 0);
+      if (![time, dx, dy, rotation, scale, confidence].every(Number.isFinite)) return null;
+      return { time, dx, dy, rotation, scale, confidence };
+    })
+    .filter((frame: StabilizationKeyframe | null): frame is StabilizationKeyframe => frame !== null)
+    .sort((a: StabilizationKeyframe, b: StabilizationKeyframe) => a.time - b.time);
+
+  const cropScale = Math.max(1, Math.min(1.02, Number(data.crop_scale) || 1));
+  return {
+    version: 2,
+    source: "companion-opencv",
+    autoEnabled: Boolean(data.auto_enabled) && keyframes.length >= 5,
+    confidence: Math.max(0, Math.min(1, Number(data.confidence) || 0)),
+    cropScale,
+    jitterRmsPx: Math.max(0, Number(data.jitter_rms_px) || 0),
+    analysisFps: Math.max(0, Number(data.analysis_fps) || 0),
+    keyframes,
+    reason: typeof data.reason === "string"
+      ? data.reason
+      : "Estabilización avanzada analizada por el companion.",
+  };
+}
+
+export async function transcodeVideoForBrowser(video: File): Promise<File> {
+  const form = new FormData();
+  form.append("video", video);
+  const response = await fetch(`${COMPANION_URL}/transcode/browser`, {
+    method: "POST",
+    body: form,
+  });
+  if (!response.ok) {
+    let message = "No se pudo convertir el vídeo localmente";
+    try {
+      const data = await response.json();
+      if (typeof data.error === "string") message = data.error;
+    } catch {}
+    throw new Error(message);
+  }
+  const blob = await response.blob();
+  const base = video.name.replace(/\.[^.]+$/, "") || "clip";
+  return new File([blob], `${base}.browser.mp4`, {
+    type: "video/mp4",
+    lastModified: Date.now(),
+  });
 }
 
 export async function planLayers(

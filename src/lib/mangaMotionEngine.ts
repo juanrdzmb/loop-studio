@@ -1,5 +1,7 @@
 let cachedScreentonePattern: CanvasPattern | null = null;
 let cachedPatternCtx: CanvasRenderingContext2D | null = null;
+let grainCanvas: HTMLCanvasElement | null = null;
+const grainPatterns = new WeakMap<CanvasRenderingContext2D, CanvasPattern>();
 
 function getScreentonePattern(ctx: CanvasRenderingContext2D): CanvasPattern | null {
   if (cachedScreentonePattern && cachedPatternCtx === ctx) {
@@ -23,6 +25,36 @@ function getScreentonePattern(ctx: CanvasRenderingContext2D): CanvasPattern | nu
   return cachedScreentonePattern;
 }
 
+function getFilmGrainPattern(ctx: CanvasRenderingContext2D): CanvasPattern | null {
+  const cached = grainPatterns.get(ctx);
+  if (cached) return cached;
+  if (typeof document === "undefined") return null;
+  if (!grainCanvas) {
+    grainCanvas = document.createElement("canvas");
+    grainCanvas.width = 96;
+    grainCanvas.height = 96;
+    const grainCtx = grainCanvas.getContext("2d");
+    if (grainCtx) {
+      const image = grainCtx.createImageData(96, 96);
+      let seed = 0x51f15e;
+      for (let i = 0; i < image.data.length; i += 4) {
+        seed ^= seed << 13;
+        seed ^= seed >>> 17;
+        seed ^= seed << 5;
+        const value = 96 + (seed >>> 0) % 96;
+        image.data[i] = value;
+        image.data[i + 1] = value;
+        image.data[i + 2] = value;
+        image.data[i + 3] = 150;
+      }
+      grainCtx.putImageData(image, 0, 0);
+    }
+  }
+  const pattern = grainCanvas ? ctx.createPattern(grainCanvas, "repeat") : null;
+  if (pattern) grainPatterns.set(ctx, pattern);
+  return pattern;
+}
+
 /**
  * Manga Motion 2.5D Studio Engine (Clean, Pristine & High Definition)
  * 60 FPS Canvas Renderer with HD Export, Physics-driven Particles,
@@ -33,7 +65,7 @@ import {
   MangaTextItem,
   drawMangaTextBubble,
 } from "./mangaTypographyEngine";
-import { drawProfessionalWatermark } from "./watermark";
+import { drawProfessionalWatermark, type WatermarkStyleOptions } from "./watermark";
 import { getSmoothPingPongFrameState } from "./pingPongLoop";
 import type { SourceFrameTransform } from "./videoStabilization";
 
@@ -54,9 +86,39 @@ export type ParticleType =
   | "embers_fire"
   | "sakura_petals"
   | "cinematic_rain"
+  | "cinematic_dust"
+  | "snow_ash"
+  | "light_leaks"
   | "dark_ink_fog"
   | "blood_drips"
   | "golden_sparks";
+
+export type ParticleBlendMode = "source-over" | "screen" | "lighter" | "soft-light";
+
+export interface ParticleControlOptions {
+  size: number;        // 40..180 %
+  opacity: number;     // 0..100 %
+  wind: number;        // -100..100
+  turbulence: number;  // 0..100
+  color: string;       // vacío = paleta propia del efecto
+  blendMode: ParticleBlendMode;
+  blur: number;        // 0..12 px a 1080p
+  seed: number;
+  /** Duración del superciclo determinista. Preview y export deben compartirla. */
+  loopDuration: number;
+}
+
+export const DEFAULT_PARTICLE_CONTROLS: ParticleControlOptions = {
+  size: 100,
+  opacity: 100,
+  wind: 0,
+  turbulence: 45,
+  color: "",
+  blendMode: "source-over",
+  blur: 0,
+  seed: 1337,
+  loopDuration: 12,
+};
 
 export type SpeedLinesType = "none" | "radial_burst" | "horizontal_rush" | "vertical_fall";
 
@@ -70,6 +132,28 @@ export type AestheticStyle =
   | "vintage_sepia"
   | "lofi_sunset"
   | "golden_sunset";
+
+export type ColorGradeConfig = {
+  exposure: number;    // -100..100
+  contrast: number;    // -100..100
+  saturation: number;  // -100..100
+  temperature: number; // -100..100
+  tint: number;        // -100..100
+  fade: number;        // 0..100
+  bloom: number;       // 0..100
+  grain: number;       // 0..100
+};
+
+export const DEFAULT_COLOR_GRADE: ColorGradeConfig = {
+  exposure: 0,
+  contrast: 0,
+  saturation: 0,
+  temperature: 0,
+  tint: 0,
+  fade: 0,
+  bloom: 0,
+  grain: 0,
+};
 
 export type KatanaArcColor =
   | "getsuga_dark"     // Dark violet / cyan void
@@ -100,8 +184,10 @@ export interface MangaMotionConfig {
   loopCrossfadeDuration: number; // 1.0..3.0s
   seamMode: "smooth" | "pingpong" | "cut" | "calm" | "extend";
   /** Velocidad de la fuente en Continuo calmado (0.25..0.75; default 0.4).
-   *  En modo "extend" la velocidad se deriva sola de duration (target) y la duración del clip. */
+   *  En modo "extend" la velocidad se deriva de duration y nunca baja del suelo elegido. */
   calmPlaybackRate?: number;
+  /** Velocidad mínima del modo Extender híbrido (0.65..1; default 0.65). */
+  extendMinPlaybackRate?: number;
 
   // Clean Camera Movement (Zero unwanted jitter)
   cameraMove: CameraMovement;
@@ -116,6 +202,7 @@ export interface MangaMotionConfig {
   particles: ParticleType;
   particleIntensity: number; // 0..100
   particleSpeed: number;     // 0.5..2.5
+  particleControls?: Partial<ParticleControlOptions>;
 
   // Interactive Katana Slash Arc
   katanaArc: KatanaSlashConfig;
@@ -137,6 +224,7 @@ export interface MangaMotionConfig {
 
   // Aesthetics & Tone
   aestheticStyle: AestheticStyle;
+  colorGrade?: ColorGradeConfig;
   vignette: number;        // 0..100
   grain: number;           // 0..100
 
@@ -144,6 +232,7 @@ export interface MangaMotionConfig {
   watermarkEnabled?: boolean;
   watermarkText?: string;
   watermarkOpacity?: number; // 0..1
+  watermarkStyle?: WatermarkStyleOptions;
 }
 
 export const CAMERA_MODE_DEFAULTS: Record<
@@ -213,6 +302,7 @@ export const DEFAULT_MANGA_CONFIG: MangaMotionConfig = {
   loopCrossfadeDuration: 1.8,
   seamMode: "smooth",
   calmPlaybackRate: 0.4,
+  extendMinPlaybackRate: 0.65,
 
   cameraMove: "static",    // Clean static by default
   cameraSpeed: 1.0,
@@ -250,6 +340,7 @@ export const DEFAULT_MANGA_CONFIG: MangaMotionConfig = {
   textItems: [],
 
   aestheticStyle: "original",
+  colorGrade: { ...DEFAULT_COLOR_GRADE },
   vignette: 0,
   grain: 0,
 
@@ -488,13 +579,14 @@ interface Particle {
   z: number;           // Depth 0.2 .. 1.0
   vx: number;
   vy: number;
-  /** Velocidad base (px/frame a factor=1); la lluvia la fija al spawn sin jitter por frame */
-  vx0: number;
-  vy0: number;
+  baseX: number;
+  baseY: number;
   rot: number;
-  vRot: number;
+  rot0: number;
   wobblePhase: number;
-  wobbleSpeed: number;
+  displayPhase: number;
+  travelCycles: number;
+  spinCycles: number;
   scale: number;
   opacity: number;
   size: number;
@@ -504,182 +596,236 @@ interface Particle {
 class PhysicsParticleSystem {
   private particles: Particle[] = [];
   private currentType: ParticleType = "none";
+  private initKey = "";
+  private randomState = 1;
+  private controls: ParticleControlOptions = { ...DEFAULT_PARTICLE_CONTROLS };
   // El preview corre a 60 FPS sobre canvas 1080p: limitar la densidad evita que
   // partículas decorativas compitan con la reproducción del vídeo.
-  private maxParticles = 120;
+  private maxParticles = 140;
 
-  init(type: ParticleType, targetW: number, targetH: number, intensity = 50) {
+  private random(): number {
+    let state = this.randomState | 0;
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    this.randomState = state || 1;
+    return (this.randomState >>> 0) / 0x100000000;
+  }
+
+  private normalizeControls(options?: Partial<ParticleControlOptions>): ParticleControlOptions {
+    return {
+      size: Math.max(40, Math.min(180, options?.size ?? DEFAULT_PARTICLE_CONTROLS.size)),
+      opacity: Math.max(0, Math.min(100, options?.opacity ?? DEFAULT_PARTICLE_CONTROLS.opacity)),
+      wind: Math.max(-100, Math.min(100, options?.wind ?? DEFAULT_PARTICLE_CONTROLS.wind)),
+      turbulence: Math.max(0, Math.min(100, options?.turbulence ?? DEFAULT_PARTICLE_CONTROLS.turbulence)),
+      color: options?.color ?? DEFAULT_PARTICLE_CONTROLS.color,
+      blendMode: options?.blendMode ?? DEFAULT_PARTICLE_CONTROLS.blendMode,
+      blur: Math.max(0, Math.min(12, options?.blur ?? DEFAULT_PARTICLE_CONTROLS.blur)),
+      seed: Math.trunc(options?.seed ?? DEFAULT_PARTICLE_CONTROLS.seed),
+      loopDuration: Math.max(0.5, options?.loopDuration ?? DEFAULT_PARTICLE_CONTROLS.loopDuration),
+    };
+  }
+
+  init(
+    type: ParticleType,
+    targetW: number,
+    targetH: number,
+    intensity = 50,
+    options?: Partial<ParticleControlOptions>
+  ) {
+    this.controls = this.normalizeControls(options);
     this.currentType = type;
     this.particles = [];
+    const typeSeed = Array.from(type).reduce((sum, char) => (sum * 31 + char.charCodeAt(0)) | 0, 17);
+    this.randomState = (this.controls.seed ^ typeSeed) || 1;
+    this.initKey = `${type}:${Math.round(targetW)}x${Math.round(targetH)}:${Math.round(intensity)}:${this.controls.seed}`;
     if (type === "none") return;
 
-    let count: number;
-    if (type === "bamboo_leaves") count = 35;
-    else if (type === "embers_fire") count = 65;
-    else if (type === "sakura_petals") count = 45;
-    else if (type === "cinematic_rain") {
-      // La lluvia responde a la intensidad con DENSIDAD (no solo velocidad):
-      // 50 → ~120 gotas, 10 → ~48, 100 → ~240 (tope por rendimiento).
-      count = Math.min(this.maxParticles, Math.round(120 * Math.min(2, Math.max(0.4, intensity / 50))));
-    } else count = Math.min(this.maxParticles, 75);
+    const baseCount: Record<Exclude<ParticleType, "none">, number> = {
+      bamboo_leaves: 34,
+      embers_fire: 62,
+      sakura_petals: 42,
+      cinematic_rain: 120,
+      cinematic_dust: 78,
+      snow_ash: 82,
+      light_leaks: 6,
+      dark_ink_fog: 22,
+      blood_drips: 48,
+      golden_sparks: 58,
+    };
+    const density = 0.45 + Math.max(0, Math.min(100, intensity)) * 0.011;
+    const count = Math.max(1, Math.min(this.maxParticles, Math.round(baseCount[type] * density)));
 
     for (let i = 0; i < count; i++) {
-      this.particles.push(this.createParticle(type, targetW, targetH, true));
+      this.particles.push(this.createParticle(type, targetW, targetH));
     }
   }
 
-  private createParticle(type: ParticleType, targetW: number, targetH: number, randomY = false): Particle {
-    const z = 0.3 + Math.random() * 0.7; // depth
+  private createParticle(type: ParticleType, targetW: number, targetH: number): Particle {
+    const z = 0.25 + this.random() * 0.75;
+    const baseX = this.random();
+    const baseY = this.random();
+    const rot0 = this.random() * Math.PI * 2;
     const p: Particle = {
-      x: Math.random() * targetW,
-      y: randomY ? Math.random() * targetH : -20 - Math.random() * 60,
+      x: baseX * targetW,
+      y: baseY * targetH,
       z,
-      vx: (Math.random() - 0.5) * 1.5,
-      vy: 1.0 + Math.random() * 2.5,
-      vx0: 0,
-      vy0: 0,
-      rot: Math.random() * Math.PI * 2,
-      vRot: (Math.random() - 0.5) * 0.05,
-      wobblePhase: Math.random() * Math.PI * 2,
-      wobbleSpeed: 1.5 + Math.random() * 2.5,
-      scale: 0.6 + Math.random() * 0.8,
-      opacity: 0.4 + Math.random() * 0.6,
-      size: 8 + Math.random() * 18,
-      hue: Math.random(),
+      vx: 0,
+      vy: 0,
+      baseX,
+      baseY,
+      rot: rot0,
+      rot0,
+      wobblePhase: this.random() * Math.PI * 2,
+      displayPhase: 0,
+      travelCycles: 1 + Math.floor(this.random() * (type === "cinematic_rain" ? 5 : 3)),
+      spinCycles: Math.floor(this.random() * 3) - 1,
+      scale: 0.55 + this.random() * 0.9,
+      opacity: 0.4 + this.random() * 0.6,
+      size: 8 + this.random() * 18,
+      hue: this.random(),
     };
-    if (type === "cinematic_rain") {
-      // Caída rápida y rectilínea: velocidad FIJA por gota (el Math.random() por frame
-      // provocaba jitter visible). Parallax: las lejanas (z bajo) caen más lento.
-      p.vy0 = (11 + Math.random() * 6) * (0.45 + 0.55 * z);
-      // Deriva de viento coherente (toda la lluvia misma diagonal aproximada)
-      p.vx0 = p.vy0 * (-0.14 - Math.random() * 0.1);
-      p.vx = p.vx0;
-      p.vy = p.vy0;
+    if (type === "cinematic_rain" || type === "light_leaks") {
       p.rot = 0;
-      p.vRot = 0;
+      p.rot0 = 0;
+      p.spinCycles = 0;
     }
     return p;
   }
 
-  update(type: ParticleType, intensity: number, targetW: number, targetH: number, t: number, speedMult: number = 1.0, dtScale: number = 1.0) {
-    if (type !== this.currentType) {
-      this.init(type, targetW, targetH, intensity);
+  update(
+    type: ParticleType,
+    intensity: number,
+    targetW: number,
+    targetH: number,
+    t: number,
+    speedMult: number = 1.0,
+    dtScale: number = 1.0,
+    options?: Partial<ParticleControlOptions>
+  ) {
+    const nextControls = this.normalizeControls(options);
+    const nextKey = `${type}:${Math.round(targetW)}x${Math.round(targetH)}:${Math.round(intensity)}:${nextControls.seed}`;
+    if (nextKey !== this.initKey || type !== this.currentType) {
+      this.init(type, targetW, targetH, intensity, nextControls);
+    } else {
+      this.controls = nextControls;
     }
     if (type === "none") return;
 
-    const factor = (intensity / 50) * speedMult;
-    // dtScale normaliza el movimiento al tiempo real (1.0 = un frame a 60 fps) para que la
-    // velocidad sea idéntica en preview (refresco del monitor) y export (fps del source).
-    const step = Math.max(0, Math.min(4, Number.isFinite(dtScale) ? dtScale : 1));
-
-    // Densidad de lluvia en vivo: el slider de intensidad añade/quita gotas gradualmente
-    if (type === "cinematic_rain") {
-      const targetRain = Math.min(this.maxParticles, Math.round(120 * Math.min(2, Math.max(0.4, intensity / 50))));
-      if (this.particles.length < targetRain) {
-        const add = Math.min(6, targetRain - this.particles.length);
-        for (let k = 0; k < add; k++) {
-          this.particles.push(this.createParticle("cinematic_rain", targetW, targetH, false));
-        }
-      } else if (this.particles.length > targetRain + 10) {
-        this.particles.length = targetRain + 10;
-      }
-    }
+    const duration = this.controls.loopDuration;
+    const phase = (((Number.isFinite(t) ? t : 0) % duration) + duration) % duration / duration;
+    const speed = Math.max(0.25, Math.min(3, Number.isFinite(speedMult) ? speedMult : 1));
+    const wind = this.controls.wind / 100;
+    const turbulence = this.controls.turbulence / 100;
+    const tau = Math.PI * 2;
+    const mod1 = (value: number) => ((value % 1) + 1) % 1;
+    // Normaliza las velocidades de streak al framerate real: a 60 fps dtScale=1,
+    // a 30 fps dtScale=0.5 → las partículas se mueven la misma distancia real por segundo.
+    const norm = Math.max(0.25, dtScale);
 
     for (let i = 0; i < this.particles.length; i++) {
       const p = this.particles[i];
-      p.wobblePhase += 0.03 * p.wobbleSpeed * factor * step;
-      p.rot += p.vRot * factor * step;
+      const travelCycles = Math.max(1, Math.round(p.travelCycles * speed * (0.72 + p.z * 0.4)));
+      const waveCycles = travelCycles + 1 + (i % 2);
+      const wave = Math.sin(tau * phase * waveCycles + p.wobblePhase);
+      const fineWave = Math.sin(tau * phase * (waveCycles + 2) + p.wobblePhase * 1.7);
+      const xWave = (wave + fineWave * 0.38) * turbulence * (0.018 + p.z * 0.035);
+      const windWave = Math.sin(tau * phase) * wind * 0.14;
+      const fallingY = mod1(p.baseY + phase * travelCycles);
+      const risingY = mod1(p.baseY - phase * travelCycles);
+      const edgeFade = Math.max(0, Math.min(1, Math.min(fallingY, 1 - fallingY) * 14));
 
-      if (type === "bamboo_leaves") {
-        // Falling and fluttering in wind
-        p.vx = Math.sin(p.wobblePhase) * 1.8 + 0.8; // wind bias right
-        p.vy = (1.8 + Math.cos(p.wobblePhase * 0.7) * 0.6) * p.z * factor;
-      } else if (type === "embers_fire") {
-        // Convection rising upward with turbulent jitter
-        p.vx = Math.sin(p.wobblePhase * 2.0) * 1.4 + (Math.random() - 0.5) * 0.8;
-        p.vy = -(2.2 + Math.random() * 2.0) * p.z * factor;
-      } else if (type === "sakura_petals") {
-        p.vx = Math.sin(p.wobblePhase) * 2.2 + 0.5;
-        p.vy = (1.4 + Math.sin(p.wobblePhase * 1.2) * 0.5) * p.z * factor;
-      } else if (type === "cinematic_rain") {
-        // Velocidad fija asignada al spawn (vx0/vy0) × factor: sin aleatoriedad por frame
-        p.vx = p.vx0 * factor;
-        p.vy = p.vy0 * factor;
-      } else if (type === "dark_ink_fog") {
-        p.vx = Math.sin(p.wobblePhase * 0.5) * 0.8 + 0.3;
-        p.vy = -(0.6 + Math.cos(p.wobblePhase * 0.6) * 0.4) * factor;
-      } else if (type === "blood_drips") {
-        p.vx = (Math.random() - 0.5) * 0.3;
-        p.vy = (3.5 + Math.random() * 3.0) * p.z * factor;
-      } else if (type === "golden_sparks") {
-        p.vx = Math.sin(p.wobblePhase) * 1.2;
-        p.vy = -(0.8 + Math.cos(p.wobblePhase) * 0.5) * factor;
-      }
+      p.displayPhase = p.wobblePhase + tau * phase * waveCycles;
+      p.rot = p.rot0 + tau * phase * p.spinCycles;
+      p.opacity = (0.38 + p.hue * 0.62) * edgeFade;
 
-      p.x += p.vx * step;
-      p.y += p.vy * step;
-
-      // Wrap around bounds
-      if (type === "embers_fire" || type === "dark_ink_fog" || type === "golden_sparks") {
-        if (p.y < -40) {
-          p.y = targetH + 20;
-          p.x = Math.random() * targetW;
-        }
+      if (type === "cinematic_rain") {
+        const xCycles = -Math.max(1, Math.round(travelCycles * 0.18)) + Math.round(wind * travelCycles * 0.55);
+        p.x = mod1(p.baseX + phase * xCycles) * targetW;
+        p.y = fallingY * targetH;
+        p.vx = (xCycles * targetW) / duration / norm;
+        p.vy = (travelCycles * targetH) / duration / norm;
+      } else if (type === "embers_fire" || type === "golden_sparks") {
+        p.x = mod1(p.baseX + xWave + windWave) * targetW;
+        p.y = risingY * targetH;
+        p.vx = (xWave + windWave) * targetW;
+        p.vy = -(travelCycles * targetH) / duration / norm;
+      } else if (type === "dark_ink_fog" || type === "cinematic_dust" || type === "light_leaks") {
+        const slowCycles = 1 + (i % 2);
+        p.x = mod1(p.baseX + Math.sin(tau * phase * slowCycles + p.wobblePhase) * (0.035 + turbulence * 0.045) + windWave) * targetW;
+        p.y = mod1(p.baseY + Math.cos(tau * phase * slowCycles + p.wobblePhase) * (0.025 + turbulence * 0.035)) * targetH;
+        p.opacity = 0.3 + p.hue * 0.7;
+        p.vx = 0;
+        p.vy = 0;
       } else {
-        if (p.y > targetH + 40) {
-          p.y = -30;
-          p.x = Math.random() * targetW;
-        }
+        p.x = mod1(p.baseX + xWave + windWave) * targetW;
+        p.y = fallingY * targetH;
+        p.vx = (xWave + windWave) * targetW;
+        p.vy = (travelCycles * targetH) / duration / norm;
       }
-
-      if (p.x < -40) p.x = targetW + 30;
-      if (p.x > targetW + 40) p.x = -30;
     }
   }
 
-  draw(ctx: CanvasRenderingContext2D, type: ParticleType) {
+  draw(ctx: CanvasRenderingContext2D, type: ParticleType, options?: Partial<ParticleControlOptions>) {
     if (type === "none") return;
+    const controls = options ? this.normalizeControls(options) : this.controls;
+    const sizeScale = controls.size / 100;
+    const opacityScale = controls.opacity / 100;
+    const color = controls.color.trim();
+
+    ctx.save();
+    ctx.globalCompositeOperation = controls.blendMode;
+    if (controls.blur > 0) {
+      ctx.filter = `blur(${controls.blur.toFixed(2)}px)`;
+    }
 
     for (const p of this.particles) {
       ctx.save();
       ctx.translate(p.x, p.y);
+      ctx.globalAlpha = Math.max(0, Math.min(1, p.opacity * opacityScale));
 
       // Lluvia: el streak se alinea al vector de velocidad REAL (sin rotación
       // aleatoria ni escala tipo "hoja"); la profundidad manda en longitud/grosor/alpha.
       if (type === "cinematic_rain") {
-        this.drawRainStreak(ctx, p);
+        this.drawRainStreak(ctx, p, sizeScale, color);
         ctx.restore();
         continue;
       }
 
       ctx.rotate(p.rot);
-      ctx.scale(p.scale * p.z, p.scale * p.z);
-      ctx.globalAlpha = p.opacity;
+      ctx.scale(p.scale * p.z * sizeScale, p.scale * p.z * sizeScale);
 
       if (type === "bamboo_leaves") {
-        this.drawBambooLeaf(ctx, p.size, p.wobblePhase);
+        this.drawBambooLeaf(ctx, p.size, p.displayPhase, color);
       } else if (type === "embers_fire") {
-        this.drawEmberSpark(ctx, p.size);
+        this.drawEmberSpark(ctx, p.size, color);
       } else if (type === "sakura_petals") {
-        this.drawSakuraPetal(ctx, p.size);
+        this.drawSakuraPetal(ctx, p.size, color);
+      } else if (type === "cinematic_dust") {
+        this.drawCinematicDust(ctx, p.size, color);
+      } else if (type === "snow_ash") {
+        this.drawSnowAsh(ctx, p.size, p.hue, color);
+      } else if (type === "light_leaks") {
+        this.drawLightLeak(ctx, p.size * 18, color);
       } else if (type === "dark_ink_fog") {
-        this.drawInkFog(ctx, p.size * 3.5);
+        this.drawInkFog(ctx, p.size * 3.5, color);
       } else if (type === "blood_drips") {
-        this.drawBloodDrop(ctx, p.size);
+        this.drawBloodDrop(ctx, p.size, color);
       } else if (type === "golden_sparks") {
-        this.drawGoldenSpark(ctx, p.size);
+        this.drawGoldenSpark(ctx, p.size, color);
       }
 
       ctx.restore();
     }
+    ctx.restore();
   }
 
   // 1. Realistic 3D-projected Bamboo Leaf with Vein & Curved Silhouette
-  private drawBambooLeaf(ctx: CanvasRenderingContext2D, size: number, phase: number) {
+  private drawBambooLeaf(ctx: CanvasRenderingContext2D, size: number, phase: number, color = "") {
     const l = size * 2.2;
     const w = size * 0.45 * (0.6 + 0.4 * Math.cos(phase)); // 3D tilt flattening
 
-    ctx.fillStyle = "#1c1917"; // Ink dark silhouette
+    ctx.fillStyle = color || "#1c1917"; // Ink dark silhouette
     ctx.beginPath();
     ctx.moveTo(0, -l / 2);
     ctx.bezierCurveTo(w, -l * 0.2, w * 0.8, l * 0.3, 0, l / 2);
@@ -697,13 +843,13 @@ class PhysicsParticleSystem {
   }
 
   // 2. Glowing Incandescent Fire Ember
-  private drawEmberSpark(ctx: CanvasRenderingContext2D, size: number) {
+  private drawEmberSpark(ctx: CanvasRenderingContext2D, size: number, color = "") {
     const rad = Math.max(3, size * 0.4);
     const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, rad * 2.5);
     grad.addColorStop(0, "rgba(255, 255, 230, 1.0)"); // White-hot core
-    grad.addColorStop(0.3, "rgba(251, 146, 60, 0.95)"); // Bright orange
-    grad.addColorStop(0.7, "rgba(239, 68, 68, 0.6)");   // Fiery red
-    grad.addColorStop(1, "rgba(239, 68, 68, 0)");
+    grad.addColorStop(0.3, color || "rgba(251, 146, 60, 0.95)"); // Bright orange
+    grad.addColorStop(0.72, color || "rgba(239, 68, 68, 0.6)");
+    grad.addColorStop(1, "transparent");
 
     ctx.fillStyle = grad;
     ctx.beginPath();
@@ -712,10 +858,10 @@ class PhysicsParticleSystem {
   }
 
   // 3. Delicate Cherry Blossom Petal
-  private drawSakuraPetal(ctx: CanvasRenderingContext2D, size: number) {
+  private drawSakuraPetal(ctx: CanvasRenderingContext2D, size: number, color = "") {
     const s = size * 0.9;
-    ctx.fillStyle = "rgba(251, 207, 232, 0.85)";
-    ctx.strokeStyle = "rgba(244, 114, 182, 0.4)";
+    ctx.fillStyle = color || "rgba(251, 207, 232, 0.85)";
+    ctx.strokeStyle = color || "rgba(244, 114, 182, 0.4)";
     ctx.lineWidth = 0.8;
 
     ctx.beginPath();
@@ -728,34 +874,66 @@ class PhysicsParticleSystem {
   }
 
   // 4. Lluvia: estela alineada al vector de velocidad real (halo suave + núcleo brillante)
-  private drawRainStreak(ctx: CanvasRenderingContext2D, p: Particle) {
+  private drawRainStreak(ctx: CanvasRenderingContext2D, p: Particle, sizeScale: number, color = "") {
     const speed = Math.hypot(p.vx, p.vy) || 1;
     const ux = p.vx / speed;
     const uy = p.vy / speed;
     // La estela apunta en contra del movimiento (motion blur); más larga y gruesa de cerca
-    const len = p.size * (1.6 + 2.4 * p.z) * (0.55 + 0.45 * p.scale);
-    const lw = 0.7 + p.z * 1.4;
+    const len = p.size * (1.6 + 2.4 * p.z) * (0.55 + 0.45 * p.scale) * sizeScale;
+    const lw = (0.7 + p.z * 1.4) * sizeScale;
 
     ctx.lineCap = "round";
     ctx.beginPath();
     ctx.moveTo(0, 0);
     ctx.lineTo(-ux * len, -uy * len);
     // Halo translúcido: cuerpo de gota en movimiento sin bordes duros
-    ctx.strokeStyle = `rgba(191, 205, 250, ${0.08 + 0.14 * p.z})`;
+    ctx.strokeStyle = color || `rgba(191, 205, 250, ${0.08 + 0.14 * p.z})`;
     ctx.lineWidth = lw * 2.8;
     ctx.stroke();
     // Núcleo brillante
-    ctx.strokeStyle = `rgba(228, 233, 247, ${0.32 + 0.34 * p.z})`;
+    ctx.strokeStyle = color || `rgba(228, 233, 247, ${0.32 + 0.34 * p.z})`;
     ctx.lineWidth = lw;
     ctx.stroke();
   }
 
   // 5. Billowing Dark Ink Mist Cloud
-  private drawInkFog(ctx: CanvasRenderingContext2D, size: number) {
+  private drawCinematicDust(ctx: CanvasRenderingContext2D, size: number, color = "") {
+    const radius = Math.max(2, size * 0.32);
+    const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, radius * 2.8);
+    grad.addColorStop(0, "rgba(255,255,245,0.95)");
+    grad.addColorStop(0.28, color || "rgba(224, 202, 164, 0.65)");
+    grad.addColorStop(1, "transparent");
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(0, 0, radius * 2.8, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  private drawSnowAsh(ctx: CanvasRenderingContext2D, size: number, hue: number, color = "") {
+    const radius = Math.max(1.5, size * (0.18 + hue * 0.16));
+    ctx.fillStyle = color || (hue > 0.42 ? "rgba(241,245,249,0.92)" : "rgba(161,161,170,0.78)");
+    ctx.beginPath();
+    ctx.ellipse(0, 0, radius * 0.72, radius * 1.25, hue * Math.PI, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  private drawLightLeak(ctx: CanvasRenderingContext2D, size: number, color = "") {
     const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, size);
-    grad.addColorStop(0, "rgba(9, 9, 11, 0.55)");
-    grad.addColorStop(0.6, "rgba(24, 24, 27, 0.25)");
-    grad.addColorStop(1, "rgba(9, 9, 11, 0)");
+    grad.addColorStop(0, color || "rgba(255, 218, 166, 0.48)");
+    grad.addColorStop(0.38, color || "rgba(251, 146, 60, 0.2)");
+    grad.addColorStop(1, "transparent");
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, size, size * 0.34, Math.PI * 0.18, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // 5. Billowing Dark Ink Mist Cloud
+  private drawInkFog(ctx: CanvasRenderingContext2D, size: number, color = "") {
+    const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, size);
+    grad.addColorStop(0, color || "rgba(9, 9, 11, 0.55)");
+    grad.addColorStop(0.6, color || "rgba(24, 24, 27, 0.25)");
+    grad.addColorStop(1, "transparent");
 
     ctx.fillStyle = grad;
     ctx.beginPath();
@@ -764,19 +942,19 @@ class PhysicsParticleSystem {
   }
 
   // 6. Blood Combat Droplet
-  private drawBloodDrop(ctx: CanvasRenderingContext2D, size: number) {
+  private drawBloodDrop(ctx: CanvasRenderingContext2D, size: number, color = "") {
     const r = size * 0.45;
-    ctx.fillStyle = "rgba(185, 28, 28, 0.85)";
+    ctx.fillStyle = color || "rgba(185, 28, 28, 0.85)";
     ctx.beginPath();
     ctx.arc(0, 0, r, 0, Math.PI * 2);
     ctx.fill();
   }
 
   // 7. Golden Sparkle Anime Star
-  private drawGoldenSpark(ctx: CanvasRenderingContext2D, size: number) {
+  private drawGoldenSpark(ctx: CanvasRenderingContext2D, size: number, color = "") {
     const s = size * 0.5;
-    ctx.fillStyle = "rgba(254, 240, 138, 0.9)";
-    ctx.shadowColor = "#facc15";
+    ctx.fillStyle = color || "rgba(254, 240, 138, 0.9)";
+    ctx.shadowColor = color || "#facc15";
     ctx.shadowBlur = 6;
 
     ctx.beginPath();
@@ -1066,12 +1244,57 @@ export function renderMangaMotionFrame(
     filterStr = "contrast(110%) brightness(101%) saturate(120%) sepia(30%) hue-rotate(-8deg)";
   }
 
+  const colorGrade = { ...DEFAULT_COLOR_GRADE, ...config.colorGrade };
+  const gradeFilters: string[] = [];
+  if (colorGrade.exposure !== 0) {
+    gradeFilters.push(`brightness(${Math.max(55, Math.min(145, 100 + colorGrade.exposure * 0.45))}%)`);
+  }
+  if (colorGrade.contrast !== 0) {
+    gradeFilters.push(`contrast(${Math.max(45, Math.min(155, 100 + colorGrade.contrast * 0.55))}%)`);
+  }
+  if (colorGrade.saturation !== 0) {
+    gradeFilters.push(`saturate(${Math.max(0, Math.min(200, 100 + colorGrade.saturation))}%)`);
+  }
+  if (gradeFilters.length > 0) {
+    filterStr = `${filterStr === "none" ? "" : `${filterStr} `}${gradeFilters.join(" ")}`;
+  }
+
   ctx.save();
   ctx.translate(centerX, centerY);
   ctx.rotate(camRot);
   ctx.filter = filterStr;
   ctx.drawImage(img, -dstW / 2, -dstH / 2, dstW, dstH);
+  if (colorGrade.bloom > 0) {
+    const bloom = Math.max(0, Math.min(100, colorGrade.bloom)) / 100;
+    ctx.globalCompositeOperation = "screen";
+    ctx.globalAlpha = bloom * 0.2;
+    const bloomBlur = Math.max(1, Math.min(targetW, targetH) * (0.0015 + bloom * 0.003));
+    ctx.filter = `${filterStr === "none" ? "" : `${filterStr} `}blur(${bloomBlur.toFixed(2)}px) brightness(112%)`;
+    ctx.drawImage(img, -dstW / 2, -dstH / 2, dstW, dstH);
+  }
   ctx.restore();
+
+  // Corrección de temperatura/tinte por capas: evita una segunda lectura del canvas
+  // y mantiene el estado neutro bit a bit idéntico al render anterior.
+  const drawToneLayer = (value: number, positive: string, negative: string, strength: number) => {
+    if (value === 0) return;
+    ctx.save();
+    ctx.globalCompositeOperation = "soft-light";
+    ctx.globalAlpha = Math.min(1, Math.abs(value) / 100) * strength;
+    ctx.fillStyle = value > 0 ? positive : negative;
+    ctx.fillRect(0, 0, targetW, targetH);
+    ctx.restore();
+  };
+  drawToneLayer(colorGrade.temperature, "#ff9b4a", "#3f78ff", 0.34);
+  drawToneLayer(colorGrade.tint, "#d946ef", "#22c98a", 0.22);
+  if (colorGrade.fade > 0) {
+    ctx.save();
+    ctx.globalCompositeOperation = "screen";
+    ctx.globalAlpha = (Math.max(0, Math.min(100, colorGrade.fade)) / 100) * 0.2;
+    ctx.fillStyle = "#77727f";
+    ctx.fillRect(0, 0, targetW, targetH);
+    ctx.restore();
+  }
 
   // 3. Fast GPU-Accelerated Screentone Halftone Pattern (Zero Lag at 60 FPS)
   if (config.aestheticStyle === "screentone") {
@@ -1081,6 +1304,19 @@ export function renderMangaMotionFrame(
       ctx.globalCompositeOperation = "multiply";
       ctx.globalAlpha = 0.32;
       ctx.fillStyle = pat;
+      ctx.fillRect(0, 0, targetW, targetH);
+      ctx.restore();
+    }
+  }
+
+  const grainAmount = Math.max(config.grain || 0, colorGrade.grain || 0);
+  if (grainAmount > 0) {
+    const grainPattern = getFilmGrainPattern(ctx);
+    if (grainPattern) {
+      ctx.save();
+      ctx.globalCompositeOperation = "soft-light";
+      ctx.globalAlpha = (Math.max(0, Math.min(100, grainAmount)) / 100) * 0.2;
+      ctx.fillStyle = grainPattern;
       ctx.fillRect(0, 0, targetW, targetH);
       ctx.restore();
     }
@@ -1143,9 +1379,13 @@ export function renderMangaMotionFrame(
     targetH,
     t,
     config.particleSpeed || 1.0,
-    dtScale
+    dtScale,
+    {
+      ...config.particleControls,
+      loopDuration: config.particleControls?.loopDuration ?? config.duration,
+    }
   );
-  particleSys.draw(ctx, config.particles);
+  particleSys.draw(ctx, config.particles, config.particleControls);
 
   // 8. Manga Typography & Speech Bubbles
   if (config.textItems && config.textItems.length > 0) {
@@ -1188,6 +1428,7 @@ export function renderMangaMotionFrame(
       height: targetH,
       opacity,
       shorts: config.aspectRatio === "9:16",
+      style: config.watermarkStyle,
     });
   }
 }

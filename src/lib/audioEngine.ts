@@ -572,6 +572,8 @@ export class LoopBufferPlayer {
   private anchorTime = 0;
   private playing = false;
   private volume = 1;
+  /** Invalida resumes/play asíncronos anteriores al último comando de transporte. */
+  private transportRevision = 0;
 
   constructor() {
     const AudioContextClass =
@@ -607,6 +609,7 @@ export class LoopBufferPlayer {
    * si estaba sonando, para que el swap no salte de sitio de forma audible.
    */
   async setBuffer(buffer: AudioBuffer): Promise<void> {
+    this.transportRevision++;
     const frac =
       this.buffer && this.buffer.duration > 0 && this.playing
         ? Math.min(1, Math.max(0, this.getOffset() / this.buffer.duration))
@@ -665,9 +668,11 @@ export class LoopBufferPlayer {
 
   async play(fromSec?: number) {
     if (!this.ctx || !this.buffer) return;
+    const revision = ++this.transportRevision;
     try {
       await this.ctx.resume();
     } catch {}
+    if (revision !== this.transportRevision || !this.ctx || !this.buffer) return;
     if (this.playing) {
       // Ya sonando: un play sin posición explícita no hace nada; con posición, re-ancla
       if (fromSec === undefined) return;
@@ -677,6 +682,8 @@ export class LoopBufferPlayer {
   }
 
   pause() {
+    // También cancela un ctx.resume() pendiente aunque todavía no figure playing.
+    this.transportRevision++;
     if (!this.playing) return;
     this.anchorOffset = this.getOffset();
     if (this.source) {
