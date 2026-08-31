@@ -50,6 +50,7 @@ import {
   preloadCuratedSfx,
   type LoopSfxCue,
 } from "@/lib/seinenSfxLibrary";
+import { estimateBpmFromBuffer, getTimelineWaveformPeaks } from "@/lib/editAudioAnalysis";
 
 interface RuntimeEditAsset extends EditAssetMeta {
   file: File;
@@ -221,6 +222,15 @@ export default function EditStudioPage() {
   const selectedClip = project.clips.find((clip) => clip.id === selectedClipId) ?? null;
   const selectedAsset = selectedClip ? assets.find((asset) => asset.id === selectedClip.assetId) ?? null : null;
   const pxPerSecond = 72;
+  const waveformPeaks = useMemo(() => {
+    if (!audioBuffer || duration <= 0) return null;
+    return getTimelineWaveformPeaks(audioBuffer, project.musicStart, duration, pxPerSecond);
+  }, [audioBuffer, duration, project.musicStart]);
+  const avgIntensity = useMemo(() => {
+    if (!project.clips.length) return 32;
+    return Math.round(project.clips.reduce((acc, clip) => acc + (clip.motionIntensity ?? 32), 0) / project.clips.length);
+  }, [project.clips]);
+  const [bpmDetecting, setBpmDetecting] = useState(false);
 
   useEffect(() => { projectRef.current = project; }, [project]);
   useEffect(() => { assetsRef.current = assets; }, [assets]);
@@ -395,11 +405,48 @@ export default function EditStudioPage() {
       setAudioBuffer(decoded);
       setAudioUrl(nextUrl);
       void preloadCuratedSfx(context);
-      setStatus(`Música lista · ${formatTime(decoded.duration)}`);
+      // auto BPM si detecta ritmo claro (sin pisar si el usuario ya editó manualmente recientemente)
+      const autoBpm = estimateBpmFromBuffer(decoded);
+      if (autoBpm) {
+        setProject((cur) => ({ ...cur, bpm: autoBpm }));
+        setStatus(`Música lista · ${formatTime(decoded.duration)} · BPM ${autoBpm} detectado`);
+      } else {
+        setStatus(`Música lista · ${formatTime(decoded.duration)}`);
+      }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "No se pudo decodificar la canción");
     }
   };
+
+  const handleDetectBpm = useCallback(async () => {
+    if (!audioBuffer) return;
+    setBpmDetecting(true);
+    try {
+      // ligera pausa para que el UI pinte el spinner
+      await new Promise<void>((r) => setTimeout(r, 30));
+      const bpm = estimateBpmFromBuffer(audioBuffer);
+      if (bpm) {
+        updateProject({ bpm });
+        setStatus(`BPM detectado: ${bpm} · rail actualizado`);
+      } else {
+        setError("No se detectó un pulso claro — ajusta BPM a mano");
+      }
+    } finally {
+      setBpmDetecting(false);
+    }
+  }, [audioBuffer, updateProject]);
+
+  const applyBulkTransition = useCallback((transition: EditTimelineClip["transition"]) => {
+    if (!project.clips.length) return;
+    setProject((cur) => ({ ...cur, clips: cur.clips.map((clip, idx) => idx === 0 ? clip : ({ ...clip, transition })) }));
+    setStatus(`Transición ${transition} aplicada a ${Math.max(0, project.clips.length - 1)} cortes`);
+  }, [project.clips.length]);
+
+  const applyBulkMotion = useCallback((motion: EditTimelineClip["motion"]) => {
+    if (!project.clips.length) return;
+    setProject((cur) => ({ ...cur, clips: cur.clips.map((clip) => ({ ...clip, motion })) }));
+    setStatus(`Cámara ${motion} aplicada a todas las tomas`);
+  }, [project.clips.length]);
 
   const seekTo = useCallback((next: number) => {
     const safe = Math.max(0, Math.min(Math.max(0, duration - 1 / Math.max(1, project.fps)), next));
@@ -761,20 +808,42 @@ export default function EditStudioPage() {
           </div>
 
           <section className="border border-zinc-800 bg-zinc-950">
-            <div className="flex flex-col gap-3 border-b border-zinc-800 px-3 py-3 xl:flex-row xl:items-center xl:justify-between">
-              <div>
-                <h2 className="text-xs font-black uppercase tracking-[0.2em] text-zinc-200">Timeline / beat rail</h2>
-                <p className="mt-1 text-[10px] text-zinc-500">Arrastra clips para ordenar. Click en la regla para mover el cabezal.</p>
+            <div className="flex flex-col gap-3 border-b border-zinc-800 px-3 py-3">
+              <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+                <div>
+                  <h2 className="text-xs font-black uppercase tracking-[0.2em] text-zinc-200">Timeline / beat rail</h2>
+                  <p className="mt-1 text-[10px] text-zinc-500">Arrastra clips para ordenar. Click en la regla para mover el cabezal. Waveform real de la canción detrás.</p>
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <label className="flex items-center gap-1 border border-zinc-800 bg-black px-2 py-1 text-[10px] text-zinc-400">
+                    BPM
+                    <input type="number" min="30" max="240" value={project.bpm} onChange={(event) => updateProject({ bpm: Math.max(30, Math.min(240, Number(event.target.value) || 120)) })} className="w-14 bg-transparent font-mono text-white outline-none" />
+                  </label>
+                  <button type="button" disabled={!audioBuffer || bpmDetecting} onClick={() => void handleDetectBpm()} className="border border-cyan-700 bg-cyan-950/60 px-2 py-1 text-[10px] font-bold text-cyan-200 disabled:opacity-40">{bpmDetecting ? "Detectando…" : "🎵 Detectar BPM"}</button>
+                  <button type="button" onClick={() => applyRhythm("reference")} className="border border-fuchsia-800 bg-fuchsia-950/50 px-2 py-1 text-[10px] font-bold text-fuchsia-200">Referencia 18 s</button>
+                  <button type="button" onClick={() => applyRhythm("build-drop")} className="border border-amber-800 bg-amber-950/40 px-2 py-1 text-[10px] font-bold text-amber-200">Build → drop</button>
+                  <button type="button" onClick={() => applyRhythm("steady")} className="border border-zinc-700 bg-zinc-900 px-2 py-1 text-[10px] font-bold text-zinc-300">Constante</button>
+                </div>
               </div>
-              <div className="flex flex-wrap items-center gap-1.5">
-                <label className="flex items-center gap-1 border border-zinc-800 bg-black px-2 py-1 text-[10px] text-zinc-400">
-                  BPM
-                  <input type="number" min="30" max="240" value={project.bpm} onChange={(event) => updateProject({ bpm: Math.max(30, Math.min(240, Number(event.target.value) || 120)) })} className="w-14 bg-transparent font-mono text-white outline-none" />
-                </label>
-                <button type="button" onClick={() => applyRhythm("reference")} className="border border-fuchsia-800 bg-fuchsia-950/50 px-2 py-1 text-[10px] font-bold text-fuchsia-200">Referencia 18 s</button>
-                <button type="button" onClick={() => applyRhythm("build-drop")} className="border border-amber-800 bg-amber-950/40 px-2 py-1 text-[10px] font-bold text-amber-200">Build → drop</button>
-                <button type="button" onClick={() => applyRhythm("steady")} className="border border-zinc-700 bg-zinc-900 px-2 py-1 text-[10px] font-bold text-zinc-300">Constante</button>
-              </div>
+              {project.clips.length > 1 && (
+                <div className="flex flex-wrap items-center gap-2 border-t border-zinc-900 pt-2">
+                  <span className="text-[9px] font-bold uppercase tracking-wider text-zinc-500">Aplicar a todos:</span>
+                  <button type="button" onClick={() => applyBulkTransition("punch")} className="border border-fuchsia-800 bg-black px-2 py-1 text-[9px] font-bold text-fuchsia-300 hover:bg-fuchsia-950/40">💥 Punch</button>
+                  <button type="button" onClick={() => applyBulkTransition("shake")} className="border border-amber-800 bg-black px-2 py-1 text-[9px] font-bold text-amber-300 hover:bg-amber-950/40">🫨 Shake</button>
+                  <button type="button" onClick={() => applyBulkTransition("cut")} className="border border-zinc-700 bg-black px-2 py-1 text-[9px] font-bold text-zinc-300 hover:bg-zinc-900">✂ Corte</button>
+                  <span className="mx-1 h-4 w-px bg-zinc-800" />
+                  <button type="button" onClick={() => applyBulkMotion("push")} className="border border-cyan-800 bg-black px-2 py-1 text-[9px] font-bold text-cyan-300 hover:bg-cyan-950/40">Push</button>
+                  <button type="button" onClick={() => applyBulkMotion("impact")} className="border border-red-900 bg-black px-2 py-1 text-[9px] font-bold text-red-300 hover:bg-red-950/30">Impacto</button>
+                  <button type="button" onClick={() => applyBulkMotion("whip")} className="border border-zinc-700 bg-black px-2 py-1 text-[9px] font-bold text-zinc-300 hover:bg-zinc-900">Whip</button>
+                  <span className="mx-1 h-4 w-px bg-zinc-800" />
+                  <label className="flex items-center gap-1.5 text-[9px] text-zinc-500">Energía <span className="font-mono text-zinc-300">{avgIntensity}%</span>
+                    <input type="range" min="0" max="100" value={avgIntensity} onChange={(event) => {
+                      const v = Number(event.target.value);
+                      setProject((cur) => ({ ...cur, clips: cur.clips.map((clip) => ({ ...clip, motionIntensity: v })) }));
+                    }} className="w-20 accent-fuchsia-500" />
+                  </label>
+                </div>
+              )}
             </div>
             <div className="overflow-x-auto bg-black/70">
               <div
@@ -786,11 +855,22 @@ export default function EditStudioPage() {
                   seekTo((event.clientX - rect.left) / pxPerSecond);
                 }}
               >
-                {beatMarkers.map((time, index) => (
-                  <div key={`${time}-${index}`} className="pointer-events-none absolute inset-y-0 border-l border-cyan-400/15" style={{ left: time * pxPerSecond }}>
-                    <span className="absolute left-1 top-1 font-mono text-[8px] text-cyan-300/35">{index + 1}</span>
+                {/* Waveform detrás de beat markers */}
+                {waveformPeaks && (
+                  <div className="pointer-events-none absolute inset-x-0 top-0 flex h-6 items-end gap-px overflow-hidden opacity-45" style={{ width: duration * pxPerSecond }}>
+                    {waveformPeaks.map((peak, idx) => (
+                      <div key={idx} className="shrink-0 bg-fuchsia-400/55" style={{ width: Math.max(1, (duration * pxPerSecond) / waveformPeaks.length - 0.5), height: Math.max(1, peak * 22) }} />
+                    ))}
                   </div>
-                ))}
+                )}
+                {beatMarkers.map((time, index) => {
+                  const isBar = index % 4 === 0;
+                  return (
+                    <div key={`${time}-${index}`} className={`pointer-events-none absolute inset-y-0 border-l ${isBar ? "border-cyan-400/28" : "border-cyan-400/12"}`} style={{ left: time * pxPerSecond }}>
+                      <span className={`absolute left-1 top-1 font-mono text-[8px] ${isBar ? "text-cyan-200/70 font-bold" : "text-cyan-300/35"}`}>{index + 1}</span>
+                    </div>
+                  );
+                })}
                 <div className="absolute left-0 right-0 top-7 flex h-20">
                   {project.clips.map((clip, index) => (
                     <TimelineClipBlock
