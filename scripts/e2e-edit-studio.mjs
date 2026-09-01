@@ -16,26 +16,51 @@ execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-f", "lavfi", "-i", "color=
 execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=0x102f42:s=1080x1920", "-frames:v", "1", B]);
 execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=220:sample_rate=48000:duration=4", SONG]);
 
-const browser = await chromium.launch({ executablePath: fs.existsSync(EXE) ? EXE : undefined, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
-const page = await browser.newPage();
+const browser = await chromium.launch({
+  executablePath: fs.existsSync(EXE) ? EXE : undefined,
+  args: ["--no-sandbox", "--disable-dev-shm-usage", "--use-gl=swiftshader", "--enable-unsafe-swiftshader"],
+});
+const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
 const errors = [];
 page.on("pageerror", (error) => errors.push(error.message));
 await page.goto(`${BASE}/edit-studio`, { waitUntil: "networkidle" });
+await page.getByRole("button", { name: /^Medios$/ }).click();
 await page.locator('label:has-text("+ Importar") input[type="file"]').setInputFiles([A, B]);
-await page.getByText("plano-a.jpg", { exact: true }).waitFor();
-await page.getByText("plano-b.jpg", { exact: true }).waitFor();
+await page.getByTestId("edit-timeline-clip").nth(1).waitFor();
+await page.getByText("Ajustes manuales de toda la timeline", { exact: true }).click();
 await page.getByRole("button", { name: "Referencia 18 s" }).click();
 await page.getByRole("button", { name: "▶ PLAY" }).click();
 await page.getByRole("button", { name: "❚❚ PAUSA" }).waitFor();
 await page.getByRole("button", { name: "❚❚ PAUSA" }).click();
 
+const [previewBox, timelineBox] = await Promise.all([
+  page.getByTestId("edit-preview-canvas").boundingBox(),
+  page.getByText("Timeline / beat rail", { exact: true }).boundingBox(),
+]);
+if (!previewBox || !timelineBox || previewBox.y < 0 || timelineBox.y < 0 || timelineBox.y > 1000) {
+  throw new Error("Preview y timeline no permanecen visibles en el workspace de escritorio");
+}
+await page.getByTestId("edit-timeline-clip").nth(1).click();
+await page.getByText("Transición, cámara y fuente", { exact: true }).click();
+await page.getByRole("button", { name: /^● Tinta/ }).click();
+await page.waitForTimeout(80);
+await page.getByRole("button", { name: /^▥ Viñetas/ }).click();
+await page.waitForTimeout(80);
+await page.getByRole("button", { name: /^◫ Profundidad/ }).click();
+await page.getByRole("button", { name: "Parallax 2.5D", exact: true }).click();
+await page.getByLabel("Fuerza de transición").fill("72");
+await page.screenshot({ path: "/tmp/loop-studio-edit-workspace.png", fullPage: false });
+
+await page.getByRole("button", { name: /^Acabado$/ }).click();
 await page.getByText("05 / Atmósfera").click();
 await page.locator("details").filter({ hasText: "05 / Atmósfera" }).locator("select").first().selectOption("cinematic_dust");
 await page.getByText("06 / Textos y firma").click();
 await page.getByRole("button", { name: "+ Texto en el cabezal" }).click();
+await page.getByRole("button", { name: /^Medios$/ }).click();
 await page.locator('label:has-text("Seleccionar canción") input[type="file"]').setInputFiles(SONG);
 await page.getByText("edit-song.wav", { exact: true }).waitFor();
 
+await page.getByRole("button", { name: /^Acabado$/ }).click();
 await page.getByRole("button", { name: "EXPORTAR EDIT" }).click();
 await page.getByText("Descargar de nuevo").waitFor({ timeout: 300_000 });
 const b64 = await page.evaluate(async () => {
@@ -52,6 +77,13 @@ const video = probe.streams.find((stream) => stream.codec_type === "video");
 if (video.width !== 1080 || video.height !== 1920) throw new Error(`Resolución inesperada ${video.width}x${video.height}`);
 if (!probe.streams.some((stream) => stream.codec_type === "audio")) throw new Error("El edit salió sin audio");
 if (errors.length) throw new Error(errors.join(" | "));
+
+const mobile = await browser.newPage({ viewport: { width: 390, height: 844 } });
+await mobile.goto(`${BASE}/edit-studio`, { waitUntil: "networkidle" });
+if (await mobile.getByTestId("edit-preview-stage").evaluate((element) => getComputedStyle(element).position) !== "sticky") {
+  throw new Error("El preview móvil no conserva su posición sticky");
+}
+await mobile.close();
 
 console.log(`✓ Edit Studio: multiclip, beat, play/pausa, partículas, texto, audio y export ${probe.format.duration}s`);
 await browser.close();

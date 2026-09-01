@@ -195,6 +195,11 @@ export interface MangaMotionConfig {
   cameraIntensity: number; // 0..100
   cameraAngle: number;     // -45..45 degrees (Dutch tilt)
   cameraBaseZoom: number;  // 1.0..2.5x base framing zoom
+  /** Los edits usan un empuje lineal; los loops conservan la oscilación cerrada. */
+  cameraOneWay?: boolean;
+  cameraDirection?: -1 | 1;
+  /** Punto de interés normalizado para reencuadrar sin deformar la fuente. */
+  sourceFocus?: { x: number; y: number };
   /** Corrección por frame calculada por el estabilizador local. */
   sourceTransform?: SourceFrameTransform;
 
@@ -1167,7 +1172,9 @@ export function renderMangaMotionFrame(
   } else if (config.cameraMove === "slow_push") {
     // Empuje suave sin rotación: la oscilación angular anterior se percibía como
     // temblor incluso con intensidades bajas.
-    const pushFactor = 0.5 - 0.5 * Math.cos(cycleProgress * Math.PI * 2);
+    const pushFactor = config.cameraOneWay
+      ? (config.cameraDirection === -1 ? 1 - cycleProgress : cycleProgress)
+      : 0.5 - 0.5 * Math.cos(cycleProgress * Math.PI * 2);
     camZoom = baseZoom * (1.0 + 0.075 * pushFactor * intensity);
     camRot = userAngle;
   } else if (config.cameraMove === "dutch_drift") {
@@ -1223,6 +1230,17 @@ export function renderMangaMotionFrame(
   const scaleFill = Math.max(targetW / imgW, targetH / imgH) * camZoom;
   const dstW = imgW * scaleFill;
   const dstH = imgH * scaleFill;
+  const sourceFocus = config.sourceFocus;
+  if (sourceFocus) {
+    const focusX = Math.max(0, Math.min(1, sourceFocus.x));
+    const focusY = Math.max(0, Math.min(1, sourceFocus.y));
+    const maxPanX = Math.max(0, (dstW - targetW) / 2);
+    const maxPanY = Math.max(0, (dstH - targetH) / 2);
+    const focusPanX = (0.5 - focusX) * maxPanX * 2;
+    const focusPanY = (0.5 - focusY) * maxPanY * 2;
+    camPanX = Math.max(-maxPanX, Math.min(maxPanX, camPanX + focusPanX));
+    camPanY = Math.max(-maxPanY, Math.min(maxPanY, camPanY + focusPanY));
+  }
   const centerX = targetW / 2 + camPanX;
   const centerY = targetH / 2 + camPanY;
 

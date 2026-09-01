@@ -37,7 +37,17 @@ export function ensureWatermarkFont(): Promise<void> {
         style: "normal",
         display: "swap",
       });
-      const loaded = await Promise.all([light.load(), medium.load()]);
+      const black = new FontFace("SilentVigil", "url(/fonts/Montserrat-Black.otf)", {
+        weight: "900",
+        style: "normal",
+        display: "swap",
+      });
+      const blackItalic = new FontFace("SilentVigil", "url(/fonts/Montserrat-BlackItalic.otf)", {
+        weight: "900",
+        style: "italic",
+        display: "swap",
+      });
+      const loaded = await Promise.all([light.load(), medium.load(), black.load(), blackItalic.load()]);
       for (const face of loaded) document.fonts.add(face);
     } catch (err) {
       console.warn("Watermark font failed to load, using system fallback:", err);

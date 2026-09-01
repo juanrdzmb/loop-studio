@@ -1,9 +1,9 @@
 import type { AestheticStyle, ColorGradeConfig, ParticleType } from "./mangaMotionEngine";
-import type { EditMotion, EditProject, EditTextCue, EditTimelineClip, EditTransition, EditVelocityCurve } from "./editStudio";
+import type { EditAssistProfile } from "./editAssistPlanner";
+import type { EditMotion, EditProject, EditTextCue, EditTextStyle, EditTimelineClip, EditTransition, EditVelocityCurve } from "./editStudio";
 import { snapEditTime } from "./editStudio";
 
-// Cada preset dura 25-35s (objetivo 28-32, snapped al beat). El usuario puede editar el texto generado después.
-export type PresetId = "berserkImpact" | "vinlandEmotion" | "flashStorm" | "goldenMontage";
+export type PresetId = "berserkImpact" | "vinlandEmotion" | "flashStorm" | "climberPulse" | "goldenMontage" | "hypnoticPortrait";
 
 export interface PresetTextTemplate {
   text: string;
@@ -11,6 +11,10 @@ export interface PresetTextTemplate {
   color: string;
   y: number;
   size: number;
+  at: number;
+  duration: number;
+  style: EditTextStyle;
+  emphasis: string;
 }
 
 export interface EditPreset {
@@ -18,8 +22,14 @@ export interface EditPreset {
   label: string;
   desc: string;
   icon: string;
-  targetDuration: number; // 25-35 objetivo antes de snap
-  pattern: number[]; // duraciones base (seg) antes de snap — se recorre circular hasta alcanzar target
+  targetDuration: number;
+  assetHint: string;
+  pace: string;
+  /** Punto relativo donde cambia el build por el drop. */
+  dropAt: number;
+  assistProfile: EditAssistProfile;
+  /** Duraciones observadas en las referencias; se ajustan a medio beat. */
+  pattern: number[];
   transitions: {
     // distribución por índice; bar cada 4 beats usa barTransition
     barTransition: EditTransition;
@@ -44,109 +54,172 @@ export interface EditPreset {
 export const EDIT_PRESETS: EditPreset[] = [
   {
     id: "berserkImpact",
-    label: "BERSERK — Impacto",
-    desc: "Build 1.4-1.9s + drop 0.6-0.77s · punch/shake/zoom cada golpe · cámara impacto",
+    label: "Impacto progresivo",
+    desc: "Presenta al personaje con planos largos y rompe a medio beat en el drop.",
     icon: "💥",
-    targetDuration: 30,
-    // 28 clips ≈29.9s (referencia Human 15.7 + 12.1 + 2.1). 25-35 garantizado tras snap.
+    targetDuration: 18,
+    assetHint: "12–20 planos",
+    pace: "Build → ½ beat",
+    dropAt: 0.56,
+    assistProfile: { assetRange: [12, 20], visualEnergy: 0.65, energyRise: 0.75, onsetDensity: 0.75 },
     pattern: [
       1.4, 1.57, 1.93, 1.33, 1.5, 1.13, 1.2,
-      0.6, 0.7, 0.73, 0.67, 0.75, 0.72, 0.7, 0.77,
-      1.4, 1.57, 1.93, 1.33, 1.5, 1.13, 1.2, 0.6, 0.7, 0.73, 0.67, 0.75, 0.72,
+      0.6, 0.7, 0.73, 0.67, 0.75, 0.72, 0.7, 0.77, 0.6, 0.7, 0.67,
     ],
     transitions: {
       barTransition: "flash",
-      dropTransitions: ["punch", "shake", "zoom", "cut"],
-      buildTransitions: ["cut", "cut", "zoom", "cut"],
+      dropTransitions: ["cut", "punch", "blur", "cut", "shake"],
+      buildTransitions: ["cut", "blur", "cut", "zoom"],
     },
-    motions: { build: ["push", "drift"], drop: ["impact", "whip", "push"] },
-    intensity: { build: 28, drop: 58 },
+    motions: { build: ["push", "pull", "drift"], drop: ["push", "impact", "pull"] },
+    intensity: { build: 24, drop: 48 },
     velocity: { build: { rate: 0.88, curve: "easeIn" }, drop: { rate: 1.08, curve: "punch" } },
-    style: "dark_fantasy",
-    colorGrade: { contrast: 18, exposure: -6, saturation: -8, temperature: -8, bloom: 12, grain: 18 },
-    particles: { type: "embers_fire", intensity: 58 },
+    style: "seinen_bw",
+    colorGrade: { contrast: 12, exposure: -2, saturation: -4, temperature: -4, bloom: 6, grain: 9 },
+    particles: { type: "snow_ash", intensity: 18 },
     textTemplates: [
-      { text: "HUMAN", color: "#ffffff", accent: "#d946ef", y: 0.38, size: 56 },
-      { text: "AMONG GODS", color: "#ffffff", accent: "#f43f5e", y: 0.52, size: 48 },
-      { text: "STILL STANDING", color: "#ffffff", accent: "#22d3ee", y: 0.66, size: 44 },
+      { text: "GODHANDS", color: "#ffffff", accent: "#d946ef", y: 0.62, size: 28, at: 0.12, duration: 1, style: "minimal", emphasis: "GOD" },
+      { text: "APOSTLES", color: "#ffffff", accent: "#84cc16", y: 0.62, size: 28, at: 0.4, duration: 1, style: "minimal", emphasis: "APOSTLES" },
+      { text: "HUMAN", color: "#ffffff", accent: "#fb7185", y: 0.62, size: 34, at: 0.7, duration: 1.1, style: "condensed", emphasis: "HUMAN" },
     ],
   },
   {
     id: "vinlandEmotion",
-    label: "VINLAND — Emoción lenta",
-    desc: "Takes 3-4s narrativas · crossfade largo · drift/vertigo · slow 0.78×",
+    label: "Emoción cinematográfica",
+    desc: "Primera mitad narrativa; después alterna color, blur y cortes sobre cada pulso.",
     icon: "🌊",
-    targetDuration: 32,
-    // ~9 takes ×3.4 avg =30.6 (imitando LET GO 3.88/4.2/3.9...). Si X pequeño se duplica con variación.
-    pattern: [3.85, 4.2, 3.92, 3.32, 3.12, 2.85, 4.05, 3.45, 3.05, 3.6],
+    targetDuration: 18.3,
+    assetHint: "10–18 planos",
+    pace: "Historia → pulso",
+    dropAt: 0.51,
+    assistProfile: { assetRange: [10, 18], visualEnergy: 0.45, energyRise: 0.55, onsetDensity: 0.6 },
+    pattern: [1.88, 1.59, 2.05, 1.33, 2.42, 0.51, 0.57, 0.57, 0.58, 0.57, 0.55, 0.6, 0.55, 0.51, 0.57, 0.57, 0.58, 0.57, 0.55, 0.6, 0.6],
     transitions: {
-      barTransition: "crossfade",
-      dropTransitions: ["crossfade", "zoom"],
-      buildTransitions: ["crossfade", "cut"],
+      barTransition: "blur",
+      dropTransitions: ["cut", "blur", "zoom", "cut"],
+      buildTransitions: ["crossfade", "cut", "blur"],
     },
-    motions: { build: ["drift", "vertigo", "scan"], drop: ["drift", "scan"] },
-    intensity: { build: 22, drop: 26 },
-    velocity: { build: { rate: 0.78, curve: "easeOut" }, drop: { rate: 0.85, curve: "easeOut" } },
-    style: "vintage_sepia",
-    colorGrade: { contrast: 8, exposure: 6, saturation: 6, temperature: 14, bloom: 14, grain: 12 },
-    particles: { type: "cinematic_dust", intensity: 34 },
+    motions: { build: ["push", "pull", "drift"], drop: ["push", "pull", "scan"] },
+    intensity: { build: 20, drop: 28 },
+    velocity: { build: { rate: 0.86, curve: "easeOut" }, drop: { rate: 1, curve: "punch" } },
+    style: "original",
+    colorGrade: { contrast: 6, exposure: 2, saturation: -4, temperature: 4, bloom: 8, grain: 5 },
+    particles: { type: "cinematic_dust", intensity: 18 },
     textTemplates: [
-      { text: "THE BEST MC", color: "#fff7ed", accent: "#38bdf8", y: 0.62, size: 44 },
-      { text: "VINLAND", color: "#ffffff", accent: "#facc15", y: 0.48, size: 52 },
+      { text: "THE BEST MC", color: "#ffffff", accent: "#fbbf24", y: 0.74, size: 30, at: 0.83, duration: 1.25, style: "minimal", emphasis: "MC" },
     ],
   },
   {
     id: "flashStorm",
-    label: "STORM — Flash ráfaga",
-    desc: "Ráfaga constante 0.6-0.8s · flash/whip/shake cada corte · spiral/whip",
-    icon: "🌀",
-    targetDuration: 28,
-    // ~36 clips avg 0.72 =26; con snap 128bpm half-beat 0.234 → 26-29
-    pattern: [
-      0.72, 0.68, 0.75, 0.65, 0.7, 0.73, 0.69, 0.71,
-      0.74, 0.66, 0.72, 0.68, 0.75, 0.62, 0.7, 0.73,
-      0.69, 0.71, 0.74, 0.66, 0.72, 0.68, 0.75, 0.62,
-      0.7, 0.73, 0.69, 0.71, 0.74, 0.66, 0.72, 0.68,
-    ],
+    label: "Collage gráfico",
+    desc: "Composición con respiración, ráfagas cortas, zoom y tipografía por palabras.",
+    icon: "🧩",
+    targetDuration: 13,
+    assetHint: "6–10 planos",
+    pace: "Mixto · gráfico",
+    dropAt: 0.33,
+    assistProfile: { assetRange: [6, 10], visualEnergy: 0.6, energyRise: 0.45, onsetDensity: 0.55 },
+    pattern: [1.27, 3.03, 0.3, 1, 0.82, 2.18, 2.6, 1.83],
     transitions: {
       barTransition: "flash",
-      dropTransitions: ["flash", "whip", "shake", "punch"],
-      buildTransitions: ["whip", "shake", "punch", "cut"],
+      dropTransitions: ["zoom", "blur", "cut", "whip", "cut"],
+      buildTransitions: ["crossfade", "zoom", "cut"],
     },
-    motions: { build: ["spiral", "whip", "scan"], drop: ["spiral", "whip", "impact"] },
-    intensity: { build: 48, drop: 62 },
-    velocity: { build: { rate: 1.08, curve: "punch" }, drop: { rate: 1.15, curve: "punch" } },
-    style: "seinen_bw",
-    colorGrade: { contrast: 20, exposure: -4, saturation: -12, grain: 18, bloom: 6 },
-    particles: { type: "snow_ash", intensity: 52 },
+    motions: { build: ["push", "drift"], drop: ["scan", "whip", "pull"] },
+    intensity: { build: 26, drop: 42 },
+    velocity: { build: { rate: 0.94, curve: "easeIn" }, drop: { rate: 1.08, curve: "punch" } },
+    style: "dark_fantasy",
+    colorGrade: { contrast: 10, exposure: 2, saturation: 4, temperature: 2, bloom: 13, grain: 6 },
+    particles: { type: "light_leaks", intensity: 18 },
     textTemplates: [
-      { text: "LET GO", color: "#ffffff", accent: "#ef4444", y: 0.42, size: 58 },
-      { text: "NOW", color: "#ffffff", accent: "#22d3ee", y: 0.58, size: 52 },
-      { text: "BREAK", color: "#ffffff", accent: "#f97316", y: 0.5, size: 50 },
+      { text: "CAUSE I'M | PROUD OF YOU", color: "#ffffff", accent: "#ef4444", y: 0.58, size: 38, at: 0.5, duration: 1.4, style: "condensed", emphasis: "PROUD" },
+      { text: "PROUD OF | YOU", color: "#ffffff", accent: "#d946ef", y: 0.5, size: 46, at: 0.76, duration: 1.3, style: "editorial", emphasis: "YOU" },
     ],
   },
   {
-    id: "goldenMontage",
-    label: "GOLDEN — Montage cálido",
-    desc: "Mixto 1.4-3.2s + burst 0.9 · push/drift/scan · zoom sutil · golden",
-    icon: "✨",
-    targetDuration: 30,
-    // mixto narrativo + burst (imitando LET GO mixto)
-    pattern: [1.4, 2.85, 1.52, 3.2, 0.92, 2.62, 1.82, 0.72, 2.22, 1.12, 3.05, 1.38, 2.45, 0.88, 2.75, 1.25, 3.12, 0.95],
+    id: "climberPulse",
+    label: "Pulso ascendente",
+    desc: "Respira al principio, acelera en una ráfaga y sostiene un pulso preciso hasta el cierre.",
+    icon: "↗",
+    targetDuration: 26.8,
+    assetHint: "8–18 planos o vídeos largos",
+    pace: "Pulso → ráfaga → ascenso",
+    dropAt: 0.34,
+    assistProfile: { assetRange: [8, 18], visualEnergy: 0.52, energyRise: 0.72, onsetDensity: 0.68 },
+    pattern: [
+      0.56, 0.58, 0.62, 0.55, 0.51, 0.62, 0.57, 0.29, 0.28, 0.26, 0.3, 0.17, 0.28,
+      1.17, 0.58, 0.55, 0.57, 0.54, 0.59, 0.56, 0.53, 0.58, 0.54, 0.57, 0.55, 0.6,
+      0.54, 0.56, 0.28, 0.28, 0.55, 0.57, 0.54, 0.59, 0.55, 0.58, 0.54, 0.56, 0.58,
+      0.55, 0.57, 0.54, 0.6, 0.56, 0.54, 0.58, 0.55,
+    ],
     transitions: {
-      barTransition: "zoom",
-      dropTransitions: ["zoom", "cut", "crossfade"],
-      buildTransitions: ["cut", "zoom", "crossfade"],
+      barTransition: "depth",
+      dropTransitions: ["cut", "panel", "punch", "cut", "ink", "depth"],
+      buildTransitions: ["cut", "blur", "crossfade", "panel"],
     },
-    motions: { build: ["push", "drift", "scan"], drop: ["push", "scan", "spiral"] },
-    intensity: { build: 30, drop: 38 },
-    velocity: { build: { rate: 0.95, curve: "linear" }, drop: { rate: 1.02, curve: "linear" } },
-    style: "golden_sunset",
-    colorGrade: { contrast: 10, exposure: 8, saturation: 12, temperature: 16, bloom: 18, grain: 10 },
-    particles: { type: "light_leaks", intensity: 36 },
+    motions: {
+      build: ["parallax", "push", "parallaxDrift"],
+      drop: ["parallaxDrift", "push", "impact", "parallax"],
+    },
+    intensity: { build: 24, drop: 46 },
+    velocity: { build: { rate: 0.9, curve: "easeIn" }, drop: { rate: 1.04, curve: "punch" } },
+    style: "seinen_bw",
+    colorGrade: { contrast: 14, exposure: -3, saturation: -8, temperature: -2, bloom: 7, grain: 11 },
+    particles: { type: "cinematic_dust", intensity: 16 },
+    textTemplates: [],
+  },
+  {
+    id: "goldenMontage",
+    label: "Tráiler lírico",
+    desc: "Intro contenida con frases; el segundo acto entra en rojo, blur y golpes selectivos.",
+    icon: "🎞️",
+    targetDuration: 30,
+    assetHint: "12–24 planos",
+    pace: "Intro → clímax",
+    dropAt: 0.53,
+    assistProfile: { assetRange: [12, 24], visualEnergy: 0.55, energyRise: 0.85, onsetDensity: 0.5 },
+    pattern: [3.88, 4.2, 4.17, 2.05, 1.83, 0.29, 1.51, 1.59, 0.53, 0.27, 0.27, 2.11, 1.82, 0.28, 1.54, 1.56, 0.5, 0.24, 0.26, 0.62],
+    transitions: {
+      barTransition: "blur",
+      dropTransitions: ["blur", "cut", "zoom", "punch", "flash", "cut"],
+      buildTransitions: ["crossfade", "cut", "blur"],
+    },
+    motions: { build: ["push", "pull", "drift"], drop: ["push", "impact", "scan", "pull"] },
+    intensity: { build: 20, drop: 40 },
+    velocity: { build: { rate: 0.82, curve: "easeIn" }, drop: { rate: 1.06, curve: "punch" } },
+    style: "dark_fantasy",
+    colorGrade: { contrast: 16, exposure: -6, saturation: -10, temperature: -4, tint: 6, bloom: 10, grain: 14 },
+    particles: { type: "dark_ink_fog", intensity: 20 },
     textTemplates: [
-      { text: "VAGABOND", color: "#fffbeb", accent: "#f59e0b", y: 0.56, size: 46 },
-      { text: "STILL WE MOVE", color: "#ffffff", accent: "#d946ef", y: 0.44, size: 42 },
+      { text: "I DON'T CARE ABOUT | PAIN ANYMORE", color: "#ffffff", accent: "#ef4444", y: 0.48, size: 27, at: 0.05, duration: 2.5, style: "condensed", emphasis: "PAIN" },
+      { text: "LET GO", color: "#ffffff", accent: "#ef4444", y: 0.5, size: 62, at: 0.4, duration: 1.25, style: "editorial", emphasis: "GO" },
+      { text: "LET GO", color: "#ffffff", accent: "#fb7185", y: 0.5, size: 70, at: 0.54, duration: 1.35, style: "editorial", emphasis: "GO" },
+    ],
+  },
+  {
+    id: "hypnoticPortrait",
+    label: "Retrato hipnótico",
+    desc: "Cuatro planos largos, push/pull lento y cambios de foco sin saturar de efectos.",
+    icon: "👁️",
+    targetDuration: 9.8,
+    assetHint: "4–8 planos",
+    pace: "Lento · magnético",
+    dropAt: 0.5,
+    assistProfile: { assetRange: [4, 8], visualEnergy: 0.25, energyRise: 0.2, onsetDensity: 0.25 },
+    pattern: [2.13, 2.7, 2.44, 2.55],
+    transitions: {
+      barTransition: "blur",
+      dropTransitions: ["blur", "cut", "crossfade"],
+      buildTransitions: ["cut", "blur", "crossfade"],
+    },
+    motions: { build: ["push", "pull"], drop: ["vertigo", "pull"] },
+    intensity: { build: 18, drop: 22 },
+    velocity: { build: { rate: 0.78, curve: "easeOut" }, drop: { rate: 0.84, curve: "easeOut" } },
+    style: "original",
+    colorGrade: { contrast: 10, exposure: -1, saturation: 12, temperature: 8, bloom: 8, grain: 5 },
+    particles: { type: "none", intensity: 10 },
+    textTemplates: [
+      { text: "HELP YOURSELF", color: "#ffffff", accent: "#ef4444", y: 0.76, size: 26, at: 0.83, duration: 1, style: "minimal", emphasis: "" },
     ],
   },
 ];
@@ -162,12 +235,9 @@ export function applyPresetToProject(
   bpm: number
 ): { clips: EditTimelineClip[]; textCues: EditTextCue[]; style: AestheticStyle; colorGrade: Partial<ColorGradeConfig>; particles: ParticleType; particleIntensity: number } {
   if (!clipsSeed.length) {
-    return { clips: [], textCues: [], style: preset.style, colorGrade: preset.colorGrade, particles: preset.particles.type, particleIntensity: preset.particles.intensity };
+    return { clips: [], textCues: project.textCues, style: preset.style, colorGrade: preset.colorGrade, particles: preset.particles.type, particleIntensity: preset.particles.intensity };
   }
   const beat = 60 / Math.max(30, Math.min(240, bpm));
-  const targetMin = 25;
-  const targetMax = 35;
-  // Generar durations hasta cubrir targetDuration (snap incluido)
   const rawDurations: number[] = [];
   let sum = 0;
   let pi = 0;
@@ -178,51 +248,70 @@ export function applyPresetToProject(
     rawDurations.push(snapped);
     sum += snapped;
     pi++;
-    // si ya superamos targetMin y nos acercamos al max, podemos parar en bar
-    if (sum >= targetMin && sum >= preset.targetDuration) break;
-    if (sum > targetMax) break;
-  }
-  // Ajustar último clip para no exceder 35 ni quedar <25
-  if (sum > targetMax && rawDurations.length > 1) {
-    const excess = sum - targetMax;
-    const lastIdx = rawDurations.length - 1;
-    const adjusted = Math.max(beat * 0.5, rawDurations[lastIdx]! - excess);
-    const snappedAdj = snapEditTime(adjusted, bpm, 2);
-    sum = sum - rawDurations[lastIdx]! + snappedAdj;
-    rawDurations[lastIdx] = snappedAdj;
-    if (sum < targetMin) {
-      // si quedó corto, empuja un poco
-      rawDurations[lastIdx] = snapEditTime(rawDurations[lastIdx]! + (targetMin - sum), bpm, 2);
-    }
-  }
-  // Si aún corto (<25), repetir patrón
-  while (rawDurations.reduce((a, b) => a + b, 0) < targetMin && rawDurations.length < 80) {
-    const base = preset.pattern[rawDurations.length % preset.pattern.length]!;
-    rawDurations.push(snapEditTime(base, bpm, 2));
   }
 
-  const isDropThreshold = Math.floor(rawDurations.length * 0.42);
+  // El último plano absorbe solo el redondeo de la rejilla; no alarga todos los
+  // estilos hasta 30 s, porque las referencias cubren de 9.8 a 30 s.
+  if (rawDurations.length > 0) {
+    const lastIdx = rawDurations.length - 1;
+    const desired = rawDurations[lastIdx]! - (sum - preset.targetDuration);
+    if (desired > 0) {
+      const adjusted = snapEditTime(desired, bpm, 2);
+      const adjustedTotal = sum - rawDurations[lastIdx]! + adjusted;
+      if (Math.abs(adjustedTotal - preset.targetDuration) <= Math.abs(sum - preset.targetDuration)) {
+        rawDurations[lastIdx] = adjusted;
+        sum = adjustedTotal;
+      }
+    }
+  }
+
+  const clipStarts: number[] = [];
+  let cursor = 0;
+  for (const duration of rawDurations) {
+    clipStarts.push(cursor);
+    cursor += duration;
+  }
+  const totalDuration = cursor;
+  const detectedDropIndex = clipStarts.findIndex((start) => start >= totalDuration * preset.dropAt);
+  const dropStartIndex = detectedDropIndex >= 0
+    ? Math.max(1, detectedDropIndex)
+    : rawDurations.length;
   const clips: EditTimelineClip[] = rawDurations.map((duration, idx) => {
     const seed = clipsSeed[idx % clipsSeed.length]!;
-    const isDrop = idx >= isDropThreshold;
-    const isBar = idx !== 0 && idx % 4 === 0;
+    const start = clipStarts[idx]!;
+    const isDrop = idx >= dropStartIndex;
+    const beatPosition = start / beat;
+    const nearestBeat = Math.round(beatPosition);
+    const isBar = idx !== 0
+      && Math.abs(beatPosition - nearestBeat) < 0.06
+      && nearestBeat % 4 === 0;
+    const phaseIndex = isDrop ? idx - dropStartIndex : idx;
     let transition: EditTransition;
     if (idx === 0) transition = "cut";
     else if (isBar) transition = preset.transitions.barTransition;
-    else if (isDrop) transition = preset.transitions.dropTransitions[idx % preset.transitions.dropTransitions.length]!;
-    else transition = preset.transitions.buildTransitions[idx % preset.transitions.buildTransitions.length]!;
+    else if (isDrop) transition = preset.transitions.dropTransitions[phaseIndex % preset.transitions.dropTransitions.length]!;
+    else transition = preset.transitions.buildTransitions[phaseIndex % preset.transitions.buildTransitions.length]!;
 
     const motions = isDrop ? preset.motions.drop : preset.motions.build;
-    const motion = motions[idx % motions.length]!;
+    const motion = motions[phaseIndex % motions.length]!;
     const intensity = isDrop ? preset.intensity.drop : preset.intensity.build;
     const vel = isDrop ? preset.velocity.drop : preset.velocity.build;
 
-    // sourceStart escalonado para vídeo (evita repetir mismo frame)
-    let sourceStart = seed.sourceStart;
-    if (seed.sourceDuration > duration * 0.6) {
-      const span = Math.max(0, seed.sourceDuration - duration);
-      sourceStart = span > 0 ? (idx * 0.73) % span : seed.sourceStart;
-    }
+    const availableDuration = Math.max(0.12, seed.sourceDuration || duration * vel.rate);
+    const sourceDuration = Math.max(0.12, Math.min(availableDuration, duration * vel.rate));
+    const offsetSpan = Math.max(0, availableDuration - sourceDuration);
+    const sourceStart = seed.sourceStart + (offsetSpan > 0 ? (idx * 0.73) % offsetSpan : 0);
+    const transitionDuration = transition === "cut"
+      ? 0
+      : transition === "crossfade"
+        ? Math.min(0.32, duration * 0.3)
+        : transition === "blur"
+          ? Math.min(0.22, duration * 0.28)
+          : transition === "zoom"
+            ? Math.min(0.18, duration * 0.24)
+            : transition === "punch" || transition === "shake"
+              ? Math.min(0.14, duration * 0.22)
+              : Math.min(0.12, duration * 0.2);
 
     return {
       id: `clip-${Date.now().toString(36)}-${idx}-${Math.random().toString(36).slice(2, 5)}`,
@@ -230,39 +319,29 @@ export function applyPresetToProject(
       label: seed.label,
       duration,
       sourceStart,
-      sourceDuration: Math.max(0.12, Math.min(seed.sourceDuration || duration, duration * 1.08)),
+      sourceDuration,
       transition,
-      transitionDuration:
-        transition === "crossfade"
-          ? Math.min(0.34, duration * 0.32)
-          : transition === "punch" || transition === "shake"
-            ? Math.min(0.18, duration * 0.26)
-            : Math.min(0.15, duration * 0.22),
+      transitionDuration,
+      transitionIntensity: isDrop ? 68 : 46,
+      transitionDirection: "auto",
       motion,
       motionIntensity: intensity,
       playbackRate: vel.rate,
       velocityCurve: vel.curve,
+      framingX: 0,
+      framingY: 0,
+      framingScale: motion === "impact" || motion === "whip" ? 1.07 : 1.03,
       style: "inherit" as const,
     };
   });
 
-  // Text cues espaciados 8-10s, duración 0.9s (punch window 0.14s en drawEditTextCue hace el efecto)
   const total = clips.reduce((a, c) => a + c.duration, 0);
-  const textCues: EditTextCue[] = preset.textTemplates.slice(0, Math.min(3, preset.textTemplates.length)).map((tpl, idx) => {
-    const slot = total / (preset.textTemplates.length + 1);
-    const start = slot * (idx + 1) - 0.45; // centra el punch
-    return {
-      id: `text-${Date.now().toString(36)}-${idx}`,
-      text: tpl.text,
-      start: Math.max(0, Math.min(total - 0.9, start)),
-      duration: 0.9,
-      x: 0.5,
-      y: tpl.y,
-      size: tpl.size,
-      color: tpl.color,
-      accent: tpl.accent,
-    };
-  });
+  // Los presets gobiernan ritmo y look, nunca escriben palabras que el usuario
+  // no haya proporcionado. Los templates quedan como referencia opcional para
+  // una futura acción explícita, no para la automatización.
+  const textCues: EditTextCue[] = project.textCues
+    .filter((cue) => cue.start <= total - 0.2)
+    .map((cue) => ({ ...cue, duration: Math.max(0.2, Math.min(cue.duration, total - cue.start)) }));
 
   return {
     clips,

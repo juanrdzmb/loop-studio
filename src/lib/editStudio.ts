@@ -7,10 +7,12 @@ import type {
 import type { WatermarkStyleOptions } from "./watermark";
 
 export type EditFormat = "9:16" | "16:9";
-export type EditTransition = "cut" | "crossfade" | "flash" | "whip" | "punch" | "zoom" | "shake";
-export type EditMotion = "static" | "push" | "drift" | "impact" | "whip" | "vertigo" | "spiral" | "scan";
+export type EditTransition = "cut" | "crossfade" | "flash" | "whip" | "punch" | "zoom" | "shake" | "blur" | "depth" | "ink" | "panel";
+export type EditTransitionDirection = "auto" | "left" | "right" | "up" | "down";
+export type EditMotion = "static" | "push" | "pull" | "drift" | "impact" | "whip" | "vertigo" | "spiral" | "scan" | "parallax" | "parallaxDrift";
 export type EditVelocityCurve = "linear" | "easeIn" | "easeOut" | "punch";
 export type EditRhythmPreset = "reference" | "build-drop" | "steady";
+export type EditTextStyle = "impact" | "condensed" | "editorial" | "minimal";
 
 export interface EditAssetMeta {
   id: string;
@@ -30,10 +32,16 @@ export interface EditTimelineClip {
   sourceDuration: number;
   transition: EditTransition;
   transitionDuration: number;
+  transitionIntensity: number;
+  transitionDirection: EditTransitionDirection;
   motion: EditMotion;
   motionIntensity: number;
   playbackRate: number;
   velocityCurve: EditVelocityCurve;
+  /** Punto de interés dentro del encuadre: -100 izquierda/arriba, 100 derecha/abajo. */
+  framingX: number;
+  framingY: number;
+  framingScale: number;
   style: AestheticStyle | "inherit";
 }
 
@@ -47,6 +55,9 @@ export interface EditTextCue {
   size: number;
   color: string;
   accent: string;
+  style: EditTextStyle;
+  /** Palabra o frase que se pinta con `accent`; vacío conserva un solo color. */
+  emphasis: string;
 }
 
 export interface EditProject {
@@ -172,18 +183,39 @@ export function buildBeatMarkers(duration: number, bpm: number, division = 1): n
 }
 
 export function normalizeEditClip(clip: EditTimelineClip): EditTimelineClip {
+  const transitionDirections: EditTransitionDirection[] = ["auto", "left", "right", "up", "down"];
   return {
     ...clip,
+    transitionIntensity: Math.max(0, Math.min(100, clip.transitionIntensity ?? 55)),
+    transitionDirection: transitionDirections.includes(clip.transitionDirection) ? clip.transitionDirection : "auto",
     motionIntensity: Math.max(0, Math.min(100, clip.motionIntensity ?? (clip.motion === "impact" ? 55 : clip.motion === "static" ? 0 : 32))),
     playbackRate: Math.max(0.5, Math.min(2, clip.playbackRate ?? 1)),
     velocityCurve: (clip.velocityCurve as EditVelocityCurve) ?? "linear",
+    framingX: Math.max(-100, Math.min(100, clip.framingX ?? 0)),
+    framingY: Math.max(-100, Math.min(100, clip.framingY ?? 0)),
+    framingScale: Math.max(1, Math.min(1.4, clip.framingScale ?? 1)),
+  };
+}
+
+export function normalizeEditTextCue(cue: EditTextCue): EditTextCue {
+  const styles: EditTextStyle[] = ["impact", "condensed", "editorial", "minimal"];
+  return {
+    ...cue,
+    start: Math.max(0, Number.isFinite(cue.start) ? cue.start : 0),
+    duration: Math.max(0.2, Number.isFinite(cue.duration) ? cue.duration : 0.9),
+    x: Math.max(0.08, Math.min(0.92, Number.isFinite(cue.x) ? cue.x : 0.5)),
+    y: Math.max(0.08, Math.min(0.9, Number.isFinite(cue.y) ? cue.y : 0.5)),
+    size: Math.max(18, Math.min(96, Number.isFinite(cue.size) ? cue.size : 48)),
+    style: styles.includes(cue.style) ? cue.style : "impact",
+    emphasis: typeof cue.emphasis === "string" ? cue.emphasis : "",
   };
 }
 
 export function applyVelocityCurve(progress: number, curve: EditVelocityCurve, rate: number): number {
   const p = Math.max(0, Math.min(1, progress));
-  const r = Math.max(0.5, Math.min(2, rate));
-  // Rate warps linear progress: 0.5x = slow start, 2x = fast start, but always 0→1 exactly
+  // La curva reparte el recorrido; la velocidad media se aplica en
+  // `editSourceTimeAt` para que 0.5× y 2× sean multiplicadores reales.
+  void rate;
   if (curve === "easeIn") return Math.pow(p, 1.8);
   if (curve === "easeOut") return 1 - Math.pow(1 - p, 1.8);
   if (curve === "punch") {
@@ -191,17 +223,16 @@ export function applyVelocityCurve(progress: number, curve: EditVelocityCurve, r
     if (p < 0.45) return (p / 0.45) * 0.72;
     return 0.72 + ((p - 0.45) / 0.55) * 0.28;
   }
-  // linear with rate warp
-  if (Math.abs(r - 1) < 0.01) return p;
-  const exp = r < 1 ? 1 + (1 - r) * 1.2 : 1 / (1 + (r - 1) * 0.65);
-  return Math.pow(p, exp);
+  return p;
 }
 
 export function editSourceTimeAt(clip: EditTimelineClip, localTime: number): number {
   const c = normalizeEditClip(clip);
   const normalized = Math.max(0, Math.min(1, localTime / Math.max(0.001, c.duration)));
   const warped = applyVelocityCurve(normalized, c.velocityCurve, c.playbackRate);
-  return c.sourceStart + warped * Math.max(0.001, c.sourceDuration);
+  const requestedSpan = Math.max(0.001, c.duration * c.playbackRate);
+  const sourceSpan = Math.min(Math.max(0.001, c.sourceDuration), requestedSpan);
+  return c.sourceStart + warped * sourceSpan;
 }
 
 export function applyEditRhythmPreset(
@@ -233,21 +264,24 @@ export function applyEditRhythmPreset(
     const motion: EditMotion = isDrop
       ? (index % 3 === 0 ? "impact" : index % 3 === 1 ? "whip" : "push")
       : (index % 2 === 0 ? "push" : "drift");
+    const playbackRate = preset === "reference"
+      ? (index < 7 ? 0.88 : 1.05)
+      : isDrop ? 1.12 : 0.92;
     return {
       ...clip,
       duration: snapped,
-      sourceDuration: clip.sourceDuration > 0 ? Math.min(clip.sourceDuration, snapped * 1.1) : snapped,
+      sourceDuration: clip.sourceDuration > 0 ? Math.min(clip.sourceDuration, snapped * playbackRate) : snapped * playbackRate,
       transition,
       transitionDuration: preset === "steady"
         ? Math.min(0.35, snapped * 0.3)
         : transition === "punch" || transition === "shake"
           ? Math.min(0.18, snapped * 0.25)
           : Math.min(0.14, snapped * 0.2),
+      transitionIntensity: isDrop ? 68 : 46,
+      transitionDirection: "auto",
       motion,
       motionIntensity: isDrop ? 52 : 28,
-      playbackRate: preset === "reference"
-        ? (index < 7 ? 0.88 : 1.05)
-        : isDrop ? 1.12 : 0.92,
+      playbackRate,
       velocityCurve: isDrop ? "punch" : "easeIn",
     };
   });
