@@ -13,9 +13,11 @@ import {
   PhysicsParticleSystem,
   renderMangaMotionFrame,
   type AestheticStyle,
+  type ColorGradeConfig,
   type ParticleType,
 } from "@/lib/mangaMotionEngine";
 import {
+  applyEditProfessionalGrammar,
   applyEditRhythmPreset,
   buildBeatMarkers,
   createDefaultEditProject,
@@ -29,6 +31,7 @@ import {
   snapEditTime,
   type EditAssetMeta,
   type EditProject,
+  type EditProfessionalGrammar,
   type EditRhythmPreset,
   type EditTimelineClip,
 } from "@/lib/editStudio";
@@ -88,6 +91,50 @@ interface EditProjectDocument extends EditProject {
   audio?: { name: string; size: number; lastModified: number } | null;
 }
 
+type EditInspectorTab = "montage" | "media" | "clip" | "finish";
+
+const EDIT_INSPECTOR_TABS: Array<{
+  id: EditInspectorTab;
+  step: string;
+  label: string;
+  activeClassName: string;
+  idleClassName: string;
+  markerClassName: string;
+}> = [
+  {
+    id: "media",
+    step: "01",
+    label: "Medios",
+    activeClassName: "border-sky-400/55 bg-sky-400/12 text-sky-100 shadow-[inset_0_-2px_0_rgba(56,189,248,0.95)]",
+    idleClassName: "border-transparent text-zinc-500 hover:border-sky-900/70 hover:bg-sky-950/25 hover:text-sky-200",
+    markerClassName: "bg-sky-400 shadow-[0_0_10px_rgba(56,189,248,0.65)]",
+  },
+  {
+    id: "montage",
+    step: "02",
+    label: "Montaje",
+    activeClassName: "border-amber-300/55 bg-amber-300/10 text-amber-100 shadow-[inset_0_-2px_0_rgba(252,211,77,0.95)]",
+    idleClassName: "border-transparent text-zinc-500 hover:border-amber-900/70 hover:bg-amber-950/20 hover:text-amber-200",
+    markerClassName: "bg-amber-300 shadow-[0_0_10px_rgba(252,211,77,0.6)]",
+  },
+  {
+    id: "clip",
+    step: "03",
+    label: "Toma",
+    activeClassName: "border-fuchsia-400/55 bg-fuchsia-400/10 text-fuchsia-100 shadow-[inset_0_-2px_0_rgba(232,121,249,0.95)]",
+    idleClassName: "border-transparent text-zinc-500 hover:border-fuchsia-900/70 hover:bg-fuchsia-950/25 hover:text-fuchsia-200",
+    markerClassName: "bg-fuchsia-400 shadow-[0_0_10px_rgba(232,121,249,0.6)]",
+  },
+  {
+    id: "finish",
+    step: "04",
+    label: "Acabado",
+    activeClassName: "border-emerald-400/55 bg-emerald-400/10 text-emerald-100 shadow-[inset_0_-2px_0_rgba(52,211,153,0.95)]",
+    idleClassName: "border-transparent text-zinc-500 hover:border-emerald-900/70 hover:bg-emerald-950/20 hover:text-emerald-200",
+    markerClassName: "bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.6)]",
+  },
+];
+
 const PROJECT_STORAGE_KEY = "loop-studio:edit-project:v1";
 const ASSET_MANIFEST_STORAGE_KEY = "loop-studio:edit-assets:v1";
 const SFX_STORAGE_KEY = "loop-studio:edit-sfx:v1";
@@ -140,6 +187,149 @@ const EDIT_MOTIONS: Array<{ id: EditTimelineClip["motion"]; label: string }> = [
   { id: "parallax", label: "Parallax 2.5D" },
   { id: "parallaxDrift", label: "Profundidad + deriva" },
 ];
+
+const EDIT_PROFESSIONAL_GRAMMARS: Array<{
+  id: EditProfessionalGrammar;
+  label: string;
+  desc: string;
+  accent: string;
+}> = [
+  {
+    id: "cinematic",
+    label: "Cine limpio",
+    desc: "Movimiento suave y un efecto de enlace solo al cambiar de frase.",
+    accent: "Fundido · blur · profundidad",
+  },
+  {
+    id: "rhythmic",
+    label: "Impacto rítmico",
+    desc: "Cortes al pulso con punch, whip o flash reservados para acentos.",
+    accent: "Punch · whip · flash",
+  },
+  {
+    id: "manga",
+    label: "Manga 2.5D",
+    desc: "Parallax contenido con tinta, viñetas y profundidad dosificados.",
+    accent: "Tinta · viñetas · 2.5D",
+  },
+];
+
+interface EditFinishRecipe {
+  id: "clean" | "ink" | "crimson";
+  label: string;
+  desc: string;
+  style: AestheticStyle;
+  colorGrade: Partial<ColorGradeConfig>;
+  particles: ParticleType;
+  particleIntensity: number;
+  particleControls: Partial<EditProject["particleControls"]>;
+}
+
+const EDIT_FINISH_RECIPES: EditFinishRecipe[] = [
+  {
+    id: "clean",
+    label: "Cine limpio",
+    desc: "Contraste natural, bloom corto y polvo apenas visible.",
+    style: "original",
+    colorGrade: { exposure: 1, contrast: 8, saturation: -4, temperature: 2, tint: 0, fade: 2, bloom: 5, grain: 6 },
+    particles: "cinematic_dust",
+    particleIntensity: 14,
+    particleControls: { size: 92, opacity: 34, wind: 2, turbulence: 22, color: "#f4f4f5", blendMode: "screen", blur: 1 },
+  },
+  {
+    id: "ink",
+    label: "Tinta editorial",
+    desc: "Blanco y negro con textura de papel y ceniza contenida.",
+    style: "seinen_bw",
+    colorGrade: { exposure: -2, contrast: 16, saturation: -12, temperature: -3, tint: 0, fade: 4, bloom: 4, grain: 13 },
+    particles: "snow_ash",
+    particleIntensity: 16,
+    particleControls: { size: 78, opacity: 38, wind: -4, turbulence: 30, color: "#e4e4e7", blendMode: "screen", blur: 0 },
+  },
+  {
+    id: "crimson",
+    label: "Rojo de impacto",
+    desc: "Negros densos, acento carmesí y fugas de luz discretas.",
+    style: "dark_fantasy",
+    colorGrade: { exposure: -5, contrast: 18, saturation: -8, temperature: -5, tint: 10, fade: 0, bloom: 11, grain: 10 },
+    particles: "light_leaks",
+    particleIntensity: 14,
+    particleControls: { size: 108, opacity: 28, wind: 5, turbulence: 24, color: "#ef4444", blendMode: "screen", blur: 4 },
+  },
+];
+
+const EDIT_COLOR_CONTROLS: Array<{
+  key: "exposure" | "contrast" | "saturation" | "temperature" | "tint" | "fade" | "bloom" | "grain";
+  label: string;
+}> = [
+  { key: "exposure", label: "Exposición" },
+  { key: "contrast", label: "Contraste" },
+  { key: "saturation", label: "Saturación" },
+  { key: "temperature", label: "Temperatura" },
+  { key: "tint", label: "Matiz verde / magenta" },
+  { key: "fade", label: "Negros lavados" },
+  { key: "bloom", label: "Resplandor" },
+  { key: "grain", label: "Grano de película" },
+];
+
+const EDIT_STUDIO_READABILITY_CSS = `
+  [data-edit-studio-root] {
+    color: #f4f4f5;
+    font-family: var(--font-app-sans);
+    font-feature-settings: "kern" 1, "liga" 1, "calt" 1;
+    letter-spacing: -0.008em;
+  }
+  [data-edit-studio-root] .font-mono {
+    font-family: var(--font-app-mono);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0;
+  }
+  [data-edit-studio-root] [class~="text-[7px]"],
+  [data-edit-studio-root] [class~="text-[8px]"] {
+    font-size: 0.8125rem;
+    line-height: 1.125rem;
+  }
+  [data-edit-studio-root] [class~="text-[9px]"],
+  [data-edit-studio-root] [class~="text-[10px]"],
+  [data-edit-studio-root] [class~="text-[11px]"] {
+    font-size: 0.875rem;
+    line-height: 1.25rem;
+  }
+  [data-edit-studio-root] [class~="text-xs"] {
+    font-size: 0.9375rem;
+    line-height: 1.3rem;
+  }
+  [data-edit-studio-root] [class~="text-sm"] {
+    font-size: 1rem;
+    line-height: 1.45rem;
+  }
+  [data-edit-studio-root] [class~="text-zinc-500"],
+  [data-edit-studio-root] [class~="text-zinc-600"] {
+    color: #a1a1aa;
+  }
+  [data-edit-studio-root] select,
+  [data-edit-studio-root] input:not([type="range"]):not([type="color"]):not([type="checkbox"]):not([type="file"]) {
+    min-height: 2.25rem;
+  }
+  [data-edit-studio-root] summary { line-height: 1.35; }
+  [data-edit-studio-root] button:focus-visible,
+  [data-edit-studio-root] label:has(input:focus-visible),
+  [data-edit-studio-root] summary:focus-visible,
+  [data-edit-studio-root] input:focus-visible,
+  [data-edit-studio-root] select:focus-visible,
+  [data-edit-studio-root] a:focus-visible {
+    outline: 2px solid #67e8f9;
+    outline-offset: 2px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    [data-edit-studio-root] *,
+    [data-edit-studio-root] *::before,
+    [data-edit-studio-root] *::after {
+      scroll-behavior: auto !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+`;
 
 function uid(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -403,8 +593,8 @@ function TimelineClipBlock({
         onDropClip(event.dataTransfer.getData("text/edit-clip"), clip.id);
       }}
       onClick={onSelect}
-      style={{ width: Math.max(92, clip.duration * pxPerSecond) }}
-      className={`group relative h-24 shrink-0 overflow-hidden border-r border-black/70 text-left transition ${selected
+      style={{ width: Math.max(150, clip.duration * pxPerSecond) }}
+      className={`group relative h-28 shrink-0 overflow-hidden border-r border-black/70 text-left transition ${selected
         ? "bg-fuchsia-600 text-white ring-2 ring-inset ring-fuchsia-300"
         : index % 2 === 0
           ? "bg-zinc-800 text-zinc-200 hover:bg-zinc-700"
@@ -414,9 +604,11 @@ function TimelineClipBlock({
       <canvas ref={thumbnailRef} width="160" height="90" className={`absolute inset-0 h-full w-full object-cover ${asset ? "opacity-55" : "opacity-0"}`} />
       <span className="absolute inset-0 bg-gradient-to-t from-black via-black/30 to-black/10" />
       {!asset && <span className="absolute inset-x-2 top-4 border border-dashed border-red-500/50 bg-red-950/60 py-1 text-center font-mono text-[8px] font-black uppercase text-red-200">Medio pendiente</span>}
-      <span className="absolute inset-x-2 bottom-8 block truncate text-[10px] font-black uppercase tracking-wider">{clip.label}</span>
-      <span className="absolute bottom-2 left-2 font-mono text-[9px] opacity-80">{clip.duration.toFixed(2)} s{rateBadge ? ` · ${rateBadge}` : ""}</span>
-      <span className="absolute bottom-2 right-2 text-[8px] font-semibold uppercase opacity-65">{motionLabel} · {transLabel.split(" ")[0]}</span>
+      <span className="absolute inset-x-2 bottom-10 block truncate text-[10px] font-black uppercase tracking-wider">{clip.label}</span>
+      <span className="absolute inset-x-2 bottom-2 flex items-center justify-between gap-2 font-mono text-[8px] opacity-80">
+        <span className="shrink-0">{clip.duration.toFixed(2)} s{rateBadge ? ` · ${rateBadge}` : ""}</span>
+        <span className="min-w-0 truncate text-right uppercase">{motionLabel} · {transLabel.split(" ")[0]}</span>
+      </span>
       <span className="absolute right-1.5 top-1.5 bg-black/65 px-1 font-mono text-[9px] opacity-80">{index + 1}</span>
     </button>
   );
@@ -446,7 +638,7 @@ export default function EditStudioPage() {
   const [assistSession, setAssistSession] = useState<EditAssistSession | null>(null);
   const [assistDraft, setAssistDraft] = useState<EditAssistDraft | null>(null);
   const [assistPreviewMode, setAssistPreviewMode] = useState<"current" | "draft">("current");
-  const [inspectorTab, setInspectorTab] = useState<"montage" | "media" | "clip" | "finish">("media");
+  const [inspectorTab, setInspectorTab] = useState<EditInspectorTab>("media");
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const audioElementRef = useRef<HTMLAudioElement | null>(null);
@@ -461,10 +653,16 @@ export default function EditStudioPage() {
   const previousParticlesRef = useRef(new PhysicsParticleSystem());
   const exportAbortRef = useRef<AbortController | null>(null);
   const assistAbortRef = useRef<AbortController | null>(null);
+  const inspectorScrollRef = useRef<HTMLDivElement | null>(null);
   const assistGenerationRef = useRef(0);
   const assistVisualCacheRef = useRef(new Map<string, EditAssetAnalysis[]>());
   const assistAudioCacheRef = useRef(new WeakMap<AudioBuffer, { bpm: number; analysis: EditAudioStructure }>());
   const storageReadyRef = useRef(false);
+
+  const selectInspectorTab = useCallback((tab: EditInspectorTab) => {
+    if (inspectorScrollRef.current) inspectorScrollRef.current.scrollTop = 0;
+    setInspectorTab(tab);
+  }, []);
 
   const assistDraftStale = Boolean(assistSession && (
     assistSession.baseProject !== project
@@ -754,7 +952,7 @@ export default function EditStudioPage() {
         reconnected ? `${reconnected} medio${reconnected === 1 ? "" : "s"} reconectado${reconnected === 1 ? "" : "s"}` : "",
         added ? `${added} medio${added === 1 ? "" : "s"} añadido${added === 1 ? "" : "s"}` : "",
       ].filter(Boolean).join(" · "));
-      setInspectorTab("montage");
+      selectInspectorTab("montage");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "No se pudo preparar el medio");
     } finally {
@@ -806,17 +1004,30 @@ export default function EditStudioPage() {
     }
   }, [audioBuffer, updateProject]);
 
-  const applyBulkTransition = useCallback((transition: EditTimelineClip["transition"]) => {
-    if (!activeProject.clips.length) return;
-    replaceActiveProject((current) => ({ ...current, clips: current.clips.map((clip, idx) => idx === 0 ? clip : normalizeEditClip({ ...clip, transition })) }));
-    setStatus(`Transición ${transition} aplicada a ${Math.max(0, activeProject.clips.length - 1)} cortes`);
-  }, [activeProject.clips.length, replaceActiveProject]);
+  const applyProfessionalGrammar = useCallback((grammar: EditProfessionalGrammar) => {
+    if (!activeProject.clips.length || activeProjectReadOnly) return;
+    const option = EDIT_PROFESSIONAL_GRAMMARS.find((entry) => entry.id === grammar);
+    replaceActiveProject((current) => ({
+      ...current,
+      clips: applyEditProfessionalGrammar(current.clips, grammar),
+    }));
+    setStatus(`${option?.label ?? "Gramática profesional"} aplicada · se conservaron orden, recortes y duración.`);
+  }, [activeProject.clips.length, activeProjectReadOnly, replaceActiveProject]);
 
-  const applyBulkMotion = useCallback((motion: EditTimelineClip["motion"]) => {
-    if (!activeProject.clips.length) return;
-    replaceActiveProject((current) => ({ ...current, clips: current.clips.map((clip) => normalizeEditClip({ ...clip, motion })) }));
-    setStatus(`Cámara ${motion} aplicada a todas las tomas`);
-  }, [activeProject.clips.length, replaceActiveProject]);
+  const applyFinishRecipe = useCallback((recipeId: EditFinishRecipe["id"]) => {
+    if (activeProjectReadOnly) return;
+    const recipe = EDIT_FINISH_RECIPES.find((entry) => entry.id === recipeId);
+    if (!recipe) return;
+    replaceActiveProject((current) => ({
+      ...current,
+      style: recipe.style,
+      colorGrade: { ...current.colorGrade, ...recipe.colorGrade },
+      particles: recipe.particles,
+      particleIntensity: recipe.particleIntensity,
+      particleControls: { ...current.particleControls, ...recipe.particleControls },
+    }));
+    setStatus(`Acabado ${recipe.label} aplicado a todo el edit; el montaje no cambió.`);
+  }, [activeProjectReadOnly, replaceActiveProject]);
 
   const seekTo = useCallback((next: number) => {
     const safe = Math.max(0, Math.min(Math.max(0, playbackDuration - 1 / Math.max(1, playbackProject.fps)), next));
@@ -965,7 +1176,7 @@ export default function EditStudioPage() {
             ctx.fillRect(0, 0, width, height);
             ctx.fillStyle = "#71717a";
             ctx.textAlign = "center";
-            ctx.font = "600 16px ui-sans-serif, system-ui";
+            ctx.font = "600 24px ui-sans-serif, system-ui";
             ctx.fillText(asset ? "Preparando borrador…" : placement ? "Reconecta el medio de esta toma" : "Añade clips a la línea de tiempo", width / 2, height / 2);
           }
         }
@@ -1379,7 +1590,7 @@ export default function EditStudioPage() {
       setAssistSession(null);
       setAssistPhase("idle");
       setAssistPreviewMode("current");
-      setInspectorTab("media");
+      selectInspectorTab("media");
       setStatus(`Proyecto cargado · selecciona juntos los ${nextManifest.length} medios y se reconectarán por nombre.`);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "No se pudo cargar el proyecto");
@@ -1427,24 +1638,25 @@ export default function EditStudioPage() {
   };
 
   return (
-    <div className="relative left-1/2 flex w-[min(1680px,calc(100vw-1rem))] -translate-x-1/2 flex-col gap-3 pb-8 lg:-my-8 lg:h-[calc(100dvh-4rem)] lg:gap-0 lg:overflow-hidden lg:pb-0">
+    <div data-edit-studio-root className="relative left-1/2 flex w-[min(1760px,calc(100vw-1rem))] -translate-x-1/2 flex-col gap-3 pb-8 lg:-my-8 lg:h-[calc(100dvh-4rem)] lg:gap-0 lg:overflow-hidden lg:pb-0">
+      <style>{EDIT_STUDIO_READABILITY_CSS}</style>
       {audioUrl && <audio ref={audioElementRef} src={audioUrl} preload="auto" />}
 
-      <section className="relative shrink-0 overflow-hidden border-y border-zinc-800 bg-zinc-950 px-4 py-3 sm:px-5 lg:h-16">
+      <section className="relative shrink-0 overflow-hidden border-y border-zinc-800 bg-zinc-950 px-4 py-3 sm:px-5 lg:min-h-20">
         <div className="pointer-events-none absolute inset-y-0 left-0 w-1 bg-gradient-to-b from-fuchsia-500 via-amber-300 to-cyan-400" />
         <div className="pointer-events-none absolute -right-20 -top-24 h-64 w-64 rounded-full bg-fuchsia-700/10 blur-3xl" />
         <div className="flex h-full flex-col justify-center gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex min-w-0 items-center gap-4">
-            <h1 className="shrink-0 text-xl font-black tracking-tight text-white">EDIT <span className="text-zinc-600">STUDIO</span></h1>
+          <div className="flex min-w-0 flex-col items-start gap-1.5 sm:flex-row sm:items-center sm:gap-4">
+            <h1 className="shrink-0 text-2xl font-black tracking-tight text-white">EDIT <span className="text-zinc-600">STUDIO</span></h1>
             <span className="hidden h-5 w-px bg-zinc-800 sm:block" />
             <div className="min-w-0">
-              <p className="truncate text-[11px] font-bold text-zinc-300">Mesa de montaje 9:16 · preview y timeline siempre visibles</p>
-              <p className="font-mono text-[8px] uppercase tracking-[0.18em] text-zinc-600">Local · {assets.length} medios · {activeProject.clips.length} tomas · {formatTime(duration)}</p>
+              <p className="text-sm font-bold text-zinc-200 sm:truncate">De tus clips a un montaje profesional 9:16</p>
+              <p className="font-mono text-[9px] uppercase tracking-[0.12em] text-zinc-600">Todo local · {assets.length} medios · {activeProject.clips.length} tomas · {formatTime(duration)}</p>
             </div>
           </div>
           <div className="flex flex-wrap gap-2">
-            <button type="button" onClick={saveProjectFile} className="border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-[10px] font-bold text-zinc-200 hover:border-zinc-500">Guardar</button>
-            <label className="cursor-pointer border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-[10px] font-bold text-zinc-200 hover:border-zinc-500">
+            <button type="button" onClick={saveProjectFile} className="min-h-10 border border-zinc-700 bg-zinc-900 px-4 py-2 text-xs font-bold text-zinc-200 hover:border-zinc-500">Guardar</button>
+            <label className="flex min-h-10 cursor-pointer items-center border border-zinc-700 bg-zinc-900 px-4 py-2 text-xs font-bold text-zinc-200 hover:border-zinc-500">
               Abrir
               <input type="file" accept="application/json,.json" className="hidden" onChange={(event) => void loadProjectFile(event.target.files?.[0] ?? null)} />
             </label>
@@ -1454,8 +1666,8 @@ export default function EditStudioPage() {
 
       {error && <div className="shrink-0 border border-red-800 bg-red-950/90 px-4 py-2 text-xs text-red-200">{error}</div>}
 
-      <div className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[minmax(0,1fr)_390px] lg:overflow-hidden lg:bg-black/30 lg:p-3">
-        <section className="min-w-0 space-y-4 lg:grid lg:h-full lg:min-h-0 lg:grid-rows-[minmax(0,1fr)_220px] lg:gap-3 lg:space-y-0 lg:overflow-hidden">
+      <div className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[minmax(0,1fr)_440px] lg:overflow-hidden lg:bg-black/30 lg:p-3 xl:grid-cols-[minmax(0,1fr)_470px]">
+        <section className="min-w-0 space-y-4 lg:grid lg:h-full lg:min-h-0 lg:grid-rows-[minmax(0,1fr)_250px] lg:gap-3 lg:space-y-0 lg:overflow-hidden">
           <div data-testid="edit-preview-stage" className="max-lg:sticky max-lg:top-16 max-lg:z-30 border border-zinc-800 bg-black p-3 shadow-2xl shadow-black/50 lg:flex lg:min-h-0 lg:flex-col">
             <div className="mb-2 flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-zinc-900 pb-2">
               <input
@@ -1662,8 +1874,8 @@ export default function EditStudioPage() {
             <div className="flex shrink-0 flex-col gap-2 border-b border-zinc-800 px-3 py-2">
               <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
                 <div>
-                  <h2 className="text-xs font-black uppercase tracking-[0.2em] text-zinc-200">Timeline / beat rail</h2>
-                  <p className="mt-1 text-[10px] text-zinc-500">Arrastra para ordenar; selecciona una toma y corrige su encuadre en el panel derecho.</p>
+                  <h2 data-testid="edit-timeline-heading" className="text-xs font-black uppercase tracking-[0.16em] text-zinc-200">Timeline y ritmo</h2>
+                  <p className="mt-1 text-[10px] text-zinc-500">Arrastra para ordenar. Selecciona una toma para corregir su encuadre.</p>
                 </div>
                 <div className="flex flex-wrap items-center gap-1.5">
                   <label className="flex items-center gap-1 border border-zinc-800 bg-black px-2 py-1 text-[10px] text-zinc-400">
@@ -1674,35 +1886,26 @@ export default function EditStudioPage() {
                 </div>
               </div>
               <details className="border-t border-zinc-900 pt-2">
-                <summary className="cursor-pointer text-[9px] font-bold uppercase tracking-wider text-zinc-500">Ajustes manuales de toda la timeline</summary>
-                <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                  <button type="button" onClick={() => applyRhythm("reference")} className="border border-fuchsia-800 bg-fuchsia-950/50 px-2 py-1 text-[10px] font-bold text-fuchsia-200">Referencia 18 s</button>
-                  <button type="button" onClick={() => applyRhythm("build-drop")} className="border border-amber-800 bg-amber-950/40 px-2 py-1 text-[10px] font-bold text-amber-200">Build → drop</button>
-                  <button type="button" onClick={() => applyRhythm("steady")} className="border border-zinc-700 bg-zinc-900 px-2 py-1 text-[10px] font-bold text-zinc-300">Constante</button>
+                <summary className="cursor-pointer text-[9px] font-bold uppercase tracking-wider text-zinc-400">Ajustar ritmo manualmente</summary>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <span className="mr-1 text-[9px] font-bold text-zinc-400">Ritmo</span>
+                  <button type="button" disabled={activeProjectReadOnly} onClick={() => applyRhythm("reference")} className="border border-fuchsia-800 bg-fuchsia-950/50 px-3 py-1.5 text-[10px] font-bold text-fuchsia-200 disabled:opacity-35">Referencia 18 s</button>
+                  <button type="button" disabled={activeProjectReadOnly} onClick={() => applyRhythm("build-drop")} className="border border-amber-800 bg-amber-950/40 px-3 py-1.5 text-[10px] font-bold text-amber-200 disabled:opacity-35">Build → drop</button>
+                  <button type="button" disabled={activeProjectReadOnly} onClick={() => applyRhythm("steady")} className="border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-[10px] font-bold text-zinc-300 disabled:opacity-35">Constante</button>
                   {activeProject.clips.length > 1 && (
-                    <>
-                      <span className="mx-1 h-4 w-px bg-zinc-800" />
-                      <button type="button" onClick={() => applyBulkTransition("punch")} className="border border-fuchsia-800 bg-black px-2 py-1 text-[9px] font-bold text-fuchsia-300">Punch en todos</button>
-                      <button type="button" onClick={() => applyBulkTransition("shake")} className="border border-amber-800 bg-black px-2 py-1 text-[9px] font-bold text-amber-300">Shake en todos</button>
-                      <button type="button" onClick={() => applyBulkTransition("blur")} className="border border-cyan-900 bg-black px-2 py-1 text-[9px] font-bold text-cyan-300">Blur en todos</button>
-                      <button type="button" onClick={() => applyBulkTransition("cut")} className="border border-zinc-700 bg-black px-2 py-1 text-[9px] font-bold text-zinc-300">Cortes en todos</button>
-                      <button type="button" onClick={() => applyBulkMotion("push")} className="border border-cyan-800 bg-black px-2 py-1 text-[9px] font-bold text-cyan-300">Acercar todos</button>
-                      <button type="button" onClick={() => applyBulkMotion("impact")} className="border border-red-900 bg-black px-2 py-1 text-[9px] font-bold text-red-300">Impacto en todos</button>
-                      <button type="button" onClick={() => applyBulkMotion("whip")} className="border border-zinc-700 bg-black px-2 py-1 text-[9px] font-bold text-zinc-300">Whip en todos</button>
-                      <label className="flex items-center gap-1.5 text-[9px] text-zinc-500">Energía <span className="font-mono text-zinc-300">{avgIntensity}%</span>
-                        <input type="range" min="0" max="100" value={avgIntensity} onChange={(event) => {
-                          const value = Number(event.target.value);
-                          replaceActiveProject((current) => ({ ...current, clips: current.clips.map((clip) => normalizeEditClip({ ...clip, motionIntensity: value })) }));
-                        }} className="w-20 accent-fuchsia-500" />
-                      </label>
-                    </>
+                    <label className="ml-auto flex items-center gap-2 text-[9px] text-zinc-500">Energía <span className="font-mono text-zinc-200">{avgIntensity}%</span>
+                      <input type="range" min="0" max="100" value={avgIntensity} disabled={activeProjectReadOnly} onChange={(event) => {
+                        const value = Number(event.target.value);
+                        replaceActiveProject((current) => ({ ...current, clips: current.clips.map((clip) => normalizeEditClip({ ...clip, motionIntensity: value })) }));
+                      }} className="w-24 accent-fuchsia-500 disabled:opacity-35" />
+                    </label>
                   )}
                 </div>
               </details>
             </div>
             <div className="min-h-0 flex-1 overflow-x-auto overflow-y-hidden bg-black/70">
               <div
-                className="relative min-h-28 min-w-full"
+                className="relative min-h-36 min-w-full"
                 style={{ width: Math.max(720, duration * pxPerSecond) }}
                 onClick={(event) => {
                   if (event.target !== event.currentTarget) return;
@@ -1726,7 +1929,7 @@ export default function EditStudioPage() {
                     </div>
                   );
                 })}
-                <div className="absolute left-0 right-0 top-7 flex h-20">
+                <div className="absolute left-0 right-0 top-8 flex h-28">
                   {activeProject.clips.map((clip, index) => (
                     <TimelineClipBlock
                       key={clip.id}
@@ -1737,7 +1940,7 @@ export default function EditStudioPage() {
                       pxPerSecond={pxPerSecond}
                       onSelect={() => {
                         setSelectedClipId(clip.id);
-                        setInspectorTab("clip");
+                        selectInspectorTab("clip");
                         seekTo(placements[index]?.start ?? 0);
                       }}
                       onDropClip={reorderClips}
@@ -1751,25 +1954,25 @@ export default function EditStudioPage() {
 
         </section>
 
-        <aside className="min-h-0 overflow-hidden border border-zinc-800 bg-zinc-950 lg:flex lg:flex-col">
-          <nav aria-label="Inspector de Edit Studio" className="grid shrink-0 grid-cols-4 border-b border-zinc-800 bg-black p-1">
-            {([
-              ["montage", "Montaje"],
-              ["media", "Medios"],
-              ["clip", "Toma"],
-              ["finish", "Acabado"],
-            ] as const).map(([id, label]) => (
+        <aside className="min-h-0 overflow-hidden border border-zinc-700/80 bg-zinc-950 shadow-[0_20px_60px_rgba(0,0,0,0.32)] lg:flex lg:flex-col">
+          <nav aria-label="Inspector de Edit Studio" className="grid shrink-0 grid-cols-4 gap-1 border-b border-zinc-800 bg-black/80 p-1.5">
+            {EDIT_INSPECTOR_TABS.map((tab) => (
               <button
-                key={id}
+                key={tab.id}
                 type="button"
-                onClick={() => setInspectorTab(id)}
-                className={`px-1 py-2 text-[9px] font-black uppercase tracking-wider transition ${inspectorTab === id ? "bg-zinc-100 text-black" : "text-zinc-500 hover:bg-zinc-900 hover:text-zinc-200"}`}
+                onClick={() => selectInspectorTab(tab.id)}
+                aria-current={inspectorTab === tab.id ? "page" : undefined}
+                className={`relative flex min-h-14 flex-col items-start justify-center border px-2.5 py-2 text-left uppercase transition-colors ${inspectorTab === tab.id ? tab.activeClassName : tab.idleClassName}`}
               >
-                {label}{id === "clip" && selectedClip ? " · 1" : ""}
+                <span className="flex items-center gap-2 text-[9px] font-black tracking-wide">
+                  <span aria-hidden="true" className={`h-1.5 w-1.5 shrink-0 rounded-full ${tab.markerClassName}`} />
+                  <span>{tab.label}{tab.id === "clip" && selectedClip ? " · 1" : ""}</span>
+                </span>
+                <span aria-hidden="true" className="mt-0.5 pl-3.5 font-mono text-[8px] font-semibold tracking-[0.14em] opacity-55">Paso {tab.step}</span>
               </button>
             ))}
           </nav>
-          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain p-3">
+          <div ref={inspectorScrollRef} data-testid="edit-inspector-scroll" className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain bg-[linear-gradient(180deg,rgba(24,24,27,0.55),rgba(9,9,11,0)_240px)] p-4">
             {activeProjectReadOnly && (
               <div className="border border-zinc-700 bg-black px-3 py-2 text-[9px] text-zinc-400">
                 <strong className="text-zinc-200">Actual está en solo lectura.</strong> Cambia a <button type="button" onClick={() => switchAssistPreview("draft")} className="font-black text-amber-300 underline">Borrador</button> para ajustar timeline, toma, look y SFX sin tocar el proyecto guardado.
@@ -1779,18 +1982,22 @@ export default function EditStudioPage() {
               <div className="border border-amber-300/35 bg-gradient-to-br from-amber-300/10 via-zinc-950 to-fuchsia-950/20 p-3">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <h2 className="text-xs font-black uppercase tracking-[0.18em] text-amber-100">Montaje asistido</h2>
-                    <p className="mt-1 text-[9px] leading-relaxed text-zinc-500">Detecta escenas dentro de vídeos largos, busca golpes y construye un borrador editable. No inventa textos ni toca el montaje actual hasta aplicar.</p>
+                    <span className="font-mono text-[8px] font-black uppercase tracking-wider text-amber-300">Recomendado</span>
+                    <h2 className="mt-1 text-sm font-black text-white">Crear montaje profesional</h2>
+                    <p className="mt-2 text-[10px] leading-relaxed text-zinc-500">Analiza tus planos y la canción, elige los mejores tramos y prepara un borrador que puedes comparar antes de aplicarlo.</p>
                   </div>
-                  {assistPhase === "idle" && (
-                    <button type="button" data-testid="edit-assist-start" onClick={() => void startAssist()} disabled={!assets.length || loadingMedia || exporting} className="shrink-0 bg-amber-300 px-3 py-2 text-[9px] font-black uppercase text-black disabled:opacity-35">✦ Borrador</button>
+                  {assistPhase === "idle" && assets.length > 0 && (
+                    <button type="button" data-testid="edit-assist-start" onClick={() => void startAssist()} disabled={loadingMedia || exporting} className="min-h-11 shrink-0 bg-amber-300 px-4 py-2 text-[9px] font-black text-black transition hover:bg-amber-200 disabled:opacity-35">✦ Crear</button>
+                  )}
+                  {assistPhase === "idle" && assets.length === 0 && (
+                    <button type="button" onClick={() => selectInspectorTab("media")} className="min-h-11 shrink-0 border border-amber-300/50 px-3 py-2 text-[9px] font-black text-amber-200 hover:bg-amber-300/10">Importar</button>
                   )}
                 </div>
                 {assistPhase === "idle" && (
-                  <div className="mt-3 grid grid-cols-3 gap-px bg-zinc-800 font-mono text-[8px] uppercase text-zinc-500">
-                    <span className="bg-black p-2">{assets.length} medios</span>
-                    <span className="bg-black p-2">{audioBuffer ? "Con canción" : "Solo imagen"}</span>
-                    <span className="bg-black p-2">100% local</span>
+                  <div className="mt-4 grid grid-cols-3 gap-px bg-zinc-800 text-[8px] text-zinc-500">
+                    <span className="bg-black p-2.5"><strong className={assets.length ? "text-emerald-300" : "text-amber-300"}>1 · {assets.length ? "Listo" : "Pendiente"}</strong><span className="mt-1 block">{assets.length || 0} medios</span></span>
+                    <span className="bg-black p-2.5"><strong className={audioBuffer ? "text-emerald-300" : "text-zinc-300"}>2 · {audioBuffer ? "Lista" : "Opcional"}</strong><span className="mt-1 block">Canción</span></span>
+                    <span className="bg-black p-2.5"><strong className="text-cyan-300">3 · Local</strong><span className="mt-1 block">Sin subir nada</span></span>
                   </div>
                 )}
                 {assistPhase === "analyzing" && (
@@ -1808,6 +2015,9 @@ export default function EditStudioPage() {
                     <div className="border border-amber-300/20 bg-black/45 p-3">
                       <div className="flex flex-wrap items-center gap-2"><strong className="text-[11px] uppercase text-white">{assistDraft.presetLabel}</strong><span className="bg-fuchsia-600 px-1.5 py-0.5 font-mono text-[7px] font-black uppercase text-white">{Math.round(assistDraft.score * 100)}% encaje</span></div>
                       <p className="mt-1 font-mono text-[8px] text-zinc-500">{assistDraft.project.clips.length} tomas · {formatTime(editTimelineDuration(assistDraft.project.clips))} · {assistDraft.sfxCues.length - assistSession.baseSfxCues.length} SFX sugeridos</p>
+                      <ul className="mt-3 space-y-1 text-[9px] leading-relaxed text-zinc-400">
+                        {assistDraft.reasons.slice(0, 2).map((reason) => <li key={reason}>• {reason}</li>)}
+                      </ul>
                       <label className="mt-3 block text-[8px] uppercase text-zinc-500">Estructura
                         <select data-testid="edit-assist-preset" value={assistDraft.presetId} disabled={assistDraftStale} onChange={(event) => selectAssistPreset(event.target.value as PresetId)} className="mt-1 w-full border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-[9px] normal-case text-zinc-200 disabled:opacity-40">
                           {assistSession.ranking.ranked.map((entry) => <option key={entry.presetId} value={entry.presetId}>{entry.label} · {Math.round(entry.score * 100)}%</option>)}
@@ -1830,24 +2040,53 @@ export default function EditStudioPage() {
                 )}
               </div>
 
-              <div className="border border-zinc-800 bg-zinc-950 p-3">
-                <div className="flex items-center justify-between"><div><h2 className="text-[10px] font-black uppercase tracking-wider text-fuchsia-200">Montajes dirigidos</h2><p className="mt-1 text-[8px] text-zinc-600">Seis gramáticas medidas en tus referencias.</p></div><span className="font-mono text-[8px] text-zinc-600">10–32 s auto</span></div>
-                <div className="mt-3 grid grid-cols-2 gap-1.5">
-                  {EDIT_PRESETS.map((preset) => (
-                    <button key={preset.id} type="button" disabled={assistPhase !== "idle"} onClick={() => applyPreset(preset.id)} data-testid={`edit-preset-${preset.id}`} className="group border border-zinc-800 bg-black p-2 text-left hover:border-fuchsia-700 disabled:opacity-35">
-                      <div className="flex items-center justify-between gap-1"><span className="text-sm">{preset.icon}</span><span className="font-mono text-[7px] text-fuchsia-300">{preset.targetDuration.toFixed(1)}s</span></div>
-                      <p className="mt-1 text-[9px] font-black uppercase text-zinc-200">{preset.label}</p>
-                      <p className="mt-1 line-clamp-2 text-[8px] leading-snug text-zinc-600">{preset.pace} · {preset.assetHint}</p>
+              <div className="border border-cyan-900/70 bg-cyan-950/10 p-3">
+                <h2 className="text-xs font-black text-cyan-100">Dosificar efectos en un clic</h2>
+                <p className="mt-1 text-[9px] leading-relaxed text-zinc-500">Conserva el montaje y reparte movimiento y transiciones solo donde aportan.</p>
+                <div className="mt-3 space-y-2">
+                  {EDIT_PROFESSIONAL_GRAMMARS.map((grammar) => (
+                    <button
+                      key={grammar.id}
+                      type="button"
+                      data-testid={`edit-grammar-${grammar.id}`}
+                      disabled={!activeProject.clips.length || activeProjectReadOnly}
+                      onClick={() => applyProfessionalGrammar(grammar.id)}
+                      className="group w-full border border-zinc-700 bg-black p-3 text-left transition hover:border-cyan-500 hover:bg-cyan-950/20 disabled:opacity-35"
+                    >
+                      <span className="flex items-center justify-between gap-3">
+                        <span className="font-black text-zinc-100">{grammar.label}</span>
+                        <span className="font-mono text-[8px] uppercase text-cyan-300">{grammar.accent}</span>
+                      </span>
+                      <span className="mt-1 block text-[9px] leading-relaxed text-zinc-500">{grammar.desc}</span>
                     </button>
                   ))}
                 </div>
               </div>
+
+              <details className="border border-zinc-800 bg-zinc-950 p-3">
+                <summary className="cursor-pointer text-[10px] font-black text-fuchsia-200">Elegir una estructura manualmente</summary>
+                <p className="mt-2 text-[9px] leading-relaxed text-zinc-500">Usa una de las seis estructuras medidas en tus vídeos de referencia. Reemplaza la timeline, pero después todo sigue editable.</p>
+                <div className="mt-3 grid gap-2">
+                  {EDIT_PRESETS.map((preset) => (
+                    <button key={preset.id} type="button" disabled={assistPhase !== "idle"} onClick={() => applyPreset(preset.id)} data-testid={`edit-preset-${preset.id}`} className="group border border-zinc-800 bg-black p-3 text-left hover:border-fuchsia-700 disabled:opacity-35">
+                      <span className="flex items-start gap-3">
+                        <span className="text-lg" aria-hidden="true">{preset.icon}</span>
+                        <span className="min-w-0 flex-1">
+                          <span className="flex items-center justify-between gap-2"><strong className="text-[10px] text-zinc-100">{preset.label}</strong><span className="shrink-0 font-mono text-[8px] text-fuchsia-300">{preset.targetDuration.toFixed(1)} s</span></span>
+                          <span className="mt-1 block text-[9px] leading-relaxed text-zinc-500">{preset.desc}</span>
+                          <span className="mt-2 block font-mono text-[8px] uppercase text-zinc-500">{preset.pace} · {preset.assetHint}</span>
+                        </span>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </details>
             </section>
-          <section className={`${inspectorTab === "media" ? "block" : "hidden"} border border-zinc-800 bg-zinc-950 p-3`}>
+          <section className={`${inspectorTab === "media" ? "block" : "hidden"} border border-sky-900/60 bg-gradient-to-br from-sky-950/25 via-zinc-950 to-zinc-950 p-4`}>
             <div className="flex items-center justify-between gap-2">
-              <h2 className="text-xs font-black uppercase tracking-wider text-zinc-200">01 / Medios</h2>
+              <h2 className="text-xs font-black uppercase tracking-wider text-sky-100">01 / Medios</h2>
               <div className="flex items-center gap-1.5">
-                <label className={`cursor-pointer border border-zinc-700 px-2 py-1.5 text-[10px] font-black text-zinc-300 ${loadingMedia ? "pointer-events-none opacity-50" : "hover:border-zinc-500 hover:text-white"}`}>
+                <label className={`flex min-h-10 cursor-pointer items-center border border-zinc-700 px-3 py-2 text-[10px] font-black text-zinc-300 ${loadingMedia ? "pointer-events-none opacity-50" : "hover:border-zinc-500 hover:text-white"}`}>
                   + Carpeta
                   <input
                     type="file"
@@ -1865,14 +2104,14 @@ export default function EditStudioPage() {
                     }}
                   />
                 </label>
-                <label className={`cursor-pointer bg-fuchsia-600 px-2.5 py-1.5 text-[10px] font-black text-white ${loadingMedia ? "pointer-events-none opacity-50" : "hover:bg-fuchsia-500"}`}>
+                <label className={`flex min-h-10 cursor-pointer items-center bg-sky-500 px-3 py-2 text-[10px] font-black text-sky-950 ${loadingMedia ? "pointer-events-none opacity-50" : "hover:bg-sky-400"}`}>
                   {loadingMedia ? "Preparando…" : missingAssetIds.size ? `Reconectar ${missingAssetIds.size}` : "+ Importar"}
                   <input type="file" multiple accept="video/*,image/*" className="hidden" onChange={(event) => void handleMediaFiles(event.target.files)} />
                 </label>
               </div>
             </div>
             <div className="mt-3 max-h-56 space-y-1.5 overflow-y-auto">
-              {assets.length === 0 && missingAssetIds.size === 0 && <p className="border border-dashed border-zinc-800 px-3 py-5 text-center text-[10px] text-zinc-600">MP4, MOV, WebM, JPG, PNG</p>}
+              {assets.length === 0 && missingAssetIds.size === 0 && <div className="border border-dashed border-sky-800/70 bg-sky-950/15 px-4 py-7 text-center"><p className="font-bold text-sky-100">Importa todos tus planos juntos</p><p className="mt-2 text-[10px] leading-relaxed text-zinc-400">Puedes elegir vídeos, imágenes o una carpeta completa. MP4, MOV, WebM, JPG y PNG.</p></div>}
               {expectedAssets.filter((asset) => missingAssetIds.has(asset.id)).map((asset) => (
                 <div key={`missing-${asset.id}`} className="flex items-center gap-2 border border-red-900/60 bg-red-950/15 p-2">
                   <span className="text-base text-red-300">○</span>
@@ -1891,12 +2130,13 @@ export default function EditStudioPage() {
                 </div>
               ))}
             </div>
-            <p className="mt-2 text-[9px] text-zinc-600">Importa archivos o una carpeta completa: los pendientes se enlazan por nombre y los nuevos se añaden como tomas. El × sobre un medio pendiente lo quita junto a sus tomas.</p>
+            <p className="mt-3 text-[9px] leading-relaxed text-zinc-600">Consejo: importa en orden narrativo. Los proyectos guardados reconectan los archivos por nombre sin perder el montaje.</p>
           </section>
 
-          <section className={`${inspectorTab === "media" ? "block" : "hidden"} border border-zinc-800 bg-zinc-950 p-3`}>
-            <h2 className="text-xs font-black uppercase tracking-wider text-zinc-200">02 / Música</h2>
-            <label className="mt-3 block cursor-pointer border border-dashed border-zinc-700 bg-black/30 px-3 py-3 text-center text-[10px] text-zinc-400 hover:border-zinc-500">
+          <section className={`${inspectorTab === "media" ? "block" : "hidden"} border border-sky-900/45 bg-zinc-950 p-4`}>
+            <h2 className="text-xs font-black uppercase tracking-wider text-sky-100">02 / Música</h2>
+            <p className="mt-1 text-[9px] leading-relaxed text-zinc-500">La canción permite detectar BPM, golpes y el mejor tramo. También puedes montar solo con imagen.</p>
+            <label className="mt-3 block min-h-11 cursor-pointer border border-dashed border-zinc-700 bg-black/30 px-3 py-3 text-center text-[10px] font-bold text-zinc-300 hover:border-zinc-500">
               {audioFile ? audioFile.name : "Seleccionar canción"}
               <input type="file" accept="audio/*" className="hidden" onChange={(event) => void handleAudioFile(event.target.files?.[0] ?? null)} />
             </label>
@@ -1918,7 +2158,7 @@ export default function EditStudioPage() {
                 <h2 className="truncate text-xs font-black uppercase tracking-wider text-fuchsia-200">03 / Toma seleccionada</h2>
                 {selectedAsset
                   ? <span className="font-mono text-[9px] text-zinc-600">{selectedAsset.kind}</span>
-                  : <button type="button" onClick={() => setInspectorTab("media")} className="pointer-events-auto font-mono text-[9px] font-bold text-red-300 underline">Reconectar</button>}
+                  : <button type="button" onClick={() => selectInspectorTab("media")} className="pointer-events-auto font-mono text-[9px] font-bold text-red-300 underline">Reconectar</button>}
               </div>
               <input value={selectedClip.label} onChange={(event) => updateClip(selectedClip.id, { label: event.target.value })} className="mt-3 w-full border-b border-zinc-700 bg-transparent py-1 text-xs font-bold text-white outline-none" aria-label="Nombre de toma" />
               <div className="mt-3 border border-zinc-800 bg-black/40 p-2.5">
@@ -2031,8 +2271,39 @@ export default function EditStudioPage() {
             </section>
           )}
 
+          {!selectedClip && (
+            <section className={`${inspectorTab === "clip" ? "block" : "hidden"} border border-dashed border-fuchsia-800/70 bg-fuchsia-950/10 px-5 py-10 text-center`}>
+              <span aria-hidden="true" className="mx-auto mb-4 block h-2 w-2 rounded-full bg-fuchsia-400 shadow-[0_0_16px_rgba(232,121,249,0.8)]" />
+              <h2 className="text-sm font-black text-fuchsia-100">Selecciona una toma</h2>
+              <p className="mx-auto mt-2 max-w-xs text-[10px] leading-relaxed text-zinc-400">Haz clic en un clip de la timeline para ajustar su encuadre, velocidad, transición y movimiento.</p>
+            </section>
+          )}
+
+          <section className={`${inspectorTab === "finish" ? "block" : "hidden"} ${activeProjectReadOnly ? "pointer-events-none opacity-60" : ""} border border-emerald-800/60 bg-gradient-to-br from-emerald-950/25 via-zinc-950 to-cyan-950/10 p-4`} data-testid="edit-professional-finish">
+            <div>
+              <span className="font-mono text-[8px] font-black uppercase tracking-wider text-emerald-300">Capa de acabado global</span>
+              <h2 className="mt-1 text-sm font-black text-white">Unificar el look</h2>
+              <p className="mt-2 text-[9px] leading-relaxed text-zinc-500">Aplica color, textura y atmósfera coherentes a todo el edit. No cambia cortes, textos ni encuadres.</p>
+            </div>
+            <div className="mt-3 grid gap-2">
+              {EDIT_FINISH_RECIPES.map((recipe) => (
+                <button
+                  key={recipe.id}
+                  type="button"
+                  data-testid={`edit-finish-${recipe.id}`}
+                  disabled={activeProjectReadOnly}
+                  onClick={() => applyFinishRecipe(recipe.id)}
+                  className="border border-zinc-700 bg-black p-3 text-left transition hover:border-emerald-500 hover:bg-emerald-950/20 disabled:opacity-35"
+                >
+                  <span className="block font-black text-zinc-100">{recipe.label}</span>
+                  <span className="mt-1 block text-[9px] leading-relaxed text-zinc-500">{recipe.desc}</span>
+                </button>
+              ))}
+            </div>
+          </section>
+
           <section className={`${inspectorTab === "finish" ? "block" : "hidden"} ${activeProjectReadOnly ? "pointer-events-none opacity-60" : ""} border border-zinc-800 bg-zinc-950 p-3`}>
-            <div className="mb-2 flex items-center justify-between gap-2"><h2 className="text-xs font-black uppercase tracking-wider text-zinc-200">SFX y ambientes</h2><span className="font-mono text-[8px] text-zinc-600">{activeSfxCues.length} cues</span></div>
+            <div className="mb-2 flex items-center justify-between gap-2"><h2 className="text-xs font-black uppercase tracking-wider text-zinc-200">SFX y ambientes</h2><span className="font-mono text-[8px] text-zinc-600">{activeSfxCues.length} efectos</span></div>
             {previewingAssistDraft && assistSession && activeSfxCues.length > assistSession.baseSfxCues.length && (
               <p className="mb-2 border border-amber-900/50 bg-amber-950/15 p-2 text-[8px] text-amber-200">El borrador propone {activeSfxCues.length - assistSession.baseSfxCues.length} cues discretos. Puedes moverlos o eliminarlos antes de aplicar.</p>
             )}
@@ -2052,7 +2323,7 @@ export default function EditStudioPage() {
           </section>
 
           <details className={`${inspectorTab === "finish" ? "block" : "hidden"} border border-zinc-800 bg-zinc-950 p-3`}>
-            <summary className="cursor-pointer text-xs font-black uppercase tracking-wider text-zinc-200">04 / Look global — 9:16 Short</summary>
+            <summary className="cursor-pointer text-xs font-black uppercase tracking-wider text-zinc-200">Ajustes finos de imagen</summary>
             <div className="mt-3 grid grid-cols-2 gap-2 text-[9px] text-zinc-500">
               <label>FPS
                 <select value={activeProject.fps} onChange={(event) => updateProject({ fps: Number(event.target.value) as 30 | 60 })} className="mt-1 w-full border border-zinc-800 bg-black px-2 py-1 text-zinc-200"><option value="60">60 fps</option><option value="30">30 fps</option></select>
@@ -2061,9 +2332,9 @@ export default function EditStudioPage() {
               <label className="col-span-2">Filtro
                 <select value={activeProject.style} onChange={(event) => updateProject({ style: event.target.value as AestheticStyle })} className="mt-1 w-full border border-zinc-800 bg-black px-2 py-1 text-zinc-200">{EDIT_STYLES.map((style) => <option key={style.id} value={style.id}>{style.label}</option>)}</select>
               </label>
-              {(["exposure", "contrast", "saturation", "temperature", "bloom", "grain"] as const).map((key) => (
-                <label key={key} className="capitalize">{key} <span className="float-right font-mono text-zinc-300">{activeProject.colorGrade[key]}</span>
-                  <input type="range" min={key === "bloom" || key === "grain" ? 0 : -100} max="100" value={activeProject.colorGrade[key]} onChange={(event) => updateProject({ colorGrade: { ...activeProject.colorGrade, [key]: Number(event.target.value) } })} className="mt-2 w-full accent-fuchsia-500" />
+              {EDIT_COLOR_CONTROLS.map(({ key, label }) => (
+                <label key={key}>{label} <span className="float-right font-mono text-zinc-300">{activeProject.colorGrade[key]}</span>
+                  <input type="range" min={key === "bloom" || key === "grain" || key === "fade" ? 0 : -100} max="100" value={activeProject.colorGrade[key]} onChange={(event) => updateProject({ colorGrade: { ...activeProject.colorGrade, [key]: Number(event.target.value) } })} className="mt-2 w-full accent-fuchsia-500" />
                 </label>
               ))}
             </div>
@@ -2145,7 +2416,7 @@ export default function EditStudioPage() {
             </div>
             <div className="mt-3 h-1.5 bg-zinc-200"><div className="h-full bg-fuchsia-600 transition-[width]" style={{ width: `${exportProgress * 100}%` }} /></div>
             {previewingAssistDraft && <p className="mt-2 border border-amber-500 bg-amber-50 p-2 text-[9px] text-amber-900">Aplica el borrador para exportar exactamente esta versión.</p>}
-            {missingAssetIds.size > 0 && <button type="button" onClick={() => setInspectorTab("media")} className="mt-2 w-full border border-red-400 bg-red-50 p-2 text-left text-[9px] font-bold text-red-800">Reconecta {missingAssetIds.size} medio{missingAssetIds.size === 1 ? "" : "s"} antes de exportar →</button>}
+            {missingAssetIds.size > 0 && <button type="button" onClick={() => selectInspectorTab("media")} className="mt-2 w-full border border-red-400 bg-red-50 p-2 text-left text-[9px] font-bold text-red-800">Reconecta {missingAssetIds.size} medio{missingAssetIds.size === 1 ? "" : "s"} antes de exportar →</button>}
             {exportStage && <p className="mt-2 text-[9px] text-zinc-600">{exportStage}</p>}
             <div className="mt-3 flex gap-2">
               <button type="button" onClick={() => void exportVideo()} disabled={exporting || !project.clips.length || previewingAssistDraft || missingAssetIds.size > 0} className="flex-1 bg-black px-3 py-2 text-xs font-black text-white disabled:opacity-30">{exporting ? "EXPORTANDO…" : "EXPORTAR EDIT"}</button>

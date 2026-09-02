@@ -1,10 +1,17 @@
 /* E2E smoke test para Loop Studio */
 import { chromium } from "playwright-core";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 
 const EXE = `${process.env.HOME}/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome`;
 const BASE = process.env.LOOP_STUDIO_URL || "http://localhost:3000";
 const MEDIA = "/tmp/opencode/loop-e2e";
+const SAMPLE_VIDEO = `${MEDIA}/sample.mp4`;
+const SAMPLE_AUDIO = `${MEDIA}/song.mp3`;
+
+fs.mkdirSync(MEDIA, { recursive: true });
+execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=24:duration=3", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart", SAMPLE_VIDEO]);
+execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=330:sample_rate=48000:duration=8", "-c:a", "libmp3lame", "-b:a", "128k", SAMPLE_AUDIO]);
 
 const results = [];
 function ok(name, cond, extra = "") {
@@ -14,16 +21,34 @@ function ok(name, cond, extra = "") {
 
 const browser = await chromium.launch({
   executablePath: EXE,
-  args: ["--no-sandbox", "--disable-dev-shm-usage", "--use-gl=swiftshader"],
+  args: [
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
+    "--use-gl=swiftshader",
+    "--enable-unsafe-swiftshader",
+  ],
 });
+
+// ---------- Portada: elección de flujo ----------
+{
+  const page = await browser.newPage();
+  await page.goto(BASE + "/", { waitUntil: "networkidle" });
+  const heading = await page.getByRole("heading", { level: 1 }).textContent();
+  ok("Portada orienta al flujo principal", heading?.includes("dirigido"), heading?.trim());
+  ok("Portada enlaza Dual Studio", await page.getByRole("link", { name: /Crear loop en dos formatos/ }).isVisible());
+  ok("Portada enlaza Edit Studio", await page.getByRole("link", { name: /Montar un Short/ }).isVisible());
+  ok("Portada enlaza GIF Studio", await page.getByRole("link", { name: /GIF Studio/ }).first().isVisible());
+  await page.screenshot({ path: `${MEDIA}/home.png`, fullPage: true });
+  await page.close();
+}
 
 // ---------- Página 1: GIF Studio ----------
 {
   const page = await browser.newPage();
   page.on("pageerror", (e) => console.log("pageerror:", e.message));
-  await page.goto(BASE + "/", { waitUntil: "networkidle" });
+  await page.goto(BASE + "/gif-studio", { waitUntil: "networkidle" });
 
-  await page.setInputFiles('input[type=file]', `${MEDIA}/sample.mp4`);
+  await page.setInputFiles('input[type=file]', SAMPLE_VIDEO);
   await page.waitForSelector("video", { timeout: 10000 });
   // Esperar metadata (aparece el timeline)
   await page.waitForFunction(() => document.body.innerText.includes("Recorte"), null, { timeout: 10000 });
@@ -33,7 +58,7 @@ const browser = await chromium.launch({
   await page.click('button:has-text("Generar GIF")');
   await page.waitForSelector("text=GIF listo", { timeout: 120000 });
   const sizeTxt = await page.textContent("text=/KB/");
-  ok("GIF generado en /", true, sizeTxt?.trim());
+  ok("GIF generado en /gif-studio", true, sizeTxt?.trim());
 
   const imgOk = await page.evaluate(() => {
     const img = document.querySelector('img[alt="GIF generado"]');
@@ -48,17 +73,17 @@ const browser = await chromium.launch({
 {
   const page = await browser.newPage();
   await page.goto(BASE + "/slowed-reverb", { waitUntil: "networkidle" });
-  await page.setInputFiles('input[type=file]', `${MEDIA}/song.mp3`);
+  await page.setInputFiles('input[type=file]', SAMPLE_AUDIO);
   await page.waitForSelector("text=song.mp3", { timeout: 15000 });
   ok("Audio cargado en slowed-reverb", true);
 
-  await page.click('button:has-text("Nightcore")');
+  await page.click('button:has-text("Profundo")');
   const speedVal = await page.evaluate(() => {
     const labels = [...document.querySelectorAll("label")];
     const l = labels.find((x) => x.textContent?.includes("Velocidad"));
     return l?.querySelector("strong")?.textContent ?? "";
   });
-  ok("Preset Nightcore aplica", speedVal.startsWith("1.25x"), speedVal);
+  ok("Preset Profundo aplica", speedVal.startsWith("0.82x"), speedVal);
 
   // Play/pause rápido
   await page.click('button:has-text("Escuchar")');
@@ -84,9 +109,9 @@ const browser = await chromium.launch({
   await page.goto(BASE + "/combinar", { waitUntil: "networkidle" });
 
   // Dropzones secuenciales: cada una desaparece al cargar su archivo
-  await page.setInputFiles('input[type=file]', `${MEDIA}/sample.mp4`);
+  await page.setInputFiles('input[type=file]', SAMPLE_VIDEO);
   await page.waitForSelector("text=Ajustes del loop", { timeout: 15000 });
-  await page.setInputFiles('input[type=file]', `${MEDIA}/song.mp3`);
+  await page.setInputFiles('input[type=file]', SAMPLE_AUDIO);
   await page.waitForSelector("text=Duración del audio", { timeout: 20000 });
 
   // Duración personalizada de 6s para que el encode sea rápido
@@ -119,4 +144,5 @@ await browser.close();
 
 const failed = results.filter((r) => !r.pass);
 console.log(`\n${results.length - failed.length}/${results.length} pruebas pasaron`);
+if (!failed.length) fs.rmSync(MEDIA, { recursive: true, force: true });
 process.exit(failed.length ? 1 : 0);

@@ -12,7 +12,7 @@ const browser = await chromium.launch({
 const page = await browser.newPage();
 page.on("pageerror", (e) => console.log("pageerror:", e.message));
 
-await page.goto(BASE + "/", { waitUntil: "networkidle" });
+await page.goto(BASE + "/gif-studio", { waitUntil: "networkidle" });
 await page.setInputFiles('input[type=file]', `${MEDIA}/sample.mp4`);
 await page.waitForSelector("text=Así quedará tu GIF", { timeout: 15000 });
 await page.waitForSelector("text=/frames · ciclo/", { timeout: 30000 });

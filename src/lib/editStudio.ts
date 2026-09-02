@@ -12,6 +12,7 @@ export type EditTransitionDirection = "auto" | "left" | "right" | "up" | "down";
 export type EditMotion = "static" | "push" | "pull" | "drift" | "impact" | "whip" | "vertigo" | "spiral" | "scan" | "parallax" | "parallaxDrift";
 export type EditVelocityCurve = "linear" | "easeIn" | "easeOut" | "punch";
 export type EditRhythmPreset = "reference" | "build-drop" | "steady";
+export type EditProfessionalGrammar = "cinematic" | "rhythmic" | "manga";
 export type EditTextStyle = "impact" | "condensed" | "editorial" | "minimal";
 
 export interface EditAssetMeta {
@@ -284,6 +285,71 @@ export function applyEditRhythmPreset(
       playbackRate,
       velocityCurve: isDrop ? "punch" : "easeIn",
     };
+  });
+}
+
+/**
+ * Dosifica movimiento y transiciones como una gramática de montaje: el corte
+ * seco sigue siendo la base y los efectos fuertes quedan reservados para
+ * cambios de frase. No altera orden, encuadre, fuente ni duración.
+ */
+export function applyEditProfessionalGrammar(
+  clips: EditTimelineClip[],
+  grammar: EditProfessionalGrammar
+): EditTimelineClip[] {
+  return clips.map((clip, index) => {
+    const compactAccent = clips.length <= 5 && index > 0 && index === clips.length - 1;
+    let transition: EditTransition = "cut";
+    let motion: EditMotion;
+    let transitionIntensity: number;
+    let motionIntensity: number;
+    let requestedTransitionDuration = 0;
+
+    if (grammar === "cinematic") {
+      if (compactAccent) transition = "blur";
+      else if (index > 0 && index % 12 === 0) transition = "crossfade";
+      else if (index > 0 && index % 9 === 0) transition = "depth";
+      else if (index > 0 && index % 6 === 0) transition = "blur";
+      const motions: EditMotion[] = ["push", "drift", "pull", "parallax"];
+      motion = motions[index % motions.length]!;
+      transitionIntensity = 38;
+      motionIntensity = 24;
+      requestedTransitionDuration = transition === "crossfade" ? 0.3 : transition === "depth" ? 0.2 : 0.18;
+    } else if (grammar === "manga") {
+      if (compactAccent) transition = "depth";
+      else if (index > 0 && index % 8 === 0) transition = "panel";
+      else if (index > 0 && index % 6 === 0) transition = "ink";
+      else if (index > 0 && index % 4 === 0) transition = "depth";
+      const motions: EditMotion[] = ["parallax", "push", "parallaxDrift", "scan"];
+      motion = motions[index % motions.length]!;
+      transitionIntensity = 54;
+      motionIntensity = 36;
+      requestedTransitionDuration = transition === "ink" ? 0.24 : 0.18;
+    } else {
+      if (compactAccent) transition = "punch";
+      else if (index > 0 && index % 12 === 0) transition = "flash";
+      else if (index > 0 && index % 7 === 0) transition = "whip";
+      else if (index > 0 && index % 4 === 0) transition = "punch";
+      const accent = transition !== "cut";
+      const motions: EditMotion[] = ["push", "pull", "scan", "push"];
+      motion = accent ? "impact" : motions[index % motions.length]!;
+      transitionIntensity = 64;
+      motionIntensity = accent ? 52 : 34;
+      requestedTransitionDuration = transition === "whip" ? 0.16 : 0.12;
+    }
+
+    const transitionDuration = transition === "cut"
+      ? 0
+      : Math.min(requestedTransitionDuration, Math.max(0, clip.duration * 0.28));
+    return normalizeEditClip({
+      ...clip,
+      transition,
+      transitionDuration,
+      transitionIntensity,
+      transitionDirection: "auto",
+      motion,
+      motionIntensity,
+    });
   });
 }
 

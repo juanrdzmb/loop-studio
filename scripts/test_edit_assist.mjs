@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { analyzeEditAudio } from "../src/lib/editAssistAnalysis.ts";
 import { assignEditAssistMedia, rankEditAssistPresets, suggestEditAssistSfx } from "../src/lib/editAssistPlanner.ts";
+import { applyEditProfessionalGrammar } from "../src/lib/editStudio.ts";
 
 function slot(id, duration, transition = "cut", motionIntensity = 35) {
   return {
@@ -145,6 +146,29 @@ assert.ok(reframed && reframed.framingX > 0, "el punto de interés debe orientar
 
 const singleAsset = assignEditAssistMedia(impactClips, [assets[0]], 0.5);
 assert.ok(singleAsset.warnings.some((warning) => warning.includes("Solo hay un medio")));
+
+const grammarSource = Array.from({ length: 18 }, (_, index) => slot(`grammar-${index}`, 1));
+for (const grammar of ["cinematic", "rhythmic", "manga"]) {
+  const polished = applyEditProfessionalGrammar(grammarSource, grammar);
+  assert.equal(polished[0].transition, "cut", `${grammar}: el montaje debe abrir con corte limpio`);
+  assert.deepEqual(
+    polished.map((clip) => [clip.id, clip.assetId, clip.duration, clip.sourceStart, clip.sourceDuration]),
+    grammarSource.map((clip) => [clip.id, clip.assetId, clip.duration, clip.sourceStart, clip.sourceDuration]),
+    `${grammar}: la gramática no debe cambiar estructura ni fuente`
+  );
+  assert.ok(
+    polished.filter((clip) => clip.transition !== "cut").length <= Math.ceil((polished.length - 1) * 0.36),
+    `${grammar}: los efectos deben quedar dosificados`
+  );
+}
+const mangaGrammar = applyEditProfessionalGrammar(grammarSource, "manga");
+assert.ok(mangaGrammar.some((clip) => clip.transition === "ink"));
+assert.ok(mangaGrammar.some((clip) => clip.transition === "panel"));
+assert.ok(mangaGrammar.some((clip) => clip.transition === "depth"));
+for (const grammar of ["cinematic", "rhythmic", "manga"]) {
+  const compact = applyEditProfessionalGrammar(grammarSource.slice(0, 2), grammar);
+  assert.notEqual(compact[1].transition, "cut", `${grammar}: un montaje corto también necesita un acento dosificado`);
+}
 
 const sceneBoundaries = [
   { id: "long-scene-0", start: 0, end: 1.2, quality: 0.7, visualEnergy: 0.2, saliencyX: 0.5, saliencyY: 0.5, saliencyConfidence: 0.6 },

@@ -24,10 +24,14 @@ const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
 const errors = [];
 page.on("pageerror", (error) => errors.push(error.message));
 await page.goto(`${BASE}/edit-studio`, { waitUntil: "networkidle" });
+const guideFontSize = await page.getByText("La canción permite detectar BPM, golpes y el mejor tramo. También puedes montar solo con imagen.", { exact: true }).evaluate((element) => Number.parseFloat(getComputedStyle(element).fontSize));
+if (guideFontSize < 14) throw new Error(`La guía sigue siendo demasiado pequeña (${guideFontSize}px)`);
 await page.getByRole("button", { name: /^Medios$/ }).click();
 await page.locator('label:has-text("+ Importar") input[type="file"]').setInputFiles([A, B]);
 await page.getByTestId("edit-timeline-clip").nth(1).waitFor();
-await page.getByText("Ajustes manuales de toda la timeline", { exact: true }).click();
+await page.getByTestId("edit-grammar-manga").click();
+await page.screenshot({ path: `${WORK}/montage.png`, fullPage: false });
+await page.getByText("Ajustar ritmo manualmente", { exact: true }).click();
 await page.getByRole("button", { name: "Referencia 18 s" }).click();
 await page.getByRole("button", { name: "▶ PLAY" }).click();
 await page.getByRole("button", { name: "❚❚ PAUSA" }).waitFor();
@@ -35,7 +39,7 @@ await page.getByRole("button", { name: "❚❚ PAUSA" }).click();
 
 const [previewBox, timelineBox] = await Promise.all([
   page.getByTestId("edit-preview-canvas").boundingBox(),
-  page.getByText("Timeline / beat rail", { exact: true }).boundingBox(),
+  page.getByTestId("edit-timeline-heading").boundingBox(),
 ]);
 if (!previewBox || !timelineBox || previewBox.y < 0 || timelineBox.y < 0 || timelineBox.y > 1000) {
   throw new Error("Preview y timeline no permanecen visibles en el workspace de escritorio");
@@ -49,9 +53,15 @@ await page.waitForTimeout(80);
 await page.getByRole("button", { name: /^◫ Profundidad/ }).click();
 await page.getByRole("button", { name: "Parallax 2.5D", exact: true }).click();
 await page.getByLabel("Fuerza de transición").fill("72");
-await page.screenshot({ path: "/tmp/loop-studio-edit-workspace.png", fullPage: false });
+await page.screenshot({ path: `${WORK}/workspace.png`, fullPage: false });
 
+const inspectorScroll = page.getByTestId("edit-inspector-scroll");
+await inspectorScroll.evaluate((element) => { element.scrollTop = element.scrollHeight; });
 await page.getByRole("button", { name: /^Acabado$/ }).click();
+const finishScrollTop = await inspectorScroll.evaluate((element) => element.scrollTop);
+if (finishScrollTop > 1) throw new Error(`Acabado abrió a mitad del inspector (${finishScrollTop}px)`);
+await page.getByTestId("edit-finish-ink").click();
+await page.screenshot({ path: `${WORK}/finish.png`, fullPage: false });
 await page.getByText("05 / Atmósfera").click();
 await page.locator("details").filter({ hasText: "05 / Atmósfera" }).locator("select").first().selectOption("cinematic_dust");
 await page.getByText("06 / Textos y firma").click();
@@ -83,7 +93,11 @@ await mobile.goto(`${BASE}/edit-studio`, { waitUntil: "networkidle" });
 if (await mobile.getByTestId("edit-preview-stage").evaluate((element) => getComputedStyle(element).position) !== "sticky") {
   throw new Error("El preview móvil no conserva su posición sticky");
 }
+const mobileOverflow = await mobile.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+if (mobileOverflow > 2) throw new Error(`Edit Studio desborda ${mobileOverflow}px en móvil`);
+await mobile.screenshot({ path: `${WORK}/mobile.png`, fullPage: false });
 await mobile.close();
 
-console.log(`✓ Edit Studio: multiclip, beat, play/pausa, partículas, texto, audio y export ${probe.format.duration}s`);
 await browser.close();
+fs.rmSync(WORK, { recursive: true, force: true });
+console.log(`✓ Edit Studio: multiclip, beat, play/pausa, partículas, texto, audio y export ${probe.format.duration}s`);

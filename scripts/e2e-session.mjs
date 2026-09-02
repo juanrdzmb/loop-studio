@@ -21,7 +21,7 @@ const page = await browser.newPage();
 page.on("pageerror", (e) => console.log("pageerror:", e.message));
 
 // ---------- 1) GIF Studio: generar con estilo Game Boy ----------
-await page.goto(BASE + "/", { waitUntil: "networkidle" });
+await page.goto(BASE + "/gif-studio", { waitUntil: "networkidle" });
 await page.setInputFiles('input[type=file]', `${MEDIA}/sample.mp4`);
 await page.waitForSelector("text=Preview exacto del GIF", { timeout: 15000 });
 await page.click('button:has-text("Game Boy")');
